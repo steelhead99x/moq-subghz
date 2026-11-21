@@ -321,6 +321,8 @@ fn main() -> ! {
                                 fdev_hz: fd,
                                 preamble_bytes: if pre == 0 { 4 } else { pre as u16 },
                                 unchecked: force != 0,
+                                // long mode drains the FIFO mid-packet: keep failed packets
+                                crc_auto_clear: !fsk_long,
                                 ..FskConfig::default()
                             };
                             let mut r0 = radio.init(f, &LoRaConfig::default());

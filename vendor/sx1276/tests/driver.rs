@@ -185,3 +185,39 @@ fn payload_bounds() {
     assert_eq!(r.start_transmit(&[0u8; 256]), Err(Error::PayloadSize));
     done(r);
 }
+
+/// A long FSK packet first seen at PayloadReady (its head already overrun) is an error,
+/// and the half-read state is cleared instead of carrying into the next packet.
+#[test]
+fn fsk_long_packet_first_seen_at_payload_ready_resets() {
+    let mut s = vec![];
+    s.extend(rd(0x3F, 0x04 | 0x02)); // PayloadReady, CrcOk, FIFO not empty
+    s.extend(rd(0x11, 0x80)); // RSSI
+    s.extend(rd(0x00, 200)); // length byte: 200 more bytes, more than the FIFO holds
+    s.extend(rd(0x3F, 0x40)); // FIFO empty
+    let mut r = radio(s, &[], &[]);
+    let mut st = FskLongRx::default();
+    assert!(matches!(
+        r.fsk_poll_long(&mut st, 0, 1000),
+        Err(Error::PayloadSize)
+    ));
+    assert!(!st.in_progress());
+    done(r);
+}
+
+/// CRC auto-clear off sets CrcAutoClearOff and makes reads check CrcOk; the default
+/// leaves the register as the measured runs had it.
+#[test]
+fn fsk_crc_auto_clear_off_is_opt_in() {
+    let off = fsk::FskConfig {
+        crc_auto_clear: false,
+        ..Default::default()
+    };
+    assert_eq!(off.packet_config1(), 0x80 | 0x40 | 0x10 | 0x08);
+    assert!(off.checks_crc_on_read());
+    let def = fsk::FskConfig::default();
+    assert_eq!(def.packet_config1(), 0x80 | 0x40 | 0x10);
+    assert!(!def.checks_crc_on_read());
+    let no_crc = fsk::FskConfig { crc: false, ..off };
+    assert_eq!(no_crc.packet_config1() & 0x18, 0);
+}

@@ -73,6 +73,12 @@ pub struct FskConfig {
     pub crc: bool,
     /// Data whitening (DC-free).
     pub whitening: bool,
+    /// On a CRC failure the chip clears the FIFO and raises no PayloadReady (the datasheet
+    /// default). `false` keeps the packet and raises PayloadReady with CrcOk clear, so a
+    /// reader that drains the FIFO while the packet arrives
+    /// ([`crate::Sx1276::fsk_poll_long`]) can't splice the bytes it already took onto the
+    /// next packet; the driver then discards the failed packet whole.
+    pub crc_auto_clear: bool,
     /// Stress testing only: skip the datasheet bitrate (<= 300 kbit/s), bandwidth and
     /// modulation-index limits (still requires 1.2..=600 kbit/s and Fdev <= 300 kHz).
     pub unchecked: bool,
@@ -89,6 +95,7 @@ impl Default for FskConfig {
             sync_len: 2,
             crc: true,
             whitening: true,
+            crc_auto_clear: true,
             unchecked: false,
         }
     }
@@ -175,9 +182,20 @@ impl FskConfig {
         0x40 | 0x10 | (self.sync_len - 1)
     }
 
-    /// `RegPacketConfig1`: variable length | DC-free whitening | CrcOn.
+    /// `RegPacketConfig1`: variable length | DC-free whitening | CrcOn | CrcAutoClearOff.
     pub const fn packet_config1(&self) -> u8 {
-        0x80 | if self.whitening { 0x40 } else { 0 } | if self.crc { 0x10 } else { 0 }
+        0x80 | if self.whitening { 0x40 } else { 0 }
+            | if self.crc { 0x10 } else { 0 }
+            | if self.crc && !self.crc_auto_clear {
+                0x08
+            } else {
+                0
+            }
+    }
+
+    /// True when the driver must check CrcOk itself on PayloadReady.
+    pub const fn checks_crc_on_read(&self) -> bool {
+        self.crc && !self.crc_auto_clear
     }
 
     /// `RegPacketConfig2`: packet mode.

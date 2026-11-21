@@ -427,6 +427,8 @@ fn main() -> Result<()> {
                 fdev_hz: fdev,
                 preamble_bytes: pre,
                 unchecked,
+                // fsk_poll_long drains the FIFO mid-packet: keep failed packets whole
+                crc_auto_clear: false,
                 ..Default::default()
             };
             cfg.validate()
