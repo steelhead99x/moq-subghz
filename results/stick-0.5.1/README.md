@@ -11,8 +11,9 @@ tools at both ends. The factory test used neither.
 * **The stick works end to end on 0.5.1.** 72 still-picture runs and 8 live-video runs, all with the stick on
   0.5.1 and the radio reading `sx_version=0x12`. All 72 pictures came back complete. All 48 chunked-JPEG and
   LoRaWAN-framed pictures are byte for byte the sent JPEG.
-* **Same radio settings as the factory test (SF7, 125 kHz), about 9 times the speed.** The 320x240 picture takes
-  13.7 s here against 119 s for the factory software, and the 160x120 picture 3.7 s against 35 s. Same chip, same
+* **Same radio settings as the factory test (SF7, 125 kHz), about 8 times the speed.** Timed the same way for both
+  (first packet heard to complete picture), the 320x240 picture takes 13.7 s here against 114 s for the factory
+  software, and the 160x120 picture 3.7 s against 30 s. Same chip, same
   packet size class, same bench. The factory pair spends most of its time in the Dragino app's per packet
   start-up, not on the air (see below).
 * **Wider channels are faster.** SF7/500 sends the 320x240 picture in 3.4 s (20 kbit/s of picture data).
@@ -100,16 +101,24 @@ the same day).
 
 | picture | stack | runs | pass 1 loss (%) | packets per picture | seconds to picture, mean (min to max) | goodput (bit/s) | RSSI (dBm) | SNR (dB) |
 |---|---|---|---|---|---|---|---|---|
-| 160x120 q20, 2346 B | factory: Dragino sample app + stock stick image | 3 | 5.0 | 20 | 34.8 (30.5 to 37.6) | 543 | -36 | not reported |
+| 160x120 q20, 2346 B | factory: Dragino sample app + stock stick image | 3 | 5.0 | 20 | 30.2 (25.6 to 33.2) | 629 | -36 | not reported |
 | 160x120 q20, 2346 B | moq-subghz 0.5.1, chunk | 3 | 0.0 | 10 | 3.73 (3.73 to 3.73) | 5029 | -24 | 9.8 |
 | 160x120 q20, 2346 B | moq-subghz 0.5.1, LoRaWAN-framed | 3 | 0.0 | 10 | 3.92 | 4785 | -25 | 9.8 |
 | 160x120 q20, 2346 B | moq-subghz 0.5.1, SSDV | 3 | 3.0 | 11 | 5.14 (4.41 to 6.61) | 4998 | -25 | 9.7 |
-| 320x240 q10, 8618 B | factory: Dragino sample app + stock stick image | 3 | 9.3 | 72 | 118.9 (112.5 to 127.3) | 582 | -37 | not reported |
+| 320x240 q10, 8618 B | factory: Dragino sample app + stock stick image | 3 | 9.3 | 72 | 114.4 (108.1 to 122.8) | 604 | -37 | not reported |
 | 320x240 q10, 8618 B | moq-subghz 0.5.1, chunk | 3 | 0.0 | 35 | 13.67 (13.67 to 13.67) | 5043 | -24 | 9.9 |
 | 320x240 q10, 8618 B | moq-subghz 0.5.1, LoRaWAN-framed | 3 | 0.0 | 36 | 14.39 | 4792 | -25 | 9.8 |
 | 320x240 q10, 8618 B | moq-subghz 0.5.1, SSDV | 3 | 0.0 | 35 | 14.02 | 5070 | -25 | 9.8 |
 
-Measured, from the table: moq-subghz chunked at SF7/125 is 9.3 times faster for the small picture and 8.7 times
+"Seconds to picture" is timed the same way for both stacks: from the first packet of the picture heard to the
+packet that completes it, plus one packet of airtime. For the factory runs that is recomputed from the receive times in
+`../factory-firmware/data/*/stick.packets.csv` (host clock; moq-subghz uses the stick's clock). The factory script's own
+`end_to_end_s` (34.8 and 118.9 s) also counts setup and a fixed 2 s wait after every pass, so it is not compared here; an
+earlier version of this table did, and gave 9.3 and 8.7 times. The factory window still includes its harness's gap
+between passes (about 3 s and an scp per extra pass, against 1 s for moq-subghz), so the ratios below are slightly
+generous to moq-subghz.
+
+Measured, from the table: moq-subghz chunked at SF7/125 is 8.1 times faster for the small picture and 8.4 times
 faster for the large one. Where the time goes (calculated from the factory README): one factory packet is 389 ms on air
 and takes 1.34 s from the Pi, so the sender is on the air about 30% of the time. Here the sender is on the air
 58 to 95% of the time (`duty_pct` in `lora/*/send.txt`, calculated airtime over wall time). The packets are also bigger (255 B of raw bytes against 120 B of JPEG
