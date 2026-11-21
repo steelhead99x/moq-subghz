@@ -23,7 +23,7 @@ print(line[-1] if line else 'no banner: wrong port, or not catwan-fw'); sys.exit
 PY
 ssh "$PI" "test -x ~/$PI_DIR/moq-subghz-send && test -x ~/lora2015/lora2015-send && echo pi: senders present" || exit 1
 say "2. live FSK video, 45 s, FEC k=8"
-"$D/run2.sh" fsk-live 300000:100000:6 45 --fec-k 8 > /dev/null
+"$D/run2.sh" fsk-live 300000:100000:6 45 --fec-k 8 > /dev/null || exit 1
 python3 - "$OUTD/fsk-live/summary.json" <<'PY'
 import json, sys
 s = json.load(open(sys.argv[1]))
@@ -34,10 +34,10 @@ ffmpeg -v error -y -ss 20 -i "$OUTD/fsk-live.mp4" -frames:v 1 "$OUTD/fsk-live-st
 say "3. one small picture, three 2015 ways, SF7/500, 2 passes"
 for mode in chunk ssdv lorawan; do
   f=f160x120-q20.jpg; [ $mode = ssdv ] && f=f160x112-q20.ssdv
-  "$D/lora2015-run.sh" demo-$mode-sf7-500 $mode $f sf7-500 2 > /dev/null
+  "$D/lora2015-run.sh" demo-$mode-sf7-500 $mode $f sf7-500 2 > /dev/null || exit 1
   echo "$mode: $(sed -n 2p "$OUTD/demo-$mode-sf7-500/exact/images.csv" | cut -d, -f2,7,10,17,18)   (complete, seconds, loss %, RSSI, SNR)"
 done
 say "4. chunked picture at SF7/125, 2 passes"
-"$D/lora2015-run.sh" demo-chunk-sf7-125 chunk f160x120-q20.jpg sf7-125 2 > /dev/null
+"$D/lora2015-run.sh" demo-chunk-sf7-125 chunk f160x120-q20.jpg sf7-125 2 > /dev/null || exit 1
 echo "chunk SF7/125: $(sed -n 2p "$OUTD/demo-chunk-sf7-125/exact/images.csv" | cut -d, -f2,7,10,17,18)"
 say "done: $OUTD (fsk-live.mp4, fsk-live-still.png, demo-*/image*.jpg)"
