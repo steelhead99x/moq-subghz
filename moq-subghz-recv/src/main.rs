@@ -783,7 +783,11 @@ fn main() -> Result<()> {
     }
     // A replay reader that stopped on an error must not pass for a clean end of file. One
     // still running was cut off by --secs, which is not an error.
-    let input_error = match replay_th.take().filter(|t| t.is_finished()).map(|t| t.join()) {
+    let input_error = match replay_th
+        .take()
+        .filter(|t| t.is_finished())
+        .map(|t| t.join())
+    {
         Some(Ok(Err(e))) => Some(e.to_string()),
         Some(Err(_)) => Some("the replay reader panicked".to_string()),
         _ => None,
@@ -937,7 +941,10 @@ mod tests {
         }
         let c = s.close(Duration::from_millis(100));
         assert!(c.dropped >= 300 - 256 - 2, "{c:?}");
-        assert!(!c.exited_ok, "a child killed at the deadline did not exit cleanly");
+        assert!(
+            !c.exited_ok,
+            "a child killed at the deadline did not exit cleanly"
+        );
     }
 
     #[test]
