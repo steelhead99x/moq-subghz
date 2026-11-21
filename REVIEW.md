@@ -29,7 +29,7 @@ need a protocol or firmware change that would invalidate the measured runs.
 
 ## High
 
-### Firmware will transmit above +5 dBm and on any carrier. Deferred.
+### Firmware will transmit above +5 dBm and on any carrier. Fixed in source; needs a new image.
 
 `firmware/catwan-fw/src/main.rs:232` and `:259` clamp `dbm` to `2..=17` for both the
 `L` and `F` commands and program the frequency they are given. There is no check for
@@ -38,10 +38,13 @@ need a protocol or firmware change that would invalidate the measured runs.
 enforce the limits only when the host tools are used. A raw serial session can key the
 stick at +17 dBm on an arbitrary frequency.
 
-Left unchanged. The measured image is `firmware/catwan-fw-v5.uf2` (sha256 in
-`firmware/SHA256SUMS`). Tightening the clamp means a new UF2 and a reflash, which was
-not done here. The module comment at `firmware/catwan-fw/src/main.rs:16` says so.
-README and HOWTO now say the same thing in the RF notes.
+Fixed in source (2026-11-21): `L` and `F` refuse a carrier outside 902-928 MHz or within
+0.3 MHz of 925.0 and power outside 2..=5 dBm, and `L` refuses a bandwidth, SF or coding
+rate it used to replace silently. The same change makes a `Q` line wait for a queue slot
+(one USB read with several short `Q` lines used to drop the later ones) and reports a bad
+frame as `ERR tx`. The shipped `catwan-fw-v5.uf2` (measured) and `catwan-fw-0.5.1.uf2`
+predate it: until a new image is built, flashed and run on the stick, a stick on those
+images still accepts anything.
 
 ### Replayed frames. Mostly fixed; long replays deferred.
 
@@ -90,7 +93,7 @@ a wire change, to protect only statistics. Decided 2026-11-18 (maintainer): keep
 headers clear. Without `--key-file` nothing is authenticated and an attacker can inject
 Annex-B.
 
-### `fsk_poll_long` can splice or reject a long packet. Deferred.
+### `fsk_poll_long` can splice or reject a long packet. Fixed; needs a radio test.
 
 `vendor/sx1276/src/lib.rs:557`. On PayloadReady the driver reads whatever is still
 needed in one `read_raw_burst` (`:574`). `read_raw_burst` (`:425`) rejects a read
@@ -100,9 +103,14 @@ non-zero. Separately, a CRC failure clears the chip FIFO after the poller has al
 copied a prefix; the next packet's bytes continue that prefix. The end-to-end CRC-16
 in `FrameHdr::decode` drops the splice. It does not stop the driver from returning it.
 
-This is the receive path that produced the Pi-side loss numbers. Changing it would
-change those numbers. Not changed. `FskLongRx::payload` (`:169`) no longer panics when
-no packet is stored (`1..=0` used to panic). That does not change a successful read.
+Fixed 2026-11-21. More than the 64-byte FSK FIFO still to read at PayloadReady is an error
+(the driver used to burst-read up to 255 bytes past the data, since its size check was the
+256-byte LoRa FIFO), and every error clears the half-read state. `FskConfig::crc_auto_clear`
+(default on, as measured) can be turned off so a CRC-failed packet raises PayloadReady with
+CrcOk clear and is dropped whole; the long-mode readers (`catwan-fw` with `long=1`,
+`moq-subghz-recv --radio`) turn it off, which closes the splice. This is the receive path
+that produced the Pi-side loss numbers, so they need measuring again. `FskLongRx::payload`
+no longer panics when no packet is stored.
 
 ### Nonce uniqueness is a caller contract. Fixed with per-run subkeys.
 

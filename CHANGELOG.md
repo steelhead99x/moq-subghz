@@ -16,6 +16,25 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Fixed
 
+* **The sender no longer splits a picture at a pause on ffmpeg's pipe.** A 4 ms gap inside one
+  access unit made two objects in two groups and shifted capture timestamps. Access units now end
+  only at the next AUD (or EOF), which adds up to one frame interval of latency. Changes what goes
+  on the air; not run on the radios.
+* **A failed publish or replay read fails the receiver.** `summary.json` gains `publish_ok` and
+  `input_error`, and the receiver exits 1 after writing the recording.
+* **Relay tokens stay off command lines.** `moq-subghz-recv --publish` with no URL reads
+  `MOQ_SUBGHZ_RELAY`, passes the URL to the publisher in its environment, and refuses a URL with
+  a query string on the command line.
+* **`catwan-fw` enforces the band and power limits and never drops a queued frame.** Source
+  only: the shipped images predate it (see REVIEW.md).
+* **`sx1276` long-FSK receive can't return a stale or spliced packet.** New
+  `FskConfig::crc_auto_clear`, off in the long-mode readers. Needs a radio test.
+* **LoRa logger:** images keyed by SSDV callsign and id, SSDV completion checks every index,
+  conflicting pieces start a new image, exact loss is per run (`run.csv`), and output files of a
+  reused id no longer overwrite each other. `lora2015-send` refuses a bad `--duty-pct`.
+* **Bench scripts fail a run when either end fails**, instead of printing DONE.
+* **The factory comparison uses one timing window** for both stacks: about 8 times, not 9.
+
 * **`catwan-fw` 0.5.1: the radio answers `I` right after power-up.** The firmware left the SX1276
   RESET line low (the chip held in reset) until the first `L` or `F` command, so an `I` sent
   first read `sx_version=0x00` and looked like a dead radio. The radio is not dead. 0.5.1 pulses
