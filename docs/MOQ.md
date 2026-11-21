@@ -64,12 +64,14 @@ relay to run. Make a project there, then use the relay URL and a publish token f
 dashboard (the token goes in `?jwt=`):
 
 ```sh
-moq-subghz-recv --port /dev/cu.usbmodemXXXX ... \
-  --publish 'https://cdn.moq.pro/...?jwt=YOUR_TOKEN' --publish-name lora
+read -rs MOQ_SUBGHZ_RELAY && export MOQ_SUBGHZ_RELAY   # paste https://cdn.moq.pro/...?jwt=YOUR_TOKEN
+moq-subghz-recv --port /dev/cu.usbmodemXXXX ... --publish --publish-name lora
 ```
 
-Keep the token out of shell history and scripts you share. `moq-subghz-publish` also reads the
-URL from `MOQ_SUBGHZ_RELAY`.
+`--publish` with no URL reads `MOQ_SUBGHZ_RELAY`, and the receiver hands the URL to
+`moq-subghz-publish` in its environment, not its arguments. Command lines are visible to every
+user on the machine (`ps`); a process's environment is not. The receiver refuses a `--publish`
+URL with a query string, so a token can't end up on a command line by accident.
 
 ## Watch
 
