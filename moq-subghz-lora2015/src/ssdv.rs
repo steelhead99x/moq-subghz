@@ -143,13 +143,34 @@ pub struct Assembly {
 }
 
 impl Assembly {
-    /// Store a checked packet. Returns false for one already held.
-    pub fn push(&mut self, pkt: [u8; PKT_LEN], info: Info) -> bool {
+    /// Store a checked packet: `Ok(true)` for a new one, `Ok(false)` for a repeat. A
+    /// repeat with different bytes, or a second end packet at another index, means two
+    /// images share this id; that is an error and the packet is not stored.
+    pub fn push(&mut self, pkt: [u8; PKT_LEN], info: Info) -> Result<bool, String> {
+        if let Some(old) = self.packets.get(&info.packet_id) {
+            return if *old == pkt {
+                Ok(false)
+            } else {
+                Err(format!(
+                    "packet {} repeated with different bytes",
+                    info.packet_id
+                ))
+            };
+        }
         if info.eoi {
-            self.last = Some(info.packet_id);
+            match self.last {
+                Some(l) if l != info.packet_id => {
+                    return Err(format!(
+                        "end packet {} after end packet {l}",
+                        info.packet_id
+                    ))
+                }
+                _ => self.last = Some(info.packet_id),
+            }
         }
         self.info.get_or_insert(info);
-        self.packets.insert(info.packet_id, pkt).is_none()
+        self.packets.insert(info.packet_id, pkt);
+        Ok(true)
     }
 
     /// Distinct packets held.
@@ -167,9 +188,11 @@ impl Assembly {
         self.info
     }
 
-    /// True when the last packet and every one before it are held.
+    /// True when the last packet and every one before it are held, and nothing past it.
     pub fn complete(&self) -> bool {
-        self.count().is_some_and(|n| self.packets.len() == n)
+        self.last.is_some_and(|l| {
+            self.packets.len() == l as usize + 1 && self.packets.keys().copied().eq(0..=l)
+        })
     }
 
     /// The held packets in order, as a file `ssdv -d` reads. Gaps stay gaps.
@@ -289,15 +312,15 @@ mod tests {
         assert!(!a.complete());
         for &(id, eoi) in ids.iter().rev().filter(|x| x.0 != 1) {
             let p = packet(5, id, eoi);
-            assert!(a.push(p, parse(&p).unwrap()));
+            assert_eq!(a.push(p, parse(&p).unwrap()), Ok(true));
         }
         let p3 = packet(5, 3, true);
-        assert!(!a.push(p3, parse(&p3).unwrap()));
+        assert_eq!(a.push(p3, parse(&p3).unwrap()), Ok(false));
         assert_eq!((a.have(), a.count(), a.complete()), (3, Some(4), false));
         assert_eq!(a.file().len(), 3 * PKT_LEN);
         assert_eq!(a.file()[PKT_LEN + 8], 2);
         let p1 = packet(5, 1, false);
-        a.push(p1, parse(&p1).unwrap());
+        a.push(p1, parse(&p1).unwrap()).unwrap();
         assert!(a.complete());
         let f = a.file();
         assert_eq!(read_packets(&f).unwrap().len(), 4);
@@ -308,8 +331,36 @@ mod tests {
     fn no_end_packet_means_no_count() {
         let mut a = Assembly::default();
         let p = packet(1, 0, false);
-        a.push(p, parse(&p).unwrap());
+        a.push(p, parse(&p).unwrap()).unwrap();
         assert_eq!(a.count(), None);
         assert!(!a.complete());
+    }
+
+    #[test]
+    fn a_stray_packet_past_the_end_is_not_a_complete_image() {
+        // packets 0, 1, 3 of a 4-packet image plus packet 5 of a longer one: four held,
+        // end at 3, but packet 2 is missing
+        let mut a = Assembly::default();
+        for (id, eoi) in [(0, false), (1, false), (5, false), (3, true)] {
+            let p = packet(5, id, eoi);
+            a.push(p, parse(&p).unwrap()).unwrap();
+        }
+        assert_eq!((a.have(), a.count()), (4, Some(4)));
+        assert!(!a.complete());
+    }
+
+    #[test]
+    fn conflicting_repeats_and_two_ends_are_refused() {
+        let mut a = Assembly::default();
+        let p = packet(5, 2, false);
+        a.push(p, parse(&p).unwrap()).unwrap();
+        let other = packet(6, 2, false); // same index, other bytes
+        assert!(a.push(other, parse(&other).unwrap()).is_err());
+        assert_eq!(a.file(), p.to_vec(), "the first packet is kept");
+        let e = packet(5, 3, true);
+        a.push(e, parse(&e).unwrap()).unwrap();
+        let e2 = packet(5, 9, true);
+        assert!(a.push(e2, parse(&e2).unwrap()).is_err());
+        assert_eq!(a.count(), Some(4));
     }
 }

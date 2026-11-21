@@ -60,7 +60,7 @@ fn run(
         }
         fcnt += frames.len() as u16;
     }
-    (l.finish(), sent)
+    (l.finish().0, sent)
 }
 
 #[test]
