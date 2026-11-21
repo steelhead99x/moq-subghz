@@ -76,9 +76,9 @@ run through a file with radio frames removed. Short version: with the parity fra
 loss of up to about 1% costs under 2% of the picture. The loss pattern of the real radio runs
 costs about twice what random loss does.
 
-These runs were measured on 2026-11-17. The tools have changed since then (see the
-[changelog](../CHANGELOG.md)), and the newer code has only been run through the no-radio
-loopback, not on the radios. The table will be re-measured before a tagged release.
+These runs were measured on 2026-11-17. A later session measured eight FSK video runs and
+72 LoRa still-picture runs with CatWAN firmware 0.5.1 on 2026-11-20.
+[Later benchmark and raw logs](../results/stick-0.5.1/README.md)
 
 ## What's on the air
 

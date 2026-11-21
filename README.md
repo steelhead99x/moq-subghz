@@ -1,78 +1,66 @@
 # moq-subghz
 
-DIY MoQ over LoRa. The LoRa radio is the first build.
+**Live video over sub-GHz radio. Raspberry Pi 2 to laptop.**
 
-**DIY MoQ over LoRa: live video from a Raspberry Pi over a LoRa radio chip, written in Rust.**
+A Raspberry Pi 2 sends H.264 directly to a CatWAN USB stick using the Semtech SX1276 in FSK mode. The link runs offline with no gateway or server. The Rust tools use Media over QUIC (MoQ) ideas to recover from packet loss and can republish the received video to a MoQ relay.
 
-![A frame received over the radio link, encrypted](media/frame-f350-rind-45s-3x.png)
+[**Watch the over-the-air demo**](results/stick-0.5.1/demo/fsk-live.mp4) · [**Try it without radios**](#try-it-without-radios) · [**Build the radio link**](HOWTO.md) · [**See the benchmark**](results/stick-0.5.1/README.md)
 
-A Raspberry Pi 2 sends live H.264 video over a common LoRa radio chip to a USB stick on a laptop.
-320x240 at 15 fps, about 135 ms glass to glass (capture to screen). It is not LoRaWAN, and it needs no internet,
-gateway or server.
+[![Received test pattern with the sender clock and frame number burned into the picture](results/stick-0.5.1/fsk-live-still.png)](results/stick-0.5.1/fsk-live-120s.mp4)
 
-```
-Pi 2  ──▶  915 MHz FSK radio  ──▶  CatWAN USB stick  ──▶  laptop
-```
+*Frame from a 300 kbit/s FSK bench run. Select the image to open the full 120-second capture.*
 
-## Why it's interesting
+## What the bench measured
 
-* **Live video on a LoRa chip.** The SX1276 is slow in LoRa mode, but its plain FSK mode does
-  300 kbit/s, enough for a small video stream.
-* **Lost frames freeze, they don't smear.** Video is split into MoQ groups (one keyframe interval
-  is one group) and objects (one frame is one object). If a frame is lost, the receiver drops the
-  rest of that group and waits for the next keyframe.
-* **Rust from ffmpeg to the antenna.** The framing, the radio driver and the USB stick firmware
-  are all Rust. Frames are encrypted with ChaCha20-Poly1305.
+| Video format | Delivered video | Capture-to-decode latency | Video frame loss |
+| --- | --- | --- | --- |
+| 320 × 240 at 15 fps | 162.2 kbit/s | 136.7 ms p50 / 243.7 ms p95 | 10.3% |
 
-## The MoQ model, from moq.dev
+These are means from four 120-second Pi-to-stick runs with CatWAN firmware 0.5.1, 300 kbit/s FSK, +5 dBm configured power, and one parity packet for every eight data packets. Latency comes from the timestamp encoded in each picture and read back after decoding. [Setup, raw logs, and results](results/stick-0.5.1/README.md#part-3-fsk-live-video-300-kbits-measured)
 
-The video framing follows the Media over QUIC model from **[moq.dev](https://moq.dev)**, the open
-source MoQ project and its Rust libraries. If you want to build real MoQ streaming over the
-internet, start there. moq-subghz borrows the model (groups and objects) and runs its own small Rust
-version on a radio instead of QUIC. The radio side does not use moq.dev's code. The optional
-republish step does use moq.dev's Rust libraries. This project is not affiliated with or endorsed
-by moq.dev.
+## Try it without radios
 
-Want viewers on the internet? `moq-subghz-recv --publish` republishes the stream to a moq.dev relay
-or moq.pro; see [docs/MOQ.md](docs/MOQ.md).
-
-## Try it (no radio needed)
-
-You need Rust 1.90+ and ffmpeg.
+From a checkout with Rust 1.90 or later and ffmpeg with libx264 installed, record a five-second test pattern and replay it through the receiver.
 
 ```sh
-cargo build --release
-./target/release/moq-subghz-send --loopback /tmp/air.txt --fec-k 8 --secs 20
-./target/release/moq-subghz-recv --replay /tmp/air.txt --paced --play --decode --out /tmp/run
+cargo build --release --locked
+demo_dir="$(mktemp -d)"
+./target/release/moq-subghz-send --loopback "$demo_dir/air.txt" --fec-k 8 --secs 5
+./target/release/moq-subghz-recv --replay "$demo_dir/air.txt" --paced --decode --out "$demo_dir/received"
 ```
 
-With real radios, follow **[HOWTO.md](HOWTO.md)**.
+The receiver writes `rec.h264` and `summary.json` under `"$demo_dir/received"`. If ffplay is installed, run the command below to watch the recording. Replay is useful for checking decoding and loss counters. Measure live latency on the radio link.
 
-## Radio rules
+```sh
+ffplay -f h264 -framerate 15 "$demo_dir/received/rec.h264"
+```
 
-915 MHz is licence-free in the Americas, but **not in Europe and many other places**. The tools
-default to 915 MHz at about 3 mW and won't transmit without `--i-have-an-antenna`. You are
-responsible for what you transmit. More in the [HOWTO](HOWTO.md#9-radio-rules).
+## How the link works
 
-## Learn more
+```text
+Raspberry Pi 2 + SX1276  →  915 MHz FSK  →  CatWAN USB stick  →  Laptop
+                                                               ↳ optional MoQ relay
+```
 
-* [docs/DETAILS.md](docs/DETAILS.md): how it works, measured results, repo map and limits
-* [HOWTO.md](HOWTO.md): parts, setup and your first live picture
-* [results/loopback](results/loopback/README.md): how the picture holds up as the link gets worse (a replay, no radio)
-* [results/lora-2015](results/lora-2015/README.md): what a 2015 team could have sent over real LoRa and LoRaWAN-style frames, and how to run it
-* [results/stick-0.5.1](results/stick-0.5.1/README.md): the measured over-the-air benchmark of all of the above, against the factory software
-* [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/): the idea behind the project
-* [CHANGELOG.md](CHANGELOG.md), [ROADMAP.md](ROADMAP.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md)
+- **Video over an off-the-shelf radio.** The SX1276 is commonly used for LoRa. Its FSK mode carries this live stream at 300 kbit/s.
+- **Recovery at the next keyframe.** The sender puts each keyframe interval into a group and each H.264 access unit into an object. XOR parity can repair a missing fragment. If an object is lost, the receiver skips the rest of its group and resumes at a keyframe.
+- **Optional encryption and relay publishing.** A pre-shared key enables ChaCha20-Poly1305 on the radio link. The radio uses its own framing inspired by MoQ. The optional publisher uses the [moq.dev](https://moq.dev) libraries to send a MoQ broadcast to a relay. [Encryption setup](HOWTO.md#8-more-things-to-try) · [MoQ relay setup](docs/MOQ.md)
 
-## Credits
+## Go deeper
 
-* **[moq.dev](https://moq.dev)**: the MoQ model this project follows, and the
-  [IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/) behind the standard.
-* **[Rust](https://www.rust-lang.org)**: the whole project.
-* **[rind](https://github.com/kixel-ai/rind)**: the pure-Rust encryption library used for the
-  ChaCha20-Poly1305 frame encryption.
-* Semtech SX1276 radio chip and the Electronic Cats CatWAN USB Stick.
+| What you want to do | Where to start |
+| --- | --- |
+| Assemble the Pi and CatWAN setup | [Hardware, flashing, and first picture](HOWTO.md) |
+| Inspect the wire format or find a crate | [Architecture and repository map](docs/DETAILS.md) |
+| Compare random packet loss with measured loss patterns | [Loopback loss sweep](results/loopback/README.md) |
+| Send still pictures in LoRa mode | [Chunked JPEG, SSDV, and LoRaWAN-framed experiments](results/lora-2015/README.md) |
+| Read the project background | [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/) |
+| Contribute or report a security issue | [Contributing](CONTRIBUTING.md) · [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md) |
 
-## License
+The bench uses 915 MHz. Check local rules and attach the antenna before transmitting. [Radio setup and limits](HOWTO.md#9-radio-rules)
 
-[MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), your choice.
+## Credits and license
+
+The group and object model draws on [moq.dev](https://moq.dev) and the [IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/). The radio link uses [rind](https://github.com/kixel-ai/rind) for encryption, the Semtech SX1276, and the Electronic Cats CatWAN USB Stick.
+
+Available under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE).
