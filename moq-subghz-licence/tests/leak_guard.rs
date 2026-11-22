@@ -375,7 +375,8 @@ fn private_values_appear_nowhere_public() {
     let mut files = scan_set();
     // The crate's own files are exempt from shape checks but must not hold the real values.
     files.extend(tracked().into_iter().filter(|r| exempt(r)));
-    let hits = private_hits(&root(), &files, cfg.id(false), cfg.name(false));
+    let (id, name) = cfg.reveal_id_and_name();
+    let hits = private_hits(&root(), &files, id, name);
     assert!(
         hits.is_empty(),
         "your private licence values are in: {hits:?}"
@@ -553,4 +554,36 @@ fn unreadable_file_is_not_skipped() {
     });
     assert!(r.is_err());
     assert!(lines_of(&d, "missing.txt").is_none());
+}
+
+#[test]
+fn licence_file_names_are_ignored_by_git() {
+    for n in [
+        "licence.toml",
+        "license.toml",
+        "licence.local.toml",
+        "my-licence.toml",
+        "licence.toml.bak",
+        "license.toml~",
+    ] {
+        assert!(is_licence_file_name(n), "{n}");
+        // .gitignore must agree with the guard, at the top and in a subdirectory.
+        for path in [n.to_string(), format!("sub/dir/{n}")] {
+            let ignored = Command::new("git")
+                .arg("-C")
+                .arg(root())
+                .args(["check-ignore", "-q", "--no-index", &path])
+                .status()
+                .expect("git is needed for this test")
+                .success();
+            assert!(ignored, "{path} is not ignored by .gitignore");
+        }
+    }
+    let example = Command::new("git")
+        .arg("-C")
+        .arg(root())
+        .args(["check-ignore", "-q", "--no-index", "licence.example.toml"])
+        .status()
+        .unwrap();
+    assert!(!example.success(), "licence.example.toml must stay tracked");
 }

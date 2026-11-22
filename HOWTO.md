@@ -113,7 +113,7 @@ Screw on both antennas. Start the receiver on the laptop first, because it waits
 Then start the sender on the Pi:
 
 ```sh
-cd ~/moq-subghz && ./moq-subghz-send --fec-k 8 --secs 110 --i-have-an-antenna
+cd ~/moq-subghz && ./moq-subghz-send --fec-k 8 --secs 110 --i-have-an-antenna --transmit
 ```
 
 A window called **SX1276 FSK live video (moq-subghz)** opens with the test pattern, a running clock
@@ -220,7 +220,7 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
 | lots of freezes | check both antennas are on and try another spot, use `--fec-k 8`, or lower `--bitrate`. Loss also varies a lot from run to run. |
 | `objects_dropped` or `objects_dropped_queue_full` grows on the sender | the video bitrate is too high for the radio rate (see section 6) |
 | `open /dev/spidev0.0` fails on the Pi | SPI isn't enabled, or you haven't logged in again after `usermod` |
-| `refusing to transmit` | add `--i-have-an-antenna`, after attaching one |
+| `refusing to transmit` | add `--i-have-an-antenna --transmit`, after attaching one |
 
 ## 9. Radio rules
 
@@ -233,6 +233,8 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
 * **Even in the US, this setup may not comply.** It's one fixed channel, transmitting up to ~80%
   of the time. FCC Part 15.247 allows that only if the signal is at least 500 kHz wide at the
   -6 dB points, and we haven't measured this one. We ran short indoor bench tests at 3 mW.
+* **Transmitting needs `--i-have-an-antenna` and `--transmit`.** The licence gate runs before a real
+  radio is opened ([docs/LICENSING.md](docs/LICENSING.md)).
 * **The checks are in the host tools, not the stick.** The firmware's own serial commands
   accept up to +17 dBm on any frequency. Don't type them into a raw terminal session.
 * You are the operator, and the emissions are your responsibility.

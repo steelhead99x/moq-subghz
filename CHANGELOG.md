@@ -32,7 +32,29 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Added
 
-* **`moq-subghz-licence` crate: licensed vs unlicensed mode.** Licence file loader, US region rules (ID shape, 47 CFR 97.119 interval), band table, identification frames and the `check_transmit` gate, with a CI guard against committing a licence ID or name. Not wired into send/recv yet; amateur transmit stays disabled. See `docs/LICENSING.md`. Rules: receive-only on an amateur band in unlicensed mode needs an explicit `--rx-amateur` (transmit stays blocked); station ID frames go out only on amateur profiles in licensed mode, never on ISM profiles; the scheduler sends an ID at start, a fixed 60 s before the region's limit (every 540 s for the US 600 s rule) and at the end, and refuses intervals of 60 s or less; region `other` is blocked and the user-supplied mask and interval keys are removed, so only the US is enabled.
+* **`moq-subghz-licence` crate: licensed vs unlicensed mode.** Licence file loader, US region rules (ID shape, 47 CFR 97.119 interval), band table, identification frames and the `check_transmit` gate, with a CI guard against committing a licence ID or name. Wired into the tools since the safety-gate change below; amateur transmit stays disabled. See `docs/LICENSING.md`. Rules: receive-only on an amateur band in unlicensed mode needs an explicit `--rx-amateur` (transmit stays blocked); station ID frames go out only on amateur profiles in licensed mode, never on ISM profiles; the scheduler sends an ID at start, a fixed 60 s before the region's limit (every 540 s for the US 600 s rule) and at the end, and refuses intervals of 60 s or less; region `other` is blocked and the user-supplied mask and interval keys are removed, so only the US is enabled.
+
+### Changed
+
+* **The licence gate is now wired into `moq-subghz-send`, `moq-subghz-recv` and `lora2015-send`.**
+  New flags `--licence-file`, `--rx-amateur`, `--transmit` and `--redact-licence`. Transmitting a
+  real radio now also needs `--transmit` (default off) and a permit from the gate, in addition to
+  `--i-have-an-antenna` and the existing band and power checks; scripts and HOWTO pass it.
+  `moq-subghz-recv` gains `--amateur` (receive only). The gate takes the tuned frequency and signal
+  width and looks the band up itself, so a signal that crosses a band edge is refused (a carrier
+  at 902.0 MHz with a 500 kHz wide signal no longer passes). No tool sends station ID frames, so
+  amateur transmit is refused. The shipped CatWAN images are unchanged and still accept any
+  carrier and up to +17 dBm.
+* `moq-subghz-licence` API (breaking): `Permit` has private fields and accessors, only the gate
+  builds one; `check_start` and `check_transmit` take a `Tuning` instead of a `Band`;
+  `IdScheduler::new(&Permit)` is replaced by `Permit::id_plan()` returning a `#[must_use]` `IdPlan`
+  (`NoIdRequired`, `Schedule`, `MustNotTransmit`); the scheduler uses `Instant` and treats a
+  reading before the last ID as due; `final_id_needed` is false when nothing was sent;
+  `log_line`, `id` and `name` take a `Redaction` instead of a `bool`, and the tools write the
+  licence through one function. The loader checks the opened file (regular file, owner, mode, a
+  capped read); names with bidirectional or invisible characters and the `YOUR` false positive are
+  fixed; a relative `XDG_CONFIG_HOME` is ignored. `.gitignore` and the leak guard cover both
+  `licence.toml` and `license.toml` and variants.
 
 ### Fixed
 

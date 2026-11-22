@@ -115,7 +115,7 @@ airtime cost. With the MAC ACK and retries on (the default) the loss is hidden b
    `send` blocking until the MAC reports success or failure, returning real busy time and attempt
    count, with `Provenance::Measured`. Keep `max_payload` and `max_frames_per_packet` honest.
 4. Wire `--link halow` next to `halow-emu` in `moq-subghz-send` and `moq-subghz-recv` (the packing
-   and unpacking code is already shared), behind the same `--i-have-an-antenna` guard.
+   and unpacking code is already shared), behind the same `--i-have-an-antenna` and `--transmit` guards.
 5. Fix the regulatory side first: channel plan, EIRP and duty cycle for the region. No transmit
    before that.
 6. Replace each ASSUMPTION row above by a measurement: preamble (scope or driver stats), SIFS/slot
