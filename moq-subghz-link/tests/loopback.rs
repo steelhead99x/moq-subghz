@@ -168,3 +168,10 @@ fn works_across_threads_as_a_boxed_link() {
     a.send(&[1, 2, 3]).unwrap();
     assert_eq!(t.join().unwrap(), 3);
 }
+
+#[test]
+fn idle_and_error_counter_default_to_nothing() {
+    let (mut a, _b) = pair(LoopbackCfg::default());
+    assert_eq!(a.idle(), Ok(()));
+    assert_eq!(a.take_tx_errors(), 0);
+}

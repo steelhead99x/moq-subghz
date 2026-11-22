@@ -3,16 +3,17 @@
 //! (a) ffplay for live display, (b) a recording, (c) an ffmpeg decoder whose output
 //! frames are scanned for the burned-in barcode = capture->decoded latency, and
 //! (d) optionally `moq-subghz-publish`, which republishes the objects as real MoQ.
-#[cfg(target_os = "linux")]
-mod radio;
-
 use anyhow::{bail, Context, Result};
 
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
+#[cfg(target_os = "linux")]
+use moq_subghz_link::Link;
+#[cfg(target_os = "linux")]
+use moq_subghz_radio_sx1276::Sx1276FskRx;
 use moq_subghz_wire::{
     parse_fsk_profile, parse_r_line, read_line_limited, seal, stamp, Event, FrameRange, GroupGate,
-    Line, ObjHdr, Reassembler, MAX_SERIAL_LINE,
+    Line, ObjHdr, Reassembler, MAX_FRAME, MAX_SERIAL_LINE,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
@@ -433,28 +434,31 @@ fn main() -> Result<()> {
             };
             cfg.validate()
                 .map_err(|x| anyhow::anyhow!("fsk config: {x:?}"))?;
-            let mut r = radio::Radio::open(8_000_000, (a.freq * 1e6).round() as u32, &cfg, 2)?;
-            r.start_rx()?;
-            let stall = 36 * 8_000_000 / br;
+            let mut r = Sx1276FskRx::open(8_000_000, (a.freq * 1e6).round() as u32, &cfg, 2)?;
             eprintln!("Pi SX1276 listening (FSK {br} bit/s)");
             std::thread::spawn(move || {
-                let t0 = Instant::now();
-                let mut st = sx1276::FskLongRx::default();
+                let mut buf = [0u8; MAX_FRAME];
                 while !RADIO_STOP.load(std::sync::atomic::Ordering::Relaxed) {
-                    let now = t0.elapsed().as_micros() as u32;
-                    let line = match r.poll(&mut st, now, stall) {
-                        Ok(Some((p, rssi))) => format!(
-                            "R {now} {rssi} 0 {}",
-                            p.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    // `t_us` is the poll clock, a wrapping 32-bit count: the same value the
+                    // line carried before the radio moved behind `Link`.
+                    let line = match r.recv(&mut buf, Duration::from_millis(50)) {
+                        Ok(Some(m)) => format!(
+                            "R {} {} 0 {}",
+                            m.t_us as u32,
+                            m.rssi_dbm.unwrap_or(0),
+                            buf[..m.len]
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>()
                         ),
                         Ok(None) => continue,
-                        Err(x) => format!("X {now} {x}"),
+                        Err(e) => format!("X {} {e}", r.now_us()),
                     };
                     if ltx.send((unix_us(), line)).is_err() {
                         break;
                     }
                 }
-                r.idle();
+                let _ = r.idle();
                 RADIO_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
             });
         }

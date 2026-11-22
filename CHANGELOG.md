@@ -73,7 +73,20 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   `moq-subghz-pi` gains `open_hat_raw`, the part of `open_hat` that opens spidev and GPIO.
 
 * `moq-subghz-link`: the `Link` trait (`caps`, `send` returning a `TxReport`, `recv(buf, timeout)`, `idle`)
-  and an in-memory `loopback::pair` with deterministic drops. No binary uses it yet; nothing on the air changes.
+  and an in-memory `loopback::pair` with deterministic drops. Nothing on the air changes.
+
+### Link trait for the SX1276 code
+
+* **The SX1276 FSK and LoRa-mode code and the CatWAN writer now sit behind `moq_subghz_link::Link`**, in the new
+  `radios/moq-subghz-radio-sx1276` crate: `Sx1276FskTx` and `Sx1276FskRx` (the Pi HAT, from the two `radio.rs`
+  files), `Sx1276LoraTx` (from `lora2015-send`), `CatwanTx` (the `Q <hex>` writer from `moq-subghz-send`) and
+  `FileSink` (`--loopback`). The code was moved, not rewritten; frames, FEC, pacing, power and band checks and
+  the summary fields are unchanged. `moq-subghz-send` holds a `Box<dyn Link>` instead of its own `enum Link`.
+* `moq-subghz-send --link fsk` is the default and is the only value (`--catwan` and `--loopback` still pick the stick
+  and the file). The receiver's CatWAN and replay sources still read the stick's text lines (they feed `serial.log`
+  and the `X` line count), so only its `--radio` path goes through `Link`.
+* `Link::idle` returns a `Result` and `Link::take_tx_errors` is new (the stick reports `ERR tx` after `send`
+  returned); both have defaults. `LinkError::Io` prints its message as is.
 
 ### Changed on the air
 
