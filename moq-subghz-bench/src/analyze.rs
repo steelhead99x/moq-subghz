@@ -175,7 +175,12 @@ fn radio_loss(recv: &Value, send: &Value, run: &str) -> Result<Cell> {
         let tx = as_f(get(send, "frames_tx"), "frames_tx")?;
         return Ok(Cell::Float(round_to(100.0 * (1.0 - 0.0 / tx), 3)));
     }
-    scaled_round(req(recv, "radio_frame_loss", run)?, 100, 3, "radio_frame_loss")
+    scaled_round(
+        req(recv, "radio_frame_loss", run)?,
+        100,
+        3,
+        "radio_frame_loss",
+    )
 }
 
 /// The rows of `fsk.csv`: one per `f300-*` run that put radio frames on the air.

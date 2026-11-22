@@ -470,24 +470,64 @@ pub fn cap_plan(o: &Opts, exe: &str) -> Plan {
     )
 }
 
-/// The commands one pass runs, in order: copy the chunk list to the Pi, send it there.
-pub fn pass_plan(o: &Opts, pass: usize) -> [Plan; 2] {
+/// The remote scratch directory of one run: private (`mktemp -d`, mode 0700) and its own, so two
+/// runs on one Pi never share a chunk file.
+pub fn scratch_plan(o: &Opts) -> Plan {
+    crate::orch::ssh_plan(&o.pi, "mktemp -d /tmp/moq-bench.XXXXXXXXXX".to_string())
+}
+
+/// Removes the run's scratch directory, that exact directory only.
+pub fn cleanup_plan(o: &Opts, dir: &str) -> Plan {
+    crate::orch::ssh_plan(&o.pi, format!("rm -rf {}", shq(dir)))
+}
+
+/// The run's remote scratch directory, removed when this drops (on success, error or early return).
+struct RemoteDir<'a> {
+    o: &'a Opts,
+    path: String,
+}
+
+impl RemoteDir<'_> {
+    fn make(o: &Opts) -> Result<RemoteDir<'_>> {
+        let made = capture(&scratch_plan(o)).context("make the scratch directory on the Pi")?;
+        let path = made.trim().to_string();
+        crate::orch::valid_scratch(&path)?;
+        Ok(RemoteDir { o, path })
+    }
+}
+
+impl Drop for RemoteDir<'_> {
+    fn drop(&mut self) {
+        if let Err(e) = run_ok(&cleanup_plan(self.o, &self.path)) {
+            eprintln!(
+                "warning: could not remove {} on {}: {e:#}",
+                self.path, self.o.pi
+            );
+        }
+    }
+}
+
+/// The commands one pass runs, in order: copy the chunk list into the run's scratch directory `dir`
+/// on the Pi (its own file per pass), send it there.
+pub fn pass_plan(o: &Opts, pass: usize, dir: &str) -> [Plan; 2] {
     let lic = o.licence.resolve().flags(Side::Pi, &[]);
     let lic: String = lic.iter().map(|f| format!("{} ", shq(f))).collect();
     let local = o.out.join(&o.label).join(format!("pass{pass}.chunks.txt"));
+    let remote = format!("{dir}/pass{pass}.chunks.txt");
     [
         crate::orch::scp_plan(
             local.display().to_string(),
-            format!("{}:factory-bench/chunks.txt", crate::orch::scp_host(&o.pi)),
+            format!("{}:{remote}", crate::orch::scp_host(&o.pi)),
         ),
         crate::orch::ssh_plan(
             &o.pi,
             format!(
-                "{} factory-send --i-have-an-antenna --transmit --freq-mhz {} --power-dbm {} {lic}--app-dir {} factory-bench/chunks.txt",
+                "{} factory-send --i-have-an-antenna --transmit --freq-mhz {} --power-dbm {} {lic}--app-dir {} {}",
                 shq(&o.pi_tool),
                 o.freq_mhz,
                 o.power_dbm,
-                shq(&o.pi_app_dir)
+                shq(&o.pi_app_dir),
+                shq(&remote)
             ),
         ),
     ]
@@ -568,9 +608,12 @@ pub fn run(o: &Opts) -> Result<()> {
             o.chunk, o.passes
         );
         println!("{}", cap_plan(o, &exe).shell());
-        for p in (1..=o.passes.min(2)).flat_map(|k| pass_plan(o, k)) {
+        println!("{}", scratch_plan(o).shell());
+        let dir = "/tmp/moq-bench.XXXXXXXXXX";
+        for p in (1..=o.passes.min(2)).flat_map(|k| pass_plan(o, k, dir)) {
             println!("{}", p.shell());
         }
+        println!("{}", cleanup_plan(o, dir).shell());
         return Ok(());
     }
     if !o.i_have_an_antenna {
@@ -613,6 +656,7 @@ fn bench(
     if let Some(st) = cap.try_wait()? {
         bail!("stick-cap exited early with {st}: check --dev");
     }
+    let remote = RemoteDir::make(o)?;
     let t_run = Instant::now();
     let mut re = Reassembly::new(o.id as u8, chunks.len(), o.limit);
     let mut passes = Vec::new();
@@ -622,7 +666,7 @@ fn bench(
         fs::write(&local, list.join("\n") + "\n")?;
         let before = read()?.len();
         let t0 = Instant::now();
-        let plan = pass_plan(o, ps);
+        let plan = pass_plan(o, ps, &remote.path);
         run_ok(&plan[0])?;
         let tx = capture(&plan[1])?;
         let wall = t0.elapsed().as_secs_f64();
@@ -681,7 +725,13 @@ pub fn verdict(label: &str, passes: usize, re: &Reassembly, jpeg: &[u8]) -> Resu
     Ok(())
 }
 
-/// The Pi side: send each chunk line with the stock Dragino app, and print `<start> <end> <id:seq>`.
+/// The Pi side: send each chunk line with the stock Dragino app, and write `<start> <end> <id:seq>`
+/// for each to `out`.
+///
+/// The app does not exit on its own after a send, so it is cut off at `app_timeout` (the expected
+/// end). One that exits zero sooner is reported on stderr and its row ends in `early-exit`; one that
+/// exits non-zero sooner is a failed transmit: no row for it, and the whole run fails with its
+/// status and the tail of its stderr.
 ///
 /// `_permit` is the gate's answer ([`gate`]): the stock app is not started without one.
 pub fn send_chunks(
@@ -689,7 +739,9 @@ pub fn send_chunks(
     chunks: &Path,
     app_dir: &Path,
     app_timeout: Duration,
+    out: &mut impl std::io::Write,
 ) -> Result<()> {
+    use std::io::Read;
     use std::process::{Command, Stdio};
     let text = crate::cell::read_text(chunks, crate::cell::MAX_TEXT)?;
     let epoch = || {
@@ -705,24 +757,60 @@ pub fn send_chunks(
             .current_dir(app_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("start ./dragino_lora_app in {}", app_dir.display()))?;
-        // The stock app does not exit on its own after the send: the same cut-off as `timeout 1.3`.
+        // Read stderr as it comes, keeping only its tail, so a chatty app never blocks on a full pipe.
+        let mut err = child.stderr.take().context("no stderr pipe")?;
+        let tail = std::thread::spawn(move || {
+            let (mut keep, mut buf) = (Vec::<u8>::new(), [0u8; 4096]);
+            while let Ok(n @ 1..) = err.read(&mut buf) {
+                keep.extend_from_slice(&buf[..n]);
+                let cut = keep.len().saturating_sub(STDERR_TAIL);
+                keep.drain(..cut);
+            }
+            String::from_utf8_lossy(&keep).into_owned()
+        });
+        // The same cut-off as `timeout 1.3`.
         let t0 = Instant::now();
-        while child.try_wait()?.is_none() {
+        let early = loop {
+            if let Some(st) = child.try_wait()? {
+                break Some(st);
+            }
             if t0.elapsed() >= app_timeout {
                 child.kill()?;
                 child.wait()?;
-                break;
+                break None;
             }
             std::thread::sleep(Duration::from_millis(5));
-        }
+        };
+        // Only an early exit has a tail worth waiting for: a killed app's pipe may be held open by
+        // anything it started.
+        let tail = if early.is_some() {
+            tail.join().unwrap_or_default()
+        } else {
+            String::new()
+        };
         let head: Vec<&str> = line.splitn(3, ':').take(2).collect();
-        println!("{s:.9} {:.9} {}", epoch(), head.join(":"));
+        let id = head.join(":");
+        let mut note = "";
+        if let Some(st) = early {
+            if !st.success() {
+                bail!(
+                    "FAILED {id}: ./dragino_lora_app exited early with {st}; stderr tail: {:?}",
+                    tail.trim_end()
+                );
+            }
+            eprintln!("warning: {id}: ./dragino_lora_app exited 0 before the timeout, which it should not");
+            note = " early-exit";
+        }
+        writeln!(out, "{s:.9} {:.9} {id}{note}", epoch())?;
     }
     Ok(())
 }
+
+/// Bytes of the stock app's stderr kept for a failure message.
+const STDERR_TAIL: usize = 1024;
 
 #[cfg(test)]
 mod tests {
@@ -809,6 +897,75 @@ mod tests {
             .contains("not complete"));
     }
 
+    /// A scripted stand-in for the stock app, in its own directory.
+    fn fake_app(tag: &str, body: &str) -> (crate::testutil::Scratch, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::testutil::Scratch::new(tag);
+        let app = d.0.join("dragino_lora_app");
+        fs::write(&app, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
+        let list = d.0.join("chunks.txt");
+        fs::write(&list, "A:000/002:aa\nA:001/002:bb\n").unwrap();
+        (d, list)
+    }
+
+    fn send(tag: &str, body: &str, timeout_ms: u64) -> (Result<()>, String) {
+        let (d, list) = fake_app(tag, body);
+        let st = LicenceOpts::default().gate_args(true).station().unwrap();
+        let permit = gate(
+            &st,
+            Declared {
+                freq_mhz: 915.0,
+                power_dbm: 5,
+            },
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let r = send_chunks(
+            &permit,
+            &list,
+            &d.0,
+            Duration::from_millis(timeout_ms),
+            &mut out,
+        );
+        (r, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn an_app_cut_off_by_the_timeout_is_the_normal_path() {
+        let (r, out) = send("fs-timeout", "exec sleep 5", 150);
+        r.unwrap();
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows.len(), 2, "{out}");
+        assert!(
+            rows[0].ends_with(" A:000/002") && rows[1].ends_with(" A:001/002"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn an_app_that_exits_zero_early_is_marked() {
+        let (r, out) = send("fs-zero", "exit 0", 3000);
+        r.unwrap();
+        assert!(out.lines().all(|l| l.ends_with(" early-exit")), "{out}");
+        assert_eq!(out.lines().count(), 2);
+    }
+
+    #[test]
+    fn an_app_that_exits_nonzero_early_fails_the_run_with_no_row() {
+        let (r, out) = send("fs-fail", "echo radio not found >&2; exit 1", 3000);
+        let e = r.unwrap_err().to_string();
+        assert!(e.starts_with("FAILED A:000"), "{e}");
+        assert!(
+            e.contains("exit status: 1") && e.contains("radio not found"),
+            "{e}"
+        );
+        assert_eq!(
+            out, "",
+            "no timing row for the failed chunk, and the run stops"
+        );
+    }
+
     #[test]
     fn plan_is_printed_without_running() {
         let o = Opts {
@@ -830,14 +987,39 @@ mod tests {
             licence: LicenceOpts::default(),
             dry_run: true,
         };
-        let p = pass_plan(&o, 1);
+        let p = pass_plan(&o, 1, "/tmp/moq-bench.AAA");
         assert_eq!(
             p[0].shell(),
-            "scp -q -o BatchMode=yes -- out/x/pass1.chunks.txt pi:factory-bench/chunks.txt"
+            "scp -q -o BatchMode=yes -- out/x/pass1.chunks.txt pi:/tmp/moq-bench.AAA/pass1.chunks.txt"
         );
         assert!(p[1].shell().starts_with(
-            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/dragino"
+            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/dragino /tmp/moq-bench.AAA/pass1.chunks.txt"
         ), "{}", p[1].shell());
+        // two runs on one Pi share no remote path, and each removes only its own directory
+        let (a, b) = (
+            pass_plan(&o, 1, "/tmp/moq-bench.AAA"),
+            pass_plan(&o, 1, "/tmp/moq-bench.BBB"),
+        );
+        for (x, y) in a.iter().zip(&b) {
+            assert_ne!(x.shell(), y.shell());
+            assert!(!x.shell().contains("BBB") && !y.shell().contains("AAA"));
+        }
+        assert_ne!(
+            pass_plan(&o, 2, "/tmp/moq-bench.AAA")[0].shell(),
+            a[0].shell(),
+            "a distinct chunk file per pass"
+        );
+        assert!(a
+            .iter()
+            .all(|p| !p.shell().contains("factory-bench/chunks.txt")));
+        assert_eq!(
+            cleanup_plan(&o, "/tmp/moq-bench.AAA").shell(),
+            "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.AAA'"
+        );
+        assert_eq!(
+            scratch_plan(&o).shell(),
+            "ssh -o BatchMode=yes -- pi 'mktemp -d /tmp/moq-bench.XXXXXXXXXX'"
+        );
         assert_eq!(
             cap_plan(&o, "bench").shell(),
             "bench stick-cap --dev /dev/ttyACM0 --out out/x/stick"

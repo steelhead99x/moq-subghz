@@ -403,6 +403,7 @@ fn real_main() -> Result<()> {
                 &chunks,
                 &app_dir,
                 Duration::from_millis(timeout_ms),
+                &mut std::io::stdout().lock(),
             )
         }
         Cmd::Elf2uf2 { elf, uf2 } => {

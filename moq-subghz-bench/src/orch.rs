@@ -173,7 +173,10 @@ impl Cfg {
     fn prepare(&self, h: &dyn Host, name: &str) -> Result<()> {
         valid_name(name)?;
         let port = self.port()?;
-        ensure!(!port.starts_with('-'), "--port {port:?} looks like an option");
+        ensure!(
+            !port.starts_with('-'),
+            "--port {port:?} looks like an option"
+        );
         if !h.dry() {
             ensure!(
                 Path::new(&port).exists(),
@@ -351,6 +354,13 @@ pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
         c.pi
     );
     let p = d.stdout.trim();
+    valid_scratch(p)?;
+    Ok(p.to_string())
+}
+
+/// Refuse a scratch directory name the Pi made unless it is ours: under `/tmp/moq-bench.`, plain
+/// characters only. Every `rm -rf` of a scratch directory is of a name that passed this.
+pub fn valid_scratch(p: &str) -> Result<()> {
     ensure!(
         p.starts_with("/tmp/moq-bench.")
             && p.len() <= 200
@@ -359,7 +369,7 @@ pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
                 .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)),
         "the Pi gave an odd scratch directory name: {p:?}"
     );
-    Ok(p.to_string())
+    Ok(())
 }
 
 fn words(s: &str) -> Vec<String> {
@@ -549,9 +559,8 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         rxa += &format!(" {}", shq(&w));
     }
     let script = format!("cd ~/{} && {rxa}", shq(&c.pi_dir));
-    let rx = g
-        .h
-        .start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
+    let rx =
+        g.h.start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
     g.rx = Some(rx);
     g.h.sleep(Duration::from_secs(4));
     let mut a = vec![
@@ -575,12 +584,11 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let send_st = g.h.run(&send)?.code;
     g.rx = None;
     let recv_st = g.h.wait(rx)?; // ssh exits with the remote receiver's status
-    // scp's glob is expanded on the Pi; the Pi's copy is removed only after a good copy, and a
-    // failed copy keeps it, so from here the guard leaves the directory alone.
+                                 // scp's glob is expanded on the Pi; the Pi's copy is removed only after a good copy, and a
+                                 // failed copy keeps it, so from here the guard leaves the directory alone.
     g.scratch = None;
-    let mut copy_st = g
-        .h
-        .run(&scp_plan(
+    let mut copy_st =
+        g.h.run(&scp_plan(
             format!("{}:{scratch}/rx/*", scp_host(&c.pi)),
             format!("{}/", c.runs.join(n).display()),
         ))?

@@ -5,6 +5,20 @@
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### Bench correctness
+
+* `analyze`: a run that sent frames and received none is 100% radio loss in `fsk.csv`, not the
+  receiver's 0% gap estimate.
+* `package-051` compresses a log through a private temp file renamed into place after the licence
+  scan, so a rejected log no longer removes an existing output.
+* The LoRa logger window uses the sender's `--pass-gap-ms` and is printed.
+* `factory-bench` uses a private remote scratch directory per run and a chunk file per pass, and
+  removes only that directory.
+* `reverse` checks the serial port and run directories before any remote command, and kills the
+  receiver's ssh and removes its scratch directory on every early exit.
+* `factory-send` fails the run when the stock app exits non-zero before its timeout (no timing row)
+  and marks a zero exit before it.
+
 ### CI and hygiene
 
 * The leak guard fails closed (no git, an unreadable tracked file or a private licence file that

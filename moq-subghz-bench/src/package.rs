@@ -113,7 +113,10 @@ fn cp_bin(from: &Path, to: &Path) -> Result<()> {
 /// scan passed and the data is synced, so a rejected input never touches an existing output.
 fn gzip(g: &Guard, from: &Path, to: &Path) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut name = to.file_name().context("output has no file name")?.to_owned();
+    let mut name = to
+        .file_name()
+        .context("output has no file name")?
+        .to_owned();
     name.push(format!(".tmp-{}", std::process::id()));
     let tmp = to.with_file_name(name);
     let file = fs::OpenOptions::new()
@@ -413,7 +416,11 @@ mod tests {
         let e = gzip(&g, &from, &to).unwrap_err().to_string();
         assert!(e.contains("refusing to package"), "{e}");
         assert!(!to.exists(), "the half-written output is removed");
-        assert_eq!(fs::read_dir(&d.0).unwrap().count(), 1, "no temp file is left");
+        assert_eq!(
+            fs::read_dir(&d.0).unwrap().count(),
+            1,
+            "no temp file is left"
+        );
         // the same log without the value compresses
         fs::write(&from, vec![b'.'; (1 << 20) + 10]).unwrap();
         gzip(&g, &from, &to).unwrap();
@@ -433,7 +440,10 @@ mod tests {
         // a missing input is an error that leaves it alone too
         assert!(gzip(&g, &d.0.join("nope"), &to).is_err());
         assert_eq!(fs::read(&to).unwrap(), b"previous output");
-        let names: Vec<_> = fs::read_dir(&d.0).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let names: Vec<_> = fs::read_dir(&d.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(names.len(), 2, "{names:?}");
     }
 
