@@ -39,15 +39,16 @@ own values, then:
 
 ```sh
 B=target/release/moq-subghz-bench
-$B run --i-have-an-antenna myrun 300000:100000:6 330 --fec-k 8    # Pi to laptop
-$B rev --i-have-an-antenna myrun 300000:100000:12 330 --fec-k 8   # laptop to Pi
-$B bench --i-have-an-antenna                                      # the 8-run set
-$B bench-051 --i-have-an-antenna                                  # the stick 0.5.1 matrix (--part fsk, lora, all)
+$B run --i-have-an-antenna --transmit myrun 300000:100000:6 330 --fec-k 8    # Pi to laptop
+$B rev --i-have-an-antenna --transmit myrun 300000:100000:12 330 --fec-k 8   # laptop to Pi
+$B bench --i-have-an-antenna --transmit                                      # the 8-run set
+$B bench-051 --i-have-an-antenna --transmit                                  # the stick 0.5.1 matrix (--part fsk, lora, all)
 cargo run --release -p moq-subghz-report -- runs/*/     # table from run directories
 ```
 
-These transmit. Read [REGULATORY.md](REGULATORY.md) first, attach an antenna, and use the flags
-documented in the HOWTO. Details: [moq-subghz-bench/README.md](../moq-subghz-bench/README.md).
+These transmit. Read [REGULATORY.md](REGULATORY.md) first, attach an antenna, and pass
+`--i-have-an-antenna` and `--transmit` yourself (the bench never adds them), plus a licence or
+permit where the gate asks for one ([LICENSING.md](LICENSING.md)). See the HOWTO for the other flags. Details: [moq-subghz-bench/README.md](../moq-subghz-bench/README.md).
 
 ## Where the reports live
 

@@ -2,7 +2,9 @@
 //! `transmit`; the profile, planning and pacing stay in `moq-subghz-lora2015`.
 
 use anyhow::{bail, Result};
-use moq_subghz_link::{Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport};
+use moq_subghz_link::{
+    check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport,
+};
 use moq_subghz_pi::{open_hat_raw, sx_err, Hat};
 use std::time::{Duration, Instant};
 use sx1276::{LoRaConfig, PaOutput};
@@ -61,12 +63,7 @@ impl Link for Sx1276LoraTx {
     }
 
     fn send(&mut self, f: &[u8]) -> Result<TxReport, LinkError> {
-        if f.is_empty() {
-            return Err(LinkError::Empty);
-        }
-        if f.len() > self.caps.max_payload {
-            return Err(LinkError::TooLong);
-        }
+        check_packet(self.caps.max_payload, f)?;
         let toa = self.cfg.time_on_air_us(f.len() as u8);
         let t = Instant::now();
         self.r
@@ -77,6 +74,7 @@ impl Link for Sx1276LoraTx {
             airtime_us: toa as u64,
             attempts: 1,
             delivered: None,
+            acked: None,
             deliver_after_us: None,
         })
     }
@@ -89,5 +87,13 @@ impl Link for Sx1276LoraTx {
         self.r
             .sleep()
             .map_err(|e| LinkError::Io(sx_err(e).to_string()))
+    }
+}
+
+/// Best effort: sleep the radio if `idle` did not. Only the operating mode is written; nothing
+/// here transmits, and a drop has nowhere to send the error.
+impl Drop for Sx1276LoraTx {
+    fn drop(&mut self) {
+        let _ = self.r.sleep();
     }
 }

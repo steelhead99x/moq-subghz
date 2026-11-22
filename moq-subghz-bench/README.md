@@ -11,13 +11,18 @@ export PI=pi                   # ssh host
 export LKEY=$HOME/moq-subghz-key.hex
 export PKEY=$LKEY              # path of that same file on the Pi
 B=target/release/moq-subghz-bench
-$B run --i-have-an-antenna NAME 300000:100000:6 330 --fec-k 8     # Pi to laptop
-$B rev --i-have-an-antenna NAME 300000:100000:12 330 --fec-k 8     # laptop to Pi
-$B bench --i-have-an-antenna                                       # the 8-run rind off/on matrix
+$B run --i-have-an-antenna --transmit NAME 300000:100000:6 330 --fec-k 8     # Pi to laptop
+$B rev --i-have-an-antenna --transmit NAME 300000:100000:12 330 --fec-k 8     # laptop to Pi
+$B bench --i-have-an-antenna --transmit                                       # the 8-run rind off/on matrix
 ```
 
-Every subcommand that goes over the air needs `--i-have-an-antenna`, and sender arguments after
-the profile are passed on untouched, so any other flag the sender requires is yours to give.
+Every subcommand that goes over the air needs both `--i-have-an-antenna` and `--transmit`, the
+same two flags the senders need (the licence gate in `moq-subghz-send` and `lora2015-send` also
+wants a licence or permit, see [docs/LICENSING.md](../docs/LICENSING.md)). The bench never adds
+either one for you: it forwards them to the sender only when you pass them, as options of the
+subcommand or among the sender arguments after the profile, and `--dry-run` shows them only then.
+A real run without them stops with `refusing to transmit without ...` before anything starts.
+Sender arguments are passed on untouched, so any other flag the sender requires is yours to give.
 `--dry-run` prints the exact commands and runs nothing but the sender's own `--dry-run`. A run that
 fails ends `FAILED <run>: <why>` with exit 1; a matrix ends `BENCH_FAILED: <n> run(s) failed`.
 

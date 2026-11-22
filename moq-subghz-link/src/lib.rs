@@ -7,6 +7,7 @@
 //! radio and a model of one. A link never transmits unless the caller built it to and called
 //! [`Link::send`]; nothing here opens hardware.
 
+pub mod conformance;
 mod loopback;
 
 use std::fmt;
@@ -16,6 +17,19 @@ pub use loopback::{pair, LoopbackCfg, LoopbackLink, Loss};
 
 /// The largest packet a wire v5 frame needs: [`moq_subghz_wire::MAX_FRAME`].
 pub const MAX_FRAME: usize = moq_subghz_wire::MAX_FRAME;
+
+/// The checks every [`Link::send`] makes first: a packet is 1..=`max_payload` bytes. Backends call
+/// this so an empty or oversize packet is refused the same way everywhere, before anything is
+/// queued or keyed.
+pub fn check_packet(max_payload: usize, packet: &[u8]) -> Result<(), LinkError> {
+    if packet.is_empty() {
+        Err(LinkError::Empty)
+    } else if packet.len() > max_payload {
+        Err(LinkError::TooLong)
+    } else {
+        Ok(())
+    }
+}
 
 /// What kind of channel a link is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,13 +82,21 @@ pub struct LinkCaps {
 /// What one [`Link::send`] cost and, when the link can tell, what became of the packet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TxReport {
-    /// Time the channel was occupied: airtime plus backoff, ACK wait and retries.
+    /// Time the channel was occupied: airtime plus backoff, ACK wait and retries. A link that
+    /// cannot observe this reports the computed airtime (see its docs), never 0 for a send that
+    /// went out.
     pub busy_us: u64,
-    /// On-air time of the attempts only; duty-cycle accounting counts this.
+    /// On-air time of the attempts only; duty-cycle accounting counts this. Measured or computed
+    /// from the radio settings, per link; 0 only for a link with no air.
     pub airtime_us: u64,
     pub attempts: u32,
-    /// `None` when the link cannot know (a real radio without an ACK).
+    /// Whether the far side got at least one copy. `None` when the link cannot know (a real
+    /// radio). A model knows this even when the sender would not: see `acked`.
     pub delivered: Option<bool>,
+    /// Whether the sender saw an ACK, which is all a real sender can know. `None` when no ACK
+    /// exists (broadcast, or a link without one). With ACKs on, `delivered == Some(true)` and
+    /// `acked == Some(false)` means the data arrived but every ACK was lost.
+    pub acked: Option<bool>,
     /// Emulations only: when the packet reaches the receiver, after the send started.
     pub deliver_after_us: Option<u64>,
 }
@@ -133,6 +155,8 @@ pub trait Link: Send {
     fn caps(&self) -> &LinkCaps;
 
     /// Send one packet and return what it cost. Blocks until the packet has left the radio.
+    /// An empty packet is `Empty` and one over `caps().max_payload` is `TooLong`
+    /// ([`check_packet`]); a refused or failed send leaves nothing queued and is not a send.
     fn send(&mut self, packet: &[u8]) -> Result<TxReport, LinkError>;
 
     /// Wait up to `timeout` for one packet and copy it to `buf`. `Ok(None)` is a timeout.
@@ -140,7 +164,9 @@ pub trait Link: Send {
     fn recv(&mut self, buf: &mut [u8], timeout: Duration) -> Result<Option<RxMeta>, LinkError>;
 
     /// Finish up and put the radio in standby: flush files, stop a stick, drain its queue.
-    /// Every backend must leave the radio not transmitting.
+    /// Every backend must leave the radio not transmitting, and must say so when it cannot:
+    /// a failure to stop is an `Err`, never swallowed. Dropping a real radio does the same
+    /// best-effort stop, silently.
     fn idle(&mut self) -> Result<(), LinkError> {
         Ok(())
     }

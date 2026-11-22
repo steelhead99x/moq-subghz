@@ -7,7 +7,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-use crate::{Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport, MAX_FRAME};
+use crate::{
+    check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport, MAX_FRAME,
+};
 
 /// Which packets a [`LoopbackLink`] drops on send.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,10 +43,15 @@ impl Default for LoopbackCfg {
     }
 }
 
+/// Most bytes one direction holds in flight before a send is `Busy`.
+const QUEUE_BYTES: usize = 16 << 20;
+
 #[derive(Default)]
 struct State {
     /// Packets in flight, with the sender's clock when each left.
     q: VecDeque<(Vec<u8>, u64)>,
+    /// Bytes in `q`.
+    queued: usize,
     /// One end was dropped: no more sends, and receives end once the queue is empty.
     closed: bool,
 }
@@ -134,14 +141,16 @@ impl Link for LoopbackLink {
     }
 
     fn send(&mut self, packet: &[u8]) -> Result<TxReport, LinkError> {
-        if packet.is_empty() {
-            return Err(LinkError::Empty);
-        }
-        if packet.len() > self.caps.max_payload {
-            return Err(LinkError::TooLong);
-        }
-        if self.tx.lock().closed {
-            return Err(LinkError::Io("peer closed".into()));
+        check_packet(self.caps.max_payload, packet)?;
+        {
+            let st = self.tx.lock();
+            if st.closed {
+                return Err(LinkError::Io("peer closed".into()));
+            }
+            // a receiver that never drains must not grow memory without bound
+            if st.queued + packet.len() > QUEUE_BYTES {
+                return Err(LinkError::Busy);
+            }
         }
         self.sent += 1;
         let airtime_us = match self.cfg.bit_rate {
@@ -151,7 +160,10 @@ impl Link for LoopbackLink {
         self.clock_us += airtime_us;
         let dropped = self.drops();
         if !dropped {
-            self.tx.lock().q.push_back((packet.to_vec(), self.clock_us));
+            let mut st = self.tx.lock();
+            st.queued += packet.len();
+            st.q.push_back((packet.to_vec(), self.clock_us));
+            drop(st);
             self.tx.cv.notify_one();
         }
         Ok(TxReport {
@@ -159,6 +171,7 @@ impl Link for LoopbackLink {
             airtime_us,
             attempts: 1,
             delivered: Some(!dropped),
+            acked: None,
             deliver_after_us: None,
         })
     }
@@ -177,6 +190,7 @@ impl Link for LoopbackLink {
                 Ok(None)
             };
         };
+        st.queued -= p.len();
         if p.len() > buf.len() {
             return Err(LinkError::TooLong);
         }

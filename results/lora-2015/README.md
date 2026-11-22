@@ -135,7 +135,7 @@ The small picture at SF7/125 takes about 3.7 s per pass, so 30 s is about 8 pass
   --secs 40 --out runs/smoke --reference results/lora-2015/frames/f160x120-q20.jpg
 # Pi, in another terminal, a few seconds after the logger prints "listening"
 ssh pi 'cd lora2015 && ./lora2015-send --mode chunk --file frames/f160x120-q20.jpg \
-  --profile sf7-125 --power 5 --passes 20 --max-secs 30 --tx-log smoke-tx.csv --i-have-an-antenna'
+  --profile sf7-125 --power 5 --passes 20 --max-secs 30 --tx-log smoke-tx.csv --i-have-an-antenna --transmit'
 ```
 
 It passes when `runs/smoke/images.csv` shows `complete` 1 and `matches_reference` 1, and

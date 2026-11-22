@@ -72,7 +72,7 @@ moq-subghz-recv --clock-check "$PI"                       # -> remote_minus_loca
 moq-subghz-recv --port "$PORT" --profile 300000:100000:6 --secs 340 --out runs/f300_on \
     --play --decode --raw-log --clock-offset-ms=$OFF --key-file "$LKEY"
 # Pi (3 s later)
-./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/f300_on_send.jsonl --i-have-an-antenna \
+./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/f300_on_send.jsonl --i-have-an-antenna --transmit \
     --fec-k 8 --key-file "$PKEY"
 ```
 
@@ -83,7 +83,7 @@ moq-subghz-recv --clock-check "$PI"                       # X = Pi minus laptop;
 ssh "$PI" "cd ~/moq-subghz && ./moq-subghz-recv --radio --profile 350000:100000:14:x --secs 340 \
     --out /tmp/r350_off --decode --raw-log --clock-offset-ms=-$X"
 moq-subghz-send --catwan "$PORT" --profile 350000:100000:14:x --secs 330 \
-    --log runs/r350_off.send.jsonl --i-have-an-antenna --fec-k 8
+    --log runs/r350_off.send.jsonl --i-have-an-antenna --transmit --fec-k 8
 ```
 
 Forward profiles: `300000:100000:6`, `350000:100000:6:x`. A clock check ran every 5 s throughout

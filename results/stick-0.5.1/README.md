@@ -182,10 +182,10 @@ scp target/armv7-unknown-linux-musleabihf/release/lora2015-send PI:lora2015/ && 
 export PORT=/dev/ttyACM0 PI=pi             # the stick must report catwan-fw 0.5.1; add --no-play when ffplay is not installed
 export PATH="$PATH:/path/to/ssdv"          # optional: the ssdv tool, for the SSDV pictures
 B=target/release/moq-subghz-bench
-$B demo-051 --i-have-an-antenna             # about 6 minutes, writes to runs/demo
+$B demo-051 --i-have-an-antenna --transmit             # about 6 minutes, writes to runs/demo
 ```
 
-The full benchmark (about 65 minutes): `moq-subghz-bench bench-051 --i-have-an-antenna`. Then `moq-subghz-bench package-051 RUNS DEMO_DIR results/stick-0.5.1` and
+The full benchmark (about 65 minutes): `moq-subghz-bench bench-051 --i-have-an-antenna --transmit`. Then `moq-subghz-bench package-051 RUNS DEMO_DIR results/stick-0.5.1` and
 `moq-subghz-bench analyze RUNS results/stick-0.5.1` rebuild this folder's CSVs and charts. `--part lora --reps 1` runs one repeat of the picture sweep (about 15 minutes).
 
 | subcommand | what |
