@@ -11,6 +11,12 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   This first step adds `analyze` (was `scripts/analyze-051.py`), `factory-bench`, `stick-cap` and
   `factory-send` (were `results/factory-firmware/tools/`) and `elf2uf2` (was
   `firmware/catwan-fw/elf2uf2.py`). The old scripts stay until the later steps land.
+* The orchestration follows: `run`, `rev`, `bench`, `bench-051`, `lora2015-run`, `demo-051`,
+  `clocklog`, `package-051`, `lora2015-table` and `lora2015-frames` (were the matching
+  `scripts/*.sh`). `--dry-run` prints the exact commands. A run that fails still ends
+  `FAILED <run>: <why>` with exit 1, and a matrix with a failed run ends `BENCH_FAILED`.
+  Unlike the shell, they need `--i-have-an-antenna` and `--port` from you: no serial device is
+  assumed, and the Pi's per frame log of a lora2015 run is checked too.
 
 ### Docs
 

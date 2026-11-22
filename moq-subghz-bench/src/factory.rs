@@ -6,7 +6,7 @@
 //! This transmits, so it needs `--i-have-an-antenna` and the serial port of the stick as `--dev`.
 
 use crate::cell::{num, read_dict, round_to};
-use crate::exec::{run_ok, Plan};
+use crate::exec::{capture, run_ok, Plan};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use clap::Args;
@@ -509,7 +509,7 @@ fn bench(
         let t0 = Instant::now();
         let plan = pass_plan(o, ps);
         run_ok(&plan[0])?;
-        let tx = crate::exec::capture(&plan[1])?;
+        let tx = capture(&plan[1])?;
         let wall = t0.elapsed().as_secs_f64();
         std::thread::sleep(Duration::from_secs(2));
         fs::write(d.join(format!("pass{ps}.pi-tx.log")), &tx)?;

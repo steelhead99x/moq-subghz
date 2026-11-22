@@ -104,30 +104,10 @@ fn open_raw(path: &PathBuf) -> Result<std::fs::File> {
 }
 
 pub fn run(o: &Opts) -> Result<()> {
-    let dev = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
-        .open(&o.dev)
-        .with_context(|| format!("open {}", o.dev.display()))?;
+    let dev = crate::serial::open(&o.dev, crate::serial::Baud::B9600)?;
     let fd = dev.as_raw_fd();
-    // SAFETY: plain termios calls on a descriptor we own, on a zeroed struct we then fill in.
+    // SAFETY: installs handlers that only set a flag.
     unsafe {
-        let mut t: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(fd, &mut t) != 0 {
-            bail!("{} is not a serial device", o.dev.display());
-        }
-        t.c_iflag = 0;
-        t.c_oflag = 0;
-        t.c_lflag = 0;
-        t.c_cflag = libc::CS8 | libc::CREAD | libc::CLOCAL;
-        libc::cfsetispeed(&mut t, libc::B9600);
-        libc::cfsetospeed(&mut t, libc::B9600);
-        t.c_cc[libc::VMIN] = 0;
-        t.c_cc[libc::VTIME] = 0;
-        if libc::tcsetattr(fd, libc::TCSANOW, &t) != 0 {
-            bail!("set 9600 baud on {}", o.dev.display());
-        }
         libc::signal(libc::SIGINT, on_signal as usize);
         libc::signal(libc::SIGTERM, on_signal as usize);
     }
@@ -201,8 +181,6 @@ pub fn run(o: &Opts) -> Result<()> {
     }
     Ok(())
 }
-
-use std::os::unix::fs::OpenOptionsExt;
 
 #[cfg(test)]
 mod tests {
