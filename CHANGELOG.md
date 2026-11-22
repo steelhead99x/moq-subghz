@@ -55,6 +55,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   capped read); names with bidirectional or invisible characters and the `YOUR` false positive are
   fixed; a relative `XDG_CONFIG_HOME` is ignored. `.gitignore` and the leak guard cover both
   `licence.toml` and `license.toml` and variants.
+* `lora2015-log` runs the receive gate before opening the stick (`--licence-file`, `--rx-amateur`, `--amateur`); an amateur profile needs licensed mode or `--rx-amateur`.
 
 ### Fixed
 

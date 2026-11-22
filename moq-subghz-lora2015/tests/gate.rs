@@ -116,3 +116,42 @@ fn run_output_holds_the_licence_only_without_redaction() {
         }
     }
 }
+
+fn log(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_lora2015-log"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+const PORT: &str = "/nonexistent/moq-test-port";
+
+#[test]
+fn log_opens_the_port_only_with_a_permit() {
+    let d = TempDir::new("l15log");
+    let out = d.path().join("run");
+    let out = out.to_str().unwrap();
+    let base = ["--mode", "chunk", "--port", PORT, "--out", out];
+    let run = |extra: &[&str]| {
+        let mut a = base.to_vec();
+        a.extend_from_slice(extra);
+        text(&log(&a)).1
+    };
+    // ISM receive needs no flag: the run gets as far as the port.
+    assert!(run(&[]).contains(PORT));
+    // Amateur profile: refused before the port without --rx-amateur or a licence.
+    let e = run(&["--amateur"]);
+    assert!(
+        e.contains("amateur profiles need licensed mode") && !e.contains(PORT),
+        "{e}"
+    );
+    let e = run(&["--amateur", "--transmit"]);
+    assert!(!e.contains(PORT), "{e}");
+    assert!(run(&["--amateur", "--rx-amateur"]).contains(PORT));
+    let keys = TempDir::new("l15log-key");
+    let lic = keys.licence_file();
+    assert!(run(&["--amateur", "--licence-file", lic.to_str().unwrap()]).contains(PORT));
+    // A bad licence file stops the run.
+    let e = run(&["--licence-file", "/nonexistent/licence.toml"]);
+    assert!(e.contains("licence") && !e.contains(PORT), "{e}");
+}
