@@ -99,6 +99,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * Key files must be readable only by their owner.
 * The bench scripts quote key paths and pass the receiver's key separately.
 * The Pi radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
+* Two committed `.pyc` files are removed, `.gitignore` covers Python bytecode, and CI fails if one is committed again.
 
 ### Results
 
