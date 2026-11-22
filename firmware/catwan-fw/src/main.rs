@@ -1,7 +1,7 @@
-//! CatWAN USB Stick RP2040 link-test firmware: the onboard RFM95W (SX1276) driven by the
+//! RP2040-based device link-test firmware: the onboard RFM95W (SX1276) driven by the
 //! `sx1276` crate, controlled over USB CDC serial with a line protocol.
 //!
-//! Wiring (from the CatWAN KiCad netlist): SPI0 MISO=GPIO16, NSS=GPIO17, SCK=GPIO18,
+//! Wiring (from the RP2040-based device KiCad netlist): SPI0 MISO=GPIO16, NSS=GPIO17, SCK=GPIO18,
 //! MOSI=GPIO19, RESET=GPIO21, DIO0=GPIO10, RX LED=GPIO25. 12 MHz crystal, W25Q16 flash.
 //!
 //! Commands (one per line):
@@ -192,7 +192,7 @@ fn main() -> ! {
     let mut usb = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x2e8a, 0x000a))
         .strings(&[StringDescriptors::default()
             .manufacturer("kixel sx1276-rs")
-            .product("CatWAN sx1276-rs link fw")
+            .product("RP2040-based device")
             .serial_number("613863E6354E26A3")])
         .unwrap()
         .device_class(usbd_serial::USB_CLASS_CDC)

@@ -16,7 +16,7 @@ runs the whole pipeline through a file, with no radios.
 |---|---|
 | Raspberry Pi 2 Model B (any Pi with a 40-pin header works) | sender: makes the video and transmits it |
 | Dragino LoRa/GPS HAT, **915 MHz version** | the Pi's radio (the GPS part goes unused) |
-| Electronic Cats **CatWAN USB Stick RP2040**, 915 MHz | receiver: plugs into your laptop |
+| **RP2040-based device**, 915 MHz | receiver: plugs into your laptop |
 | two 915 MHz antennas | both boards come with one |
 | a laptop (macOS or Linux) | runs the receiver and the player |
 
@@ -35,7 +35,7 @@ You don't need a camera. The sender uses ffmpeg's `testsrc2` pattern by default.
 | DIO0 | 4 | 7 |
 | DIO1 | not wired | |
 
-**CatWAN stick**
+**RP2040-based device**
 
 | radio pin | RP2040 GPIO |
 |---|---|
@@ -85,12 +85,12 @@ earlier `firmware/catwan-fw-v5.uf2` (0.5.0), which answers `I` with `sx_version=
    [picotool](https://github.com/raspberrypi/picotool):
    ```sh
    picotool info -a                              # check that it's the stick
-   picotool save -a catwan-backup.bin
+   picotool save -a rp2040-backup.bin
    ```
 2. Flash it: `picotool load -x firmware/catwan-fw-0.5.1.uf2`, or drag the `.uf2` onto the
    `RPI-RP2` drive that appears.
 3. Check it: open the serial port (macOS `/dev/cu.usbmodem*`, Linux `/dev/ttyACM0`), type `I`
-   and press Enter. It should answer `I catwan-fw 0.5.1 sx_version=0x12 ...`. If it shows
+   and press Enter. The firmware banner should report version `0.5.1` and `sx_version=0x12`. If it shows
    `sx_version=0x00`, send `X` (re-initialise the radio); on 0.5.0 send an `L` command first.
 
 To build the firmware yourself instead:
@@ -99,7 +99,7 @@ To build the firmware yourself instead:
 cd firmware/catwan-fw
 rustup target add thumbv6m-none-eabi
 cargo build --release
-python3 elf2uf2.py target/thumbv6m-none-eabi/release/catwan-fw catwan-fw.uf2
+python3 elf2uf2.py target/thumbv6m-none-eabi/release/catwan-fw rp2040-receiver.uf2
 ```
 
 ## 5. First picture

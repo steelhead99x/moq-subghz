@@ -4,7 +4,7 @@ version = "0.5.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/steelhead99x/moq-subghz"
-description = "USB-serial SX1276 link-test firmware for the Electronic Cats CatWAN USB Stick RP2040"
+description = "USB-serial SX1276 link-test firmware for the RP2040-based device"
 
 [workspace]
 

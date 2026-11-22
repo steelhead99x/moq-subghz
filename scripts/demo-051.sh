@@ -1,5 +1,5 @@
 #!/bin/bash
-# A short guided demo of moq-subghz on the CatWAN stick (catwan-fw 0.5.1): about 6 minutes, all over the air.
+# A short guided demo of moq-subghz on the RP2040-based device (firmware 0.5.1): about 6 minutes, all over the air.
 #   1. checks the stick and the Pi
 #   2. live FSK video for 45 s, then a still and a short clip from what was received
 #   3. one small picture sent three 2015 ways (chunked JPEG, SSDV, LoRaWAN-framed) at SF7/500
@@ -19,7 +19,7 @@ os.write(fd, b'I\n'); end = time.time() + 1.5; out = b''
 while time.time() < end:
     if select.select([fd], [], [], 0.1)[0]: out += os.read(fd, 4096)
 line = [l for l in out.decode(errors='replace').splitlines() if l.startswith('I catwan-fw')]
-print(line[-1] if line else 'no banner: wrong port, or not catwan-fw'); sys.exit(0 if line and 'sx_version=0x12' in line[-1] else 1)
+print(line[-1] if line else 'no firmware banner: check the USB serial port and image'); sys.exit(0 if line and 'sx_version=0x12' in line[-1] else 1)
 PY
 ssh "$PI" "test -x ~/$PI_DIR/moq-subghz-send && test -x ~/lora2015/lora2015-send && echo pi: senders present" || exit 1
 say "2. live FSK video, 45 s, FEC k=8"

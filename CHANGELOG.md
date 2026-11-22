@@ -31,7 +31,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * **Relay tokens stay off command lines.** `moq-subghz-recv --publish` with no URL reads
   `MOQ_SUBGHZ_RELAY`, passes the URL to the publisher in its environment, and refuses a URL with
   a query string on the command line.
-* **`catwan-fw` enforces the band and power limits and never drops a queued frame.** Source
+* **Receiver firmware enforces the band and power limits and never drops a queued frame.** Source
   only: the shipped images predate it (see REVIEW.md).
 * **`sx1276` long-FSK receive can't return a stale or spliced packet.** New
   `FskConfig::crc_auto_clear`, off in the long-mode readers. Needs a radio test.
@@ -41,7 +41,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * **Bench scripts fail a run when either end fails**, instead of printing DONE.
 * **The factory comparison uses one timing window** for both stacks: about 8 times, not 9.
 
-* **`catwan-fw` 0.5.1: the radio answers `I` right after power-up.** The firmware left the SX1276
+* **Receiver firmware 0.5.1 answers `I` right after power-up.** The firmware left the SX1276
   RESET line low (the chip held in reset) until the first `L` or `F` command, so an `I` sent
   first read `sx_version=0x00` and looked like a dead radio. The radio is not dead. 0.5.1 pulses
   RESET at boot and retries until `RegVersion` reads 0x12, retries once more inside `L` and `F`
@@ -56,7 +56,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   unsealed) for a fixed set of synthetic objects. It fails if a byte on the air changes.
 * `RLine` (a parsed `R` line) keeps the line's `t_us` and `snr`, which `parse_r_line` used to drop.
 
-* `results/stick-0.5.1/`: the full over-the-air benchmark on `catwan-fw` 0.5.1. 72 still-picture runs
+* `results/stick-0.5.1/`: the full over-the-air benchmark on receiver firmware 0.5.1. 72 still-picture runs
   (chunked JPEG, SSDV, LoRaWAN-framed at SF7/125, SF7/250, SF7/500, SF8/500) and 8 live FSK video runs,
   next to the factory baseline, plus a 6 minute demo (`scripts/demo-051.sh`). `scripts/run2.sh` now works
   without extra sender arguments and without ffplay (`PLAY=`).
@@ -68,7 +68,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * **`moq-subghz-lora2015`: a 2015-style LoRa image test**, in `results/lora-2015/`. A Pi sender
   (`lora2015-send`) sends a test picture in real LoRa mode as chunked JPEG, SSDV packets or
   LoRaWAN-framed uplinks (no network behind them), and a host logger (`lora2015-log`) reads it on the
-  CatWAN stick and writes CSV. Built and tested without radios; the airtime table is calculated,
+  RP2040-based device and writes CSV. Built and tested without radios; the airtime table is calculated,
   not measured. The FSK path and the existing tools are unchanged.
   `moq-subghz-pi` gains `open_hat_raw`, the part of `open_hat` that opens spidev and GPIO.
 
@@ -77,13 +77,13 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Link trait for the SX1276 code
 
-* **The SX1276 FSK and LoRa-mode code and the CatWAN writer now sit behind `moq_subghz_link::Link`**, in the new
+* **The SX1276 FSK and LoRa-mode code and the RP2040 device writer now sit behind `moq_subghz_link::Link`**, in the new
   `radios/moq-subghz-radio-sx1276` crate: `Sx1276FskTx` and `Sx1276FskRx` (the Pi HAT, from the two `radio.rs`
   files), `Sx1276LoraTx` (from `lora2015-send`), `CatwanTx` (the `Q <hex>` writer from `moq-subghz-send`) and
   `FileSink` (`--loopback`). The code was moved, not rewritten; frames, FEC, pacing, power and band checks and
   the summary fields are unchanged. `moq-subghz-send` holds a `Box<dyn Link>` instead of its own `enum Link`.
 * `moq-subghz-send --link fsk` is the default and is the only value (`--catwan` and `--loopback` still pick the stick
-  and the file). The receiver's CatWAN and replay sources still read the stick's text lines (they feed `serial.log`
+  and the file). The receiver's RP2040-based device and replay sources still read the stick's text lines (they feed `serial.log`
   and the `X` line count), so only its `--radio` path goes through `Link`.
 * `Link::idle` returns a `Result` and `Link::take_tx_errors` is new (the stick reports `ERR tx` after `send`
   returned); both have defaults. `LinkError::Io` prints its message as is.
@@ -146,5 +146,5 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ## Bench release, 2026-11-17
 
-The first working version: live H.264 over SX1276 FSK from a Raspberry Pi 2 to a CatWAN USB
+The first working version: live H.264 over SX1276 FSK from a Raspberry Pi 2 to an RP2040 USB device
 stick, with optional encryption, and the eight measured runs in `results/video/`.

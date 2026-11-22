@@ -55,7 +55,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     fec_k: u8,
     /// Zero-pad radio frames shorter than this (a tiny frame right after a 255 B one is
-    /// the one the CatWAN misses; 0 = off)
+    /// the one the RP2040-based device misses; 0 = off)
     #[arg(long, default_value_t = 96)]
     min_frame: usize,
     /// Drop (MoQ-style, whole rest of group) objects older than this before they start TX
@@ -76,15 +76,15 @@ struct Args {
     /// Per-object JSON lines log
     #[arg(long)]
     log: Option<String>,
-    /// Radio link. `fsk` is the SX1276 in FSK mode: the Pi HAT, or the CatWAN stick or a file when
+    /// Radio link. `fsk` is the SX1276 in FSK mode: the Pi HAT, or the RP2040-based device or a file when
     /// `--catwan` or `--loopback` is given.
     #[arg(long, value_enum, default_value_t = LinkKind::Fsk)]
     link: LinkKind,
-    /// Transmit through a CatWAN stick (sx1276-rs catwan-fw) on this serial port instead of
-    /// the local SX1276 (reverse direction: Mac -> CatWAN -> Pi)
+    /// Transmit through an RP2040-based device on this serial port instead of
+    /// the local SX1276 (reverse direction: Mac -> RP2040-based device -> Pi)
     #[arg(long)]
     catwan: Option<String>,
-    /// No radio: write frames as CatWAN `R` lines to FILE, paced at the FSK airtime
+    /// No radio: write frames as RP2040-based device `R` lines to FILE, paced at the FSK airtime
     #[arg(long)]
     loopback: Option<String>,
     #[arg(long, default_value_t = 8_000_000)]
@@ -544,7 +544,7 @@ fn main() -> Result<()> {
                 let t = Instant::now();
                 let mut errs = link.take_tx_errors();
                 if errs > 0 {
-                    eprintln!("tx error: CatWAN reported {errs}");
+                    eprintln!("tx error: RP2040 device reported {errs}");
                 }
                 if let Err(e) = link.send(&f) {
                     errs += 1;

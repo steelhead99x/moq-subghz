@@ -1,10 +1,10 @@
 # results/video: rind off/on benchmark, 2026-11-17
 
 Eight 330 s runs, 10:43-11:32 PT, back to back, in this order: f300_off, f300_on, r300_off,
-r300_on, f350_off, f350_on, r350_off, r350_on. `f` = Pi 2 -> CatWAN/Mac, `r` = Mac -> CatWAN -> Pi 2.
+r300_on, f350_off, f350_on, r350_off, r350_on. `f` = Pi 2 -> RP2040-based device on a Mac, `r` = Mac -> RP2040-based device -> Pi 2.
 
 Fixed settings: 915.0 MHz, +5 dBm, 320x240, 15 fps, GOP 15, x264 ultrafast/zerolatency at 180 kbit/s,
-FEC k=8, 96 B minimum frame, max object age 1000 ms. CatWAN firmware v5
+FEC k=8, 96 B minimum frame, max object age 1000 ms. RP2040 device firmware v5
 (`firmware/catwan-fw-v5.uf2`, sha256 fe86cc05...). rind main d2dc35bd796aaadc42df56aee0f1526cdee94b66,
 ChaCha20-Poly1305. Antennas ~1 m apart, indoors.
 
@@ -57,7 +57,7 @@ your own ssh host, serial device, and key file (mode 0600, never commit it):
 
 ```sh
 export PI=pi                     # ssh host of the Pi
-export PORT=/dev/cu.usbmodemXXX  # macOS CatWAN port; Linux is typically /dev/ttyACM0
+export PORT=/dev/cu.usbmodemXXX  # macOS USB serial port; Linux is typically /dev/ttyACM0
 export LKEY="$HOME/moq-subghz-key.hex"
 export PKEY="$LKEY"              # path of that same file on the Pi
 ( umask 077; openssl rand -hex 32 > "$LKEY" )

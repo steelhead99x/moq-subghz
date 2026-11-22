@@ -13,7 +13,7 @@ and the cause is not found ([results/stick-0.5.1](results/stick-0.5.1/README.md)
 some code changes, see the [changelog](CHANGELOG.md).
 
 ```
-Pi 2  ──▶  915 MHz FSK radio  ──▶  CatWAN USB stick  ──▶  laptop
+Pi 2  ──▶  915 MHz FSK radio  ──▶  RP2040-based device  ──▶  laptop
 ```
 
 ## Why it's interesting
@@ -46,13 +46,13 @@ exists in [`results/`](results/).
 
 | link | state | what exists today |
 |---|---|---|
-| SX1276 FSK, live video | **Measured** | Pi 2 B to CatWAN stick, 915 MHz, 300 and 350 kbit/s radio rate ([results](results/video/table.md)) |
-| SX1276 LoRa mode, still pictures | **Measured** | chunked JPEG, SSDV, LoRaWAN-style frames, Pi 2 B to CatWAN ([results](results/stick-0.5.1/README.md)) |
+| SX1276 FSK, live video | **Measured** | Pi 2 B to RP2040-based device, 915 MHz, 300 and 350 kbit/s radio rate ([results](results/video/table.md)) |
+| SX1276 LoRa mode, still pictures | **Measured** | chunked JPEG, SSDV, LoRaWAN-style frames, Pi 2 B to RP2040-based device ([results](results/stick-0.5.1/README.md)) |
 | Wi-Fi HaLow (802.11ah) | **Modeled** | emulation and airtime math only. The module and its pins are not decided, there is no real driver. The emulation is on an unmerged branch, not in `main` |
 | 2.4 GHz (Wi-Fi, ESP-NOW, raw 802.11) | **Not started** | no code. Candidate link, open questions in [docs/LINKS.md](docs/LINKS.md#24-ghz) |
 | 5.8 GHz (Wi-Fi 5/6 or a dedicated video link) | **Not started** | no code. Candidate link, open questions in [docs/LINKS.md](docs/LINKS.md#58-ghz) |
 | SX1262 / LR1121 | **Planned** | a driver is in the plan, nothing written |
-| Meshtastic node (T1000-E class) | **Planned** | a read-only host bridge is in the plan, nothing written here |
+| P2P mesh networks (T1000-E-class nodes) | **Planned** | a read-only host bridge is in the plan, nothing written here |
 | Amateur radio and amateur satellite bridge | **Not started** | receive-only and recording first, see [docs/AMATEUR.md](docs/AMATEUR.md) |
 | `Link` trait and hardware profiles | **Planned** | the direction in the [evolution plan](docs/LINKS.md#architecture-planned) |
 
@@ -61,10 +61,10 @@ Hardware, same legend (details and sources in [docs/HARDWARE.md](docs/HARDWARE.m
 | hardware | role | state |
 |---|---|---|
 | Raspberry Pi 2 B + Dragino LoRa/GPS HAT | sender | **Measured** (the only host used in the published runs) |
-| CatWAN USB Stick (RP2040 + SX1276) | receiver | **Measured**, firmware in this repo |
+| RP2040-based device with SX1276 | receiver | **Measured**, firmware in this repo |
 | Raspberry Pi 4, Pi 5, Pi Zero | host | **Not started**: untested here, profiles and CPU budgets are planned |
 | Seeed XIAO ESP32-S3, ESP32-C6 | 2.4 GHz and node candidates | **Not started**: a feasibility spike is planned |
-| Seeed T1000-E (Meshtastic) | host-side bridge | **Planned** |
+| Seeed T1000-E (P2P mesh networks) | host-side bridge | **Planned** |
 | SX1262, LR1121 boards | other sub-GHz radios | **Planned** |
 | HaLow modules (any) | HaLow link | **Modeled** only. No module chosen |
 
@@ -165,7 +165,7 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 [IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/); the radio side uses none of moq.dev's
 code, the optional republish step uses its Rust libraries, and this project is not affiliated with or endorsed
 by moq.dev. Frame encryption uses the pure-Rust ChaCha20-Poly1305 library [rind](https://github.com/kixel-ai/rind).
-Built in [Rust](https://www.rust-lang.org) on the Semtech SX1276 and the Electronic Cats CatWAN USB Stick.
+Built in [Rust](https://www.rust-lang.org) on the Semtech SX1276 and the RP2040-based device.
 Background post: [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/). Amateur
 radio rules cited in [docs/AMATEUR.md](docs/AMATEUR.md) (47 CFR 97.113 and regional rules) and
 [docs/REGULATORY.md](docs/REGULATORY.md).</sub>

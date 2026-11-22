@@ -1,5 +1,5 @@
 #!/bin/bash
-# laptop -> CatWAN TX -> Pi SX1276 RX.  usage: [RX_KEY=path] [RX="extra recv args"] rev.sh NAME PROFILE SECS [sender args...]
+# laptop -> RP2040 device TX -> Pi SX1276 RX.  usage: [RX_KEY=path] [RX="extra recv args"] rev.sh NAME PROFILE SECS [sender args...]
 # See scripts/README.md.
 set -u
 N=$1

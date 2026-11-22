@@ -1,5 +1,5 @@
 #!/bin/bash
-# The full over-the-air matrix for results/stick-0.5.1/ (catwan-fw 0.5.1 on the stick).
+# The full over-the-air matrix for results/stick-0.5.1/ (firmware 0.5.1 on the RP2040-based device).
 # Part 1: FSK 300 kbit/s live video, Pi -> stick, 120 s each. Part 2: the lora2015 profiles, 3 repeats.
 # usage: [PART=fsk|fsk-extra|lora|all] [REPS=3] [FSK_SECS=120] bench-051.sh
 # Needs PORT, PI (see env.sh), LKEY (key file here) and PKEY (same key on the Pi). Set PLAY= if ffplay is missing.

@@ -9,7 +9,7 @@ Every number in this project should carry one of:
 * **MODELED**: computed from a formula or an emulation. Name the model. A fit of measured data is MODELED.
 
 A MODELED number is never placed in a MEASURED column. Today the only MEASURED numbers are SX1276 FSK and
-LoRa mode on a Pi 2 B and a CatWAN stick. HaLow, 2.4 GHz and 5.8 GHz have none.
+LoRa mode on a Pi 2 B and an RP2040-based device. HaLow, 2.4 GHz and 5.8 GHz have none.
 
 ## Reproduce without a radio
 
@@ -34,7 +34,7 @@ removed, not an over-the-air result.
 
 ## Reproduce with radios
 
-Needs the Pi 2 B, the HAT and the CatWAN stick from the [HOWTO](../HOWTO.md). Set `PORT` and `PI` to your
+Needs the Pi 2 B, the HAT and the RP2040-based device from the [HOWTO](../HOWTO.md). Set `PORT` and `PI` to your
 own values, then:
 
 ```sh

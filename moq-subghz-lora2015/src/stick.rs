@@ -1,4 +1,4 @@
-//! The CatWAN stick (`catwan-fw` v5) over USB serial: the line protocol and the port.
+//! The RP2040-based device running firmware v5 over USB serial: the line protocol and the port.
 //!
 //! Lines from the stick:
 //!   `I catwan-fw <version> sx_version=0x<hex> t_us=<n>`   reply to `I`
@@ -18,7 +18,7 @@ pub const FW_VERSION_PREFIX: &str = "0.5.";
 /// The reply to `I`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Banner {
-    /// `catwan-fw` version, from its Cargo.toml.
+    /// Receiver firmware version, from its Cargo.toml.
     pub version: String,
     /// SX1276 silicon version register, 0x12 on a working chip.
     pub sx_version: u8,
@@ -29,7 +29,7 @@ pub struct Banner {
 /// Parse the reply to `I`.
 pub fn parse_banner(line: &str) -> Result<Banner, String> {
     let mut it = line.split(' ');
-    let bad = || format!("not a catwan-fw banner: {line:?}");
+    let bad = || format!("invalid device firmware banner: {line:?}");
     if it.next() != Some("I") || it.next() != Some("catwan-fw") {
         return Err(bad());
     }
@@ -55,7 +55,7 @@ pub fn parse_banner(line: &str) -> Result<Banner, String> {
 pub fn check_banner(b: &Banner) -> Result<(), String> {
     if !b.version.starts_with(FW_VERSION_PREFIX) {
         return Err(format!(
-            "catwan-fw {} (this test is for {FW_VERSION_PREFIX}x, the v5 image)",
+            "device firmware {} (this test is for {FW_VERSION_PREFIX}x, the v5 image)",
             b.version
         ));
     }

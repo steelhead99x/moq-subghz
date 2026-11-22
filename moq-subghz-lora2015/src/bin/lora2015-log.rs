@@ -1,4 +1,4 @@
-//! Host side of the 2015-style LoRa test: listen on a CatWAN stick (`catwan-fw` v5), rebuild
+//! Host side of the 2015-style LoRa test: listen on an RP2040-based device running firmware v5, rebuild
 //! the images and write the numbers.
 //!
 //! Output directory: `rx.csv` (every frame), `images.csv` (every image), `run.csv` (the run
@@ -122,7 +122,7 @@ fn main() -> Result<()> {
             let mut s = Serial::open(port)?;
             let b = stick::start(&mut s, &p).map_err(anyhow::Error::msg)?;
             eprintln!(
-                "stick: catwan-fw {} (SX1276 0x{:02x}); listening on {}",
+                "RP2040-based device: firmware {} (SX1276 0x{:02x}); listening on {}",
                 b.version,
                 b.sx_version,
                 p.stick_command()

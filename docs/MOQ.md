@@ -6,7 +6,7 @@ Media over QUIC broadcast, built on [moq.dev](https://moq.dev)'s Rust crates. A 
 then fans it out, and anyone can watch it in a browser.
 
 ```
-Pi 2 ──▶ 915 MHz FSK ──▶ CatWAN stick ──▶ laptop: moq-subghz-recv ──▶ moq-subghz-publish ──▶ MoQ relay ──▶ viewers
+Pi 2 ──▶ 915 MHz FSK ──▶ RP2040-based device ──▶ laptop: moq-subghz-recv ──▶ moq-subghz-publish ──▶ MoQ relay ──▶ viewers
 ```
 
 ## How it maps

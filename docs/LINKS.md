@@ -39,7 +39,7 @@ runs lost about 3.5 to 4.6%. The cause of the extra loss is not found.
 ## SX1276 FSK
 
 * **State: Measured.** Live H.264 (320x240, 15 fps) from a Raspberry Pi 2 B with a Dragino HAT to a
-  CatWAN USB stick on a laptop. Chip: Semtech SX1276 ([product page](https://www.semtech.com/products/wireless-rf/lora-connect/sx1276)).
+  RP2040-based device on a laptop. Chip: Semtech SX1276 ([product page](https://www.semtech.com/products/wireless-rf/lora-connect/sx1276)).
 * 300 kbit/s is inside the datasheet's tested range; 350 kbit/s is outside it and worked on the units
   tested.
 * The Pi side cannot be told when data arrives (DIO1 is not wired on the HAT), so receiving on the Pi
@@ -99,7 +99,7 @@ runs lost about 3.5 to 4.6%. The cause of the extra loss is not found.
 evolution plan, which is not yet published in this repo.
 
 Today the radio code is not behind a trait: `moq-subghz-send` and `moq-subghz-recv` choose between
-the Pi HAT, the CatWAN serial port, and a replay file inside their own `main.rs`. The plan:
+the Pi HAT, the RP2040 device serial port, and a replay file inside their own `main.rs`. The plan:
 
 ```
 moq-subghz-wire        unchanged: frames, objects, XOR parity, sealing

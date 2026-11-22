@@ -1,4 +1,4 @@
-//! The CatWAN USB stick as a transmit link: one `Q <hex>` line per packet. The stick stops
+//! The RP2040-based device as a transmit link: one `Q <hex>` line per packet. The stick stops
 //! reading USB while its 12-frame TX queue is full, so a write blocks, which is the backpressure.
 //! Moved from `moq-subghz-send` as it was; only the `Link` wrapper at the end is new.
 
@@ -33,7 +33,7 @@ fn open_serial(path: &str) -> Result<std::fs::File> {
     Ok(f)
 }
 
-/// How long one write to the CatWAN may wait for the stick to take it. The stick stops
+/// How long one write to the RP2040-based device may wait for the stick to take it. The stick stops
 /// reading USB only while its 12-frame queue is full, and a slot frees once a frame is
 /// on air, so allow three frame times, and at least a second for fast profiles.
 fn catwan_write_timeout(frame_toa_us: u64) -> Duration {
@@ -65,7 +65,7 @@ fn write_deadline(f: &mut std::fs::File, mut buf: &[u8], timeout: Duration) -> R
     while !buf.is_empty() {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            bail!("CatWAN stopped reading: write timed out after {timeout:?}");
+            bail!("RP2040 device stopped reading: write timed out after {timeout:?}");
         }
         let mut pfd = libc::pollfd {
             fd: f.as_raw_fd(),
@@ -82,7 +82,7 @@ fn write_deadline(f: &mut std::fs::File, mut buf: &[u8], timeout: Duration) -> R
             return Err(e.into());
         }
         match f.write(buf) {
-            Ok(0) => bail!("CatWAN write returned 0"),
+            Ok(0) => bail!("RP2040 device write returned 0"),
             Ok(n) => buf = &buf[n..],
             Err(e)
                 if matches!(
@@ -95,7 +95,7 @@ fn write_deadline(f: &mut std::fs::File, mut buf: &[u8], timeout: Duration) -> R
     Ok(())
 }
 
-/// Configure the CatWAN for FSK TX; returns the write half and a counter of the TX
+/// Configure the RP2040-based device for FSK TX; returns the write half and a counter of the TX
 /// errors the stick reports. A reader thread drains the stick's replies (B/D/ERR lines)
 /// so its output buffer never fills.
 fn open_catwan(
@@ -145,7 +145,7 @@ fn open_catwan(
                 }
             }
         }
-        bail!("CatWAN: no {want:?} reply to {c:?}")
+        bail!("RP2040 device: no {want:?} reply to {c:?}")
     };
     cmd("S", "OK S")?;
     let r = cmd(
@@ -156,13 +156,13 @@ fn open_catwan(
         "OK F",
     )?;
     if !r.ends_with("None") {
-        bail!("CatWAN config error: {r}");
+        bail!("RP2040 device config error: {r}");
     }
-    eprintln!("CatWAN TX ready: {r}");
+    eprintln!("RP2040 device TX ready: {r}");
     Ok((w, errs))
 }
 
-/// A CatWAN stick configured for FSK transmit.
+/// An RP2040-based device configured for FSK transmit.
 pub struct CatwanTx {
     w: std::fs::File,
     /// The stick's `ERR tx` / `ERR txtimeout` lines, counted by a reader thread.
@@ -239,12 +239,12 @@ impl Link for CatwanTx {
     fn idle(&mut self) -> Result<(), LinkError> {
         std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
         if let Err(e) = write_deadline(&mut self.w, &catwan_line(self.resync, b"S"), self.timeout) {
-            eprintln!("stopping the CatWAN failed, it may still be transmitting: {e}");
+            eprintln!("stopping the RP2040 device failed, it may still be transmitting: {e}");
         }
         Ok(())
     }
 
-    /// TX errors the CatWAN reported since the last call. They arrive asynchronously, after
+    /// TX errors the RP2040 device reported since the last call. They arrive asynchronously, after
     /// the packet they belong to was queued.
     fn take_tx_errors(&mut self) -> u64 {
         let now = self.errs.load(Ordering::Relaxed);

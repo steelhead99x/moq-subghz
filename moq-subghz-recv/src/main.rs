@@ -1,5 +1,5 @@
-//! moq-subghz-recv: CatWAN USB serial (`R <t> <rssi> <snr> <hex>` lines from the sx1276-rs
-//! catwan-fw) -> reassembly + XOR FEC -> MoQ group gate -> H.264 Annex-B to
+//! moq-subghz-recv: RP2040 USB device serial (`R <t> <rssi> <snr> <hex>` lines from the
+//! receiver firmware) -> reassembly + XOR FEC -> MoQ group gate -> H.264 Annex-B to
 //! (a) ffplay for live display, (b) a recording, (c) an ffmpeg decoder whose output
 //! frames are scanned for the burned-in barcode = capture->decoded latency, and
 //! (d) optionally `moq-subghz-publish`, which republishes the objects as real MoQ.
@@ -26,10 +26,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// CatWAN serial port (macOS: /dev/cu.usbmodemXXXX)
+    /// RP2040 device serial port (macOS: /dev/cu.usbmodemXXXX)
     #[arg(long)]
     port: Option<String>,
-    /// Receive on the local SX1276 (Pi HAT) instead of a CatWAN port (reverse direction)
+    /// Receive on the local SX1276 (Pi HAT) instead of an RP2040 device port (reverse direction)
     #[arg(long)]
     radio: bool,
     /// Replay a file of `R` lines instead of a port (offline test)
@@ -415,10 +415,10 @@ fn main() -> Result<()> {
             "OK F",
         )?;
         if !r.ends_with("None") {
-            bail!("CatWAN config error: {r}");
+            bail!("RP2040 device config error: {r}");
         }
         cmd(&mut wr, "R", "OK R")?;
-        eprintln!("CatWAN listening: {r}");
+        eprintln!("RP2040 device listening: {r}");
         port_w = Some(wr);
     } else if a.radio {
         #[cfg(target_os = "linux")]
@@ -809,7 +809,7 @@ fn main() -> Result<()> {
     }
     if let Some(mut wr) = port_w.filter(|_| !port_closed) {
         if let Err(e) = wr.write_all(b"S\n") {
-            eprintln!("stopping the CatWAN failed: {e}");
+            eprintln!("stopping the RP2040 device failed: {e}");
         }
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(2) {

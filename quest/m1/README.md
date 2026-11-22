@@ -11,5 +11,5 @@ skewed by one bad frame, and the sender's memory is bounded.
 Items that change on-air framing, the receive path, or the firmware invalidate the published runs
 in `results/video`; each says which, and the re-measurement is the maintainer's (no radios here).
 Not planned, as not worth their weight: the zeroed `localtime_r` fallback (cosmetic), per-byte
-hex formatting on the CatWAN TX path (not the bottleneck), and `moq-subghz-report` printing an empty
+hex formatting on the RP2040 device TX path (not the bottleneck), and `moq-subghz-report` printing an empty
 run name for an argument that is not a directory (cosmetic; it still reads the files).

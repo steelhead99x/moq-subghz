@@ -2,10 +2,10 @@
 
 What could a small team have done in 2015 with a LoRa chip and a Raspberry Pi? They would not
 have sent live video. They would have sent still pictures, in small packets, and waited. This
-test does that on the same Pi, HAT and CatWAN stick as the moq-subghz video, so the two can be
+test does that on the same Pi, HAT and RP2040-based device as the moq-subghz video, so the two can be
 compared on the same bench.
 
-**Status: measured on the air, 2026-11-20.** 72 runs on `catwan-fw` 0.5.1 are in
+**Status: measured on the air, 2026-11-20.** 72 runs on receiver firmware 0.5.1 are in
 [`results/stick-0.5.1/`](../stick-0.5.1/README.md), with the factory software next to them. The airtime table
 below is still the calculated one; the measured seconds match it within 1% when no frame is lost.
 
@@ -42,7 +42,7 @@ All: explicit header, CRC on, coding rate 4/5, 8 preamble symbols, at most +5 dB
 | `sf8-500` | 903.0 MHz | 8 | 500 kHz | US915 channel 64 at its real uplink rate, DR4 |
 | `sf7-250` | 903.0 MHz | 7 | 250 kHz | not a US915 width. Akerman's fast SSDV mode is also 250 kHz at SF7, but at coding rate 4/6 (`--cr 6`). |
 
-The stick firmware (`catwan-fw` v5) fixes the sync word at 0x12 and maps any bandwidth other than
+The receiver firmware (v5) fixes the sync word at 0x12 and maps any bandwidth other than
 125 and 250 kHz to 500 kHz. The tools therefore refuse other bandwidths instead of letting them
 change silently.
 
@@ -94,7 +94,7 @@ cycle, usually 1%, so a 400 ms frame must be followed by about 40 s of silence. 
 ## What you need
 
 * The Pi with the Dragino HAT, an antenna on it, and the 915 MHz stick on the Mac with its antenna.
-* The stick on `catwan-fw` v5 (`firmware/catwan-fw-v5.uf2`), the image the other runs used, or 0.5.1
+* The RP2040-based device running firmware v5 (`firmware/catwan-fw-v5.uf2`), the image the other runs used, or 0.5.1
   (`firmware/catwan-fw-0.5.1.uf2`), which only fixes the radio start-up (see the CHANGELOG).
   On v5 the logger's first `I` can read `sx_version=0x00` right after power-up; the radio is
   fine, and 0.5.1 does not have this.

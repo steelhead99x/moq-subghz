@@ -29,7 +29,7 @@ next IDR. Instead of a smear you get a short freeze, at most the rest of the sec
 
 ```
  Pi 2                                                                        laptop
- testsrc2 ─▶ burn clock    ─▶ x264      ─▶ split AUs ─▶ 255-byte  ─▶ ))) 915 MHz FSK ))) ─▶ CatWAN USB ─▶ reassemble ─▶ drop broken ─▶ ffplay
+ testsrc2 ─▶ burn clock    ─▶ x264      ─▶ split AUs ─▶ 255-byte  ─▶ ))) 915 MHz FSK ))) ─▶ RP2040 USB device ─▶ reassemble ─▶ drop broken ─▶ ffplay
              + barcode        180 kbit/s    into         radio                               stick         + FEC repair   GOPs
              into pixels      GOP 15        objects      frames                                                           ─▶ ffmpeg reads the
                                                                                                                              barcode = latency
@@ -116,7 +116,7 @@ stick and your first live picture.
 Other links and boards (HaLow, 2.4 GHz, 5.8 GHz, ESP32 and more) are in [LINKS.md](LINKS.md) and [HARDWARE.md](HARDWARE.md); only what is listed below has been measured.
 
 * Raspberry Pi 2 + Dragino LoRa/GPS HAT (915 MHz): the sender
-* Electronic Cats CatWAN USB Stick RP2040 (915 MHz): the receiver, plugs into a laptop
+* RP2040-based device with SX1276 (915 MHz): the receiver, plugs into a laptop
 * Two 915 MHz antennas
 
 Parts list and pinouts are in the [HOWTO](../HOWTO.md#1-hardware).
@@ -138,7 +138,7 @@ Details in the [HOWTO](../HOWTO.md#9-radio-rules).
 | `moq-subghz-wire` | the format: framing, FEC, Annex-B splitter, barcode, encryption |
 | `moq-subghz-pi` | the Pi's radio HAT glue (SPI + GPIO), used by the SX1276 backends |
 | `moq-subghz-link` | the `Link` trait every radio implements (send, recv, caps), and an in-memory loopback pair |
-| `radios/moq-subghz-radio-sx1276` | the SX1276 backends of `Link`: FSK and LoRa on the Pi HAT, the CatWAN stick's `Q` writer, the `R`-line loopback file |
+| `radios/moq-subghz-radio-sx1276` | the SX1276 backends of `Link`: FSK and LoRa on the Pi HAT, the RP2040-based device's `Q` writer, the `R`-line loopback file |
 | `moq-subghz-report` | turns run logs into the results table |
 | `moq-subghz-lora2015` | the 2015-style LoRa image test: `lora2015-send` on the Pi, `lora2015-log` on the host ([results/lora-2015](../results/lora-2015/README.md)) |
 | `firmware/catwan-fw` | Rust firmware for the USB stick, plus a prebuilt `.uf2` |

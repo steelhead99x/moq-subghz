@@ -1,15 +1,15 @@
-# Electronic Cats CatWAN USB Stick (RP2040): factory receiver firmware
+# RP2040-based device: factory receiver firmware
 
-The stock LoRa receiver image that the CatWAN USB Stick runs when it is set up as a plain LoRa
+The stock LoRa receiver image that the RP2040-based device runs when it is set up as a plain LoRa
 receiver. The factory benchmark in [`results/factory-firmware/`](../../../results/factory-firmware/README.md)
 ran with this image on the stick.
 
 | | |
 |---|---|
 | Vendor | Electronic Cats |
-| Upstream | https://github.com/ElectronicCats/CatWAN_USB_Stick |
+| Upstream | [Electronic Cats factory firmware repository](https://github.com/ElectronicCats/CatWAN_USB_Stick) |
 | Release | `v3.1.0.1` (published 2025-03-11) |
-| Release asset | https://github.com/ElectronicCats/CatWAN_USB_Stick/releases/download/v3.1.0.1/lorareceive_rp2040.uf2 |
+| Release asset | [Factory receiver UF2](https://github.com/ElectronicCats/CatWAN_USB_Stick/releases/download/v3.1.0.1/lorareceive_rp2040.uf2) |
 | Source commit | `ea7742739199728c11eb93bc991dc99aeadcf612` (tag `v3.1.0.1`) |
 | Sketch | `Fw/LoRa_PHY/LoRaReceiver/LoRaReceiver.ino` (copied here, unchanged) |
 | Retrieved | 2026-11-20 |
@@ -55,4 +55,4 @@ configuration or user data, so the official release image is published and the d
 3. Open the serial port (any baud rate). It prints `LoRa Receiver`. If it prints
    `Starting LoRa failed!` the radio did not answer.
 
-To go back to the project firmware, do the same with the project image in `firmware/` (for example `catwan-fw-v5.uf2`).
+To go back to the project firmware, do the same with the project image in `firmware/` (for example [receiver firmware v5](../../catwan-fw-v5.uf2)).

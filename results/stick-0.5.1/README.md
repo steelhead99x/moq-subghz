@@ -1,8 +1,8 @@
-# moq-subghz on the CatWAN stick, `catwan-fw` 0.5.1: the full over-the-air benchmark
+# RP2040-based device over-the-air benchmark, firmware 0.5.1
 
 Everything marked **measured** came off the air on 2026-11-20 (about 01:00 to 02:20 Pacific), between the
 same two radios as the [factory baseline](../factory-firmware/README.md): a Raspberry Pi 2 B with a Dragino
-LoRa/GPS HAT sending, a CatWAN USB Stick RP2040 receiving. Everything marked **calculated** is from the SX1276
+LoRa/GPS HAT sending, an RP2040-based device receiving. Everything marked **calculated** is from the SX1276
 datasheet airtime formula. This test uses this project's firmware (`firmware/catwan-fw-0.5.1.uf2`) and Rust
 tools at both ends. The factory test used neither.
 
@@ -27,7 +27,7 @@ tools at both ends. The factory test used neither.
 | | |
 |---|---|
 | sender | Raspberry Pi 2 B, Dragino LoRa/GPS HAT (SX1276), `moq-subghz-send` and `lora2015-send` (static armv7 builds of this repo's `main` at 0687416) |
-| receiver | CatWAN USB Stick RP2040, `catwan-fw` 0.5.1 (`firmware/catwan-fw-0.5.1.uf2`), on a Linux host, `moq-subghz-recv` and `lora2015-log` |
+| receiver | RP2040-based device, firmware 0.5.1 (`firmware/catwan-fw-0.5.1.uf2`), on a Linux host, `moq-subghz-recv` and `lora2015-log` |
 | carrier | FSK 915.0 MHz. LoRa profiles: `sf7-125` 902.3 MHz, the others 903.0 MHz (see [lora-2015](../lora-2015/README.md)) |
 | power | +5 dBm register setting (FSK also at +2 dBm). Not measured with a power meter. |
 | link | antennas on both radios, indoors, a short distance apart, one fixed position for the whole run |
@@ -179,7 +179,7 @@ cargo build --release                                  # host tools
 cargo build --release --target armv7-unknown-linux-musleabihf -p moq-subghz-send -p moq-subghz-recv -p moq-subghz-lora2015
 scp target/armv7-unknown-linux-musleabihf/release/{moq-subghz-send,moq-subghz-recv} PI:moq-subghz/
 scp target/armv7-unknown-linux-musleabihf/release/lora2015-send PI:lora2015/ && scp -r results/lora-2015/frames PI:lora2015/
-export PORT=/dev/ttyACM0 PI=pi PLAY=       # PLAY= when ffplay is not installed; the stick must report catwan-fw 0.5.1
+export PORT=/dev/ttyACM0 PI=pi PLAY=       # PLAY= when ffplay is not installed; the device must report firmware 0.5.1
 export PATH="$PATH:/path/to/ssdv"          # optional: the ssdv tool, for the SSDV pictures
 scripts/demo-051.sh                         # about 6 minutes, writes to runs/demo
 ```

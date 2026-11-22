@@ -33,7 +33,7 @@ d58d14872dbac0aa3d6698a8daccf42f934907cc7d6982ac542bd7ad780281af  dragino_lora_a
 
 Four lines: carrier 868.1 to 915.0 MHz, sync word 0x34 to 0x12, message buffer 32 to 256 bytes,
 TX power `configPower(23)` to `configPower(3)` (+5 dBm). It makes the app talk to the stock
-CatWAN receiver and send 250 character chunks. See the benchmark README for the reasons.
+RP2040 device receiver and send 250 character chunks. See the benchmark README for the reasons.
 Unpatched, the app builds and runs for 868 MHz and the LoRaWAN public sync word.
 
 ## Build and use

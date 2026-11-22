@@ -2,7 +2,7 @@
 
 This is the baseline for the post: what the two radios do **as they were sold**, with nothing
 of this project's firmware or Rust code in the path. A small JPEG goes from a Raspberry Pi to a
-CatWAN USB Stick over the air, in text chunks, the way someone with the vendors' own example
+RP2040-based device over the air, in text chunks, the way someone with the vendors' own example
 programs would have done it.
 
 Everything marked **measured** below came off the air on the bench on 2026-11-20. Everything
@@ -10,13 +10,13 @@ marked **calculated** is from the SX1276 datasheet airtime formula.
 
 ## What ran at each end
 
-| | sender (Raspberry Pi 2 B) | receiver (CatWAN USB Stick, RP2040 + SX1276) |
+| | sender (Raspberry Pi 2 B) | receiver (RP2040-based device with SX1276) |
 |---|---|---|
 | radio | Dragino LoRa/GPS HAT (SX1276) | onboard RFM95W (SX1276) |
 | software | Dragino's official sample app `dragino_lora_app`, from [dragino/rpi-lora-tranceiver](https://github.com/dragino/rpi-lora-tranceiver) commit `f6e1a55` (2018-05-11), built with g++ 14.2 and WiringPi v3.20 | Electronic Cats stock receiver, `lorareceive_rp2040.uf2` from [release v3.1.0.1](https://github.com/ElectronicCats/CatWAN_USB_Stick/releases/tag/v3.1.0.1) (sketch `LoRaReceiver.ino`, Sandeep Mistry's arduino-LoRa) |
-| in this repo | [`firmware/vendor/dragino-lora-gps-hat/`](../../firmware/vendor/dragino-lora-gps-hat/README.md) | [`firmware/vendor/electronic-cats-catwan-rp2040/`](../../firmware/vendor/electronic-cats-catwan-rp2040/README.md) |
+| in this repo | [`firmware/vendor/dragino-lora-gps-hat/`](../../firmware/vendor/dragino-lora-gps-hat/README.md) | [Factory receiver archive](../../firmware/vendor/electronic-cats-catwan-rp2040/README.md) |
 
-Pi OS: Debian 13 (Raspberry Pi OS), kernel 6.18.60. None of this project's firmware (`catwan-fw`)
+Pi OS: Debian 13 (Raspberry Pi OS), kernel 6.18.60. None of this project's receiver firmware
 and none of this project's Rust tools ran in these tests. The stick's flash content before this
 test was byte for byte the Electronic Cats image (see the vendor README).
 
@@ -114,7 +114,7 @@ for this project's own sender and logger, not these factory programs, and were n
 
 ## Run it again
 
-1. Stick on the stock image (`firmware/vendor/electronic-cats-catwan-rp2040/`), plugged into the host. Pi with the HAT, antennas on both.
+1. Stick on the [stock image](../../firmware/vendor/electronic-cats-catwan-rp2040/README.md), plugged into the host. Pi with the HAT, antennas on both.
 2. On the Pi: `firmware/vendor/dragino-lora-gps-hat/fetch-and-build.sh`, then copy `tools/factory-send.sh` to
    `~/factory-bench/` and make the built app available at `~/factory-bench/dragino/dragino_lora_app`.
 3. On the host (repo root, `ssh pi` reaches the Pi): `python3 results/factory-firmware/tools/factory_bench.py --label try1 --jpeg results/lora-2015/frames/f160x120-q20.jpg --out results/factory-firmware/data`.

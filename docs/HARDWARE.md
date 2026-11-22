@@ -9,12 +9,12 @@ Do not read a board here as "supported" unless it says Measured.
 | hardware | role | state | notes |
 |---|---|---|---|
 | Raspberry Pi 2 Model B + Dragino LoRa/GPS HAT (915 MHz) | sender | **Measured** | the host and radio of every published run |
-| Electronic Cats CatWAN USB Stick (RP2040 + SX1276) | receiver | **Measured** | runs this repo's Rust firmware, `firmware/catwan-fw` |
+| RP2040-based device with SX1276 | receiver | **Measured** | runs this repo's Rust firmware, `firmware/catwan-fw` |
 | Raspberry Pi 4, Pi 5 | host | **Not started** | untested. HOWTO says any Pi with a 40-pin header should work, which has not been tried here. Pi 5 GPIO access differs, treat it as unknown |
 | Raspberry Pi Zero, Zero 2 W | host | **Not started** | CPU budget unknown. The Pi receive path already uses a whole core polling, which a single-core Zero would feel. Measure, do not extrapolate |
 | Seeed XIAO ESP32-S3 | node, 2.4 GHz candidate | **Not started** | no firmware in this repo. A private workshop has an unverified skeleton, never flashed |
 | ESP32-C6 | node, 2.4 GHz candidate | **Not started** | no firmware anywhere yet |
-| Seeed T1000-E (Meshtastic) | slow data lane, range reference | **Planned** | would be read through its serial API by a host. The repo would never flash it |
+| Seeed T1000-E (P2P mesh networks) | slow data lane, range reference | **Planned** | would be read through its serial API by a host. The repo would never flash it |
 | SX1262, LR1121 boards | other sub-GHz radios | **Planned** | needs a new driver, nothing written |
 | HaLow (802.11ah) modules, in general | HaLow link | **Modeled** | no module chosen, no pins, no driver |
 
@@ -27,7 +27,7 @@ Do not read a board here as "supported" unless it says Measured.
   [Raspberry Pi hardware docs](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html).
 * A Pi Zero (the original) is armv6, and CI builds armv7 only today.
 
-## CatWAN USB Stick (RP2040 + SX1276)
+## RP2040-based device with SX1276
 
 * An RP2040 microcontroller board with an SX1276 radio, from Electronic Cats. This repo ships its own
   firmware (`firmware/catwan-fw`, prebuilt `.uf2` with sha256 sums) and the receiver tools talk to it over
@@ -58,13 +58,12 @@ command set again.
   A microcontroller will not run x264, so such a node would relay, receive, or send pre-encoded data.
 * ChaCha20-Poly1305 cost on these chips has **not been measured** by anyone here. No number exists.
 
-## Seeed T1000-E and Meshtastic
+## Seeed T1000-E and P2P mesh networks
 
-* The plan is a host-side bridge that reads the node's serial API. [Meshtastic docs](https://meshtastic.org/docs/).
-  The node applies its own duty-cycle and routing, and a mesh is not a point-to-point link, so video does
-  not fit. Value: a range reference and a slow data lane.
-* This repo would never flash or reconfigure a node. Meshtastic firmware and protobufs are GPL licensed,
-  so their code is not copied into this MIT or Apache repo.
+* The plan is a host-side bridge that reads the node's serial API and uses the network for low-rate
+  data and range measurements. The current video demo uses a direct radio link.
+* The bridge would leave the node firmware and configuration in place. Check the licence of any
+  upstream firmware or protocol definitions before incorporating code.
 
 ## HaLow modules
 

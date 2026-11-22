@@ -98,7 +98,7 @@ impl Link for Sx1276FskTx {
     }
 }
 
-/// FSK receive on the HAT (reverse direction: CatWAN to Pi).
+/// FSK receive on the HAT (reverse direction: RP2040-based device to Pi).
 pub struct Sx1276FskRx {
     r: Hat,
     st: sx1276::FskLongRx,

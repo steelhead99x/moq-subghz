@@ -8,8 +8,8 @@ before the Pi transmits, the reverse path waits 4 s before the laptop transmits)
 | script | direction | what |
 |---|---|---|
 | `env.sh` | both | `PORT`, `PI`, `PI_DIR`, `BIN`, `RUNS`. Sourced, not executed. |
-| `run2.sh` | Pi -> CatWAN/laptop | clock check, receiver on the laptop, sender on the Pi |
-| `rev.sh` | laptop -> CatWAN -> Pi | clock check, receiver on the Pi, sender on the laptop |
+| `run2.sh` | Pi -> RP2040-based device/laptop | clock check, receiver on the laptop, sender on the Pi |
+| `rev.sh` | laptop -> RP2040-based device -> Pi | clock check, receiver on the Pi, sender on the laptop |
 | `clocklog.sh` | both | Pi-minus-laptop offset every 5 s until `$RUNS/clocklog.stop` |
 | `bench.sh` | both | the 8-run rind off/on matrix (300k and 350k, 330 s each) |
 | `lora2015-frames.sh` | none | rebuilds the test pictures of `results/lora-2015/frames/` (ffmpeg, and `ssdv` for the SSDV files) |

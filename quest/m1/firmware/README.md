@@ -1,4 +1,4 @@
-# CatWAN firmware v6 image
+# RP2040 device firmware v6 image
 
 ## Goal
 

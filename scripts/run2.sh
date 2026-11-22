@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pi -> CatWAN/laptop.  usage: [RX_KEY=path] [RX="extra recv args"] run2.sh NAME PROFILE SECS [sender args...]
+# Pi -> RP2040-based device/laptop.  usage: [RX_KEY=path] [RX="extra recv args"] run2.sh NAME PROFILE SECS [sender args...]
 # Set PLAY= (empty) when ffplay is not installed. See scripts/README.md. Sender arguments are quoted for the remote shell.
 set -u
 N=$1

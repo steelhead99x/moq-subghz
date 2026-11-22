@@ -9,7 +9,7 @@ Review of the `video-demo` tree for a public release: `moq-subghz-wire`, `moq-su
 `moq-subghz-recv`, `moq-subghz-report`, `vendor/sx1276`, `firmware/catwan-fw`, and `scripts/`.
 
 No radio hardware is attached to this environment. Nothing here was checked on a Pi or a
-CatWAN stick, and the 330 s numbers in `results/video/` were not regenerated. Changes that
+RP2040-based device, and the 330 s numbers in `results/video/` were not regenerated. Changes that
 would alter on-air framing, FEC, pacing, or loss accounting were left in place and listed
 below. What was fixed is covered by unit tests (`cargo test --all-targets` on the
 workspace, plus the sx1276 driver tests).
@@ -216,7 +216,7 @@ methods, so the TX path is the code it was.
 `moq-subghz-send/src/main.rs` `local_clock`. A failure leaves the zeroed `tm`, so the
 burned-in clock reads `00:00:00`. The barcode does not use that string. Not changed.
 
-### CatWAN TX formats each byte with `format!("{:02x}")`. Deferred.
+### RP2040 device TX formats each byte with `format!("{:02x}")`. Deferred.
 
 `moq-subghz-send` `Link::send` for `Catwan`. It allocates per byte. Backpressure is the
 stick's 12-frame queue, not this formatting. Changing it could change host CPU during
