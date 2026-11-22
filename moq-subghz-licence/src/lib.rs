@@ -25,7 +25,9 @@ pub mod testing;
 pub use band::{Band, BandKind, Tuning};
 pub use cli::{GateArgs, Station};
 pub use config::{ConfigError, LicenceConfig};
-pub use gate::{check_start, check_transmit, Auth, Encryption, Flags, Permit, Profile, Refusal};
+pub use gate::{
+    check_start, check_transmit, Auth, Encryption, Flags, Profile, Refusal, RxPermit, TxPermit,
+};
 pub use ident::{IdPlan, IdScheduler};
 pub use region::Region;
 

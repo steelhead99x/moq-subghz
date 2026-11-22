@@ -7,7 +7,7 @@
 //!   group-drop on staleness -> radio (or `--loopback FILE` to test without RF).
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use moq_subghz_licence::{Auth, Encryption, GateArgs, Permit, Profile, Station, Tuning};
+use moq_subghz_licence::{Auth, Encryption, GateArgs, Profile, Station, Tuning, TxPermit};
 use moq_subghz_link::Link;
 use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
 use moq_subghz_radio_emu::{pack, EmuLink};
@@ -286,7 +286,7 @@ fn transmit_permit(
     a: &Args,
     freq_hz: u32,
     prof: &moq_subghz_wire::FskProfile,
-) -> Result<Permit> {
+) -> Result<TxPermit> {
     let encryption = if a.key_file.is_some() {
         Encryption::Sealed
     } else {
@@ -306,27 +306,27 @@ fn transmit_permit(
 
 /// Open the CatWAN stick for transmitting. The permit is the proof that the gate said yes.
 fn open_catwan(
-    permit: &Permit,
+    permit: &TxPermit,
     port: &str,
     freq_hz: u32,
     prof: &moq_subghz_wire::FskProfile,
     power: i8,
     frame_toa_us: u64,
 ) -> Result<CatwanTx> {
-    assert!(permit.may_transmit(), "a transmit permit is required");
+    let _ = permit; // proof that the gate said yes
     CatwanTx::open(port, freq_hz, prof, power, frame_toa_us)
 }
 
 /// Open the Pi's SX1276 for transmitting. The permit is the proof that the gate said yes.
 #[cfg(target_os = "linux")]
 fn open_hat(
-    permit: &Permit,
+    permit: &TxPermit,
     spi_hz: u32,
     freq_hz: u32,
     cfg: &sx1276::fsk::FskConfig,
     power: i8,
 ) -> Result<moq_subghz_radio_sx1276::Sx1276FskTx> {
-    assert!(permit.may_transmit(), "a transmit permit is required");
+    let _ = permit; // proof that the gate said yes
     moq_subghz_radio_sx1276::Sx1276FskTx::open(spi_hz, freq_hz, cfg, power)
 }
 

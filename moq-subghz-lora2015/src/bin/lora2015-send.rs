@@ -283,12 +283,12 @@ fn transmit<'a>(
 /// Open the HAT's SX1276 in LoRa mode. The permit is the proof that the gate said yes.
 #[cfg(target_os = "linux")]
 fn open_radio(
-    permit: &moq_subghz_licence::Permit,
+    permit: &moq_subghz_licence::TxPermit,
     a: &Args,
     p: &Profile,
     cfg: &sx1276::LoRaConfig,
 ) -> Result<moq_subghz_radio_sx1276::Sx1276LoraTx> {
-    assert!(permit.may_transmit(), "a transmit permit is required");
+    let _ = permit; // proof that the gate said yes
     moq_subghz_radio_sx1276::Sx1276LoraTx::open(a.spi_hz, p.freq_hz, cfg, a.power)
 }
 

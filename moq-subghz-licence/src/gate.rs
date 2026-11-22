@@ -2,7 +2,7 @@
 //! starting a tool on a band. Fails closed: the default [`Flags`] never permit transmit.
 //!
 //! The gate takes the tuned frequency, not a band the caller picked, and looks the band up in the
-//! table itself. A [`Permit`] can only be built here.
+//! table itself. A [`RxPermit`] or [`TxPermit`] can only be built here.
 
 use crate::band::{self, Band, BandKind, Tuning};
 use crate::config::{ConfigError, LicenceConfig};
@@ -63,23 +63,15 @@ pub struct Flags<'a> {
     pub licence: Option<&'a LicenceConfig>,
 }
 
-/// What the gate allows. Only [`check_start`] and [`check_transmit`] build one: the fields are
-/// private, so no other code can make a permit that says "may transmit".
-///
-/// ```compile_fail
-/// use moq_subghz_licence::{Mode, Permit};
-/// let forged = Permit { mode: Mode::Unlicensed, may_transmit: true, station_id: false, id_interval_secs: None };
-/// ```
+/// What [`check_start`] allows: opening a radio to receive. It cannot be used to transmit.
+/// Only the gate builds one (private fields).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Permit {
+pub struct RxPermit {
     mode: Mode,
     band: &'static Band,
-    may_transmit: bool,
-    station_id: bool,
-    id_interval_secs: Option<u32>,
 }
 
-impl Permit {
+impl RxPermit {
     pub fn mode(&self) -> Mode {
         self.mode
     }
@@ -88,14 +80,34 @@ impl Permit {
     pub fn band(&self) -> &'static Band {
         self.band
     }
+}
 
-    /// True only from [`check_transmit`].
-    pub fn may_transmit(&self) -> bool {
-        self.may_transmit
+/// What [`check_transmit`] allows: keying a radio. Only the gate builds one: the fields are
+/// private, so no other code can make a permit that says "may transmit".
+///
+/// ```compile_fail
+/// use moq_subghz_licence::TxPermit;
+/// let forged = TxPermit { station_id: false, id_interval_secs: None };
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TxPermit {
+    rx: RxPermit,
+    station_id: bool,
+    id_interval_secs: Option<u32>,
+}
+
+impl TxPermit {
+    pub fn mode(&self) -> Mode {
+        self.rx.mode
     }
 
-    /// Send the station ID in identification frames: licensed mode, an amateur profile and
-    /// transmitting only. Never on ISM profiles.
+    /// The table entry the tuned frequency fell in.
+    pub fn band(&self) -> &'static Band {
+        self.rx.band
+    }
+
+    /// Send the station ID in identification frames: licensed mode and an amateur profile.
+    /// Never on ISM profiles.
     pub fn station_id(&self) -> bool {
         self.station_id
     }
@@ -193,7 +205,7 @@ pub fn check_start(
     tuning: Tuning,
     profile: Profile,
     flags: &Flags<'_>,
-) -> Result<Permit, Refusal> {
+) -> Result<RxPermit, Refusal> {
     let licence = match mode {
         Mode::Unlicensed => None,
         Mode::Licensed => Some(licence_ok(flags.licence)?),
@@ -215,13 +227,7 @@ pub fn check_start(
             },
         );
     };
-    let mut permit = Permit {
-        mode,
-        band,
-        may_transmit: false,
-        station_id: false,
-        id_interval_secs: None,
-    };
+    let permit = RxPermit { mode, band };
     match mode {
         Mode::Unlicensed => {
             if profile.kind == BandKind::Amateur {
@@ -232,11 +238,7 @@ pub fn check_start(
                 return Err(Refusal::LicensedBandInUnlicensedMode);
             }
         }
-        Mode::Licensed => {
-            if let (BandKind::Amateur, Some(l)) = (profile.kind, licence) {
-                permit.id_interval_secs = Some(l.id_interval_secs());
-            }
-        }
+        Mode::Licensed => {}
     }
     if profile.kind == BandKind::Amateur {
         if flags.encryption != Encryption::None {
@@ -256,8 +258,8 @@ pub fn check_transmit(
     tuning: Tuning,
     profile: Profile,
     flags: &Flags<'_>,
-) -> Result<Permit, Refusal> {
-    let mut p = check_start(mode, tuning, profile, flags)?;
+) -> Result<TxPermit, Refusal> {
+    let rx = check_start(mode, tuning, profile, flags)?;
     if mode == Mode::Unlicensed && profile.kind == BandKind::Amateur {
         // `--rx-amateur` is receive-only. Transmitting on an amateur band needs licensed mode.
         return Err(Refusal::AmateurProfileInUnlicensedMode);
@@ -265,9 +267,15 @@ pub fn check_transmit(
     if !flags.transmit {
         return Err(Refusal::TransmitNotRequested);
     }
-    p.may_transmit = true;
-    p.station_id = mode == Mode::Licensed && profile.kind == BandKind::Amateur;
-    Ok(p)
+    let station_id = mode == Mode::Licensed && profile.kind == BandKind::Amateur;
+    Ok(TxPermit {
+        rx,
+        station_id,
+        id_interval_secs: flags
+            .licence
+            .filter(|_| station_id)
+            .map(LicenceConfig::id_interval_secs),
+    })
 }
 
 #[cfg(test)]
@@ -340,9 +348,8 @@ mod tests {
             ..Flags::default()
         };
         let p = check_transmit(Mode::Unlicensed, ISM, Profile::ISM, &f).unwrap();
-        assert!(p.may_transmit() && !p.station_id() && p.id_interval_secs().is_none());
-        let p = check_start(Mode::Unlicensed, ISM, Profile::ISM, &Flags::default()).unwrap();
-        assert!(!p.may_transmit());
+        assert!(!p.station_id() && p.id_interval_secs().is_none());
+        assert!(check_start(Mode::Unlicensed, ISM, Profile::ISM, &Flags::default()).is_ok());
     }
 
     #[test]
@@ -396,7 +403,7 @@ mod tests {
             ..Flags::default()
         };
         let p = check_transmit(Mode::Licensed, HAM, Profile::AMATEUR, &f).unwrap();
-        assert!(p.may_transmit() && p.station_id());
+        assert!(p.station_id());
         assert_eq!(p.id_interval_secs(), Some(600));
         let rx = Flags {
             licence: Some(&c),
@@ -406,8 +413,7 @@ mod tests {
             check_transmit(Mode::Licensed, HAM, Profile::AMATEUR, &rx),
             Err(Refusal::TransmitNotRequested)
         );
-        let p = check_start(Mode::Licensed, HAM, Profile::AMATEUR, &rx).unwrap();
-        assert!(!p.may_transmit() && !p.station_id);
+        assert!(check_start(Mode::Licensed, HAM, Profile::AMATEUR, &rx).is_ok());
     }
 
     #[test]
@@ -455,8 +461,8 @@ mod tests {
             rx_amateur: true,
             ..Flags::default()
         };
-        let p = check_start(Mode::Unlicensed, HAM, Profile::AMATEUR, &rx).unwrap();
-        assert!(!p.may_transmit() && !p.station_id() && p.id_interval_secs().is_none());
+        assert!(check_start(Mode::Unlicensed, HAM, Profile::AMATEUR, &rx).is_ok());
+
         // Without the flag it stays blocked.
         assert_eq!(
             check_start(Mode::Unlicensed, HAM, Profile::AMATEUR, &Flags::default()),
@@ -500,7 +506,7 @@ mod tests {
             ..Flags::default()
         };
         let p = check_transmit(Mode::Licensed, ISM, Profile::ISM, &f).unwrap();
-        assert!(p.may_transmit() && !p.station_id() && p.id_interval_secs().is_none());
+        assert!(!p.station_id() && p.id_interval_secs().is_none());
         let p = check_transmit(Mode::Licensed, HAM, Profile::AMATEUR, &f).unwrap();
         assert!(p.station_id() && p.id_interval_secs() == Some(600));
     }

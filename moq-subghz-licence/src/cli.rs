@@ -7,7 +7,7 @@
 
 use crate::band::Tuning;
 use crate::config::{resolve_path, ConfigError, LicenceConfig};
-use crate::gate::{self, Auth, Encryption, Flags, Permit, Profile, Refusal};
+use crate::gate::{self, Auth, Encryption, Flags, Profile, Refusal, RxPermit, TxPermit};
 use crate::ident::IdPlan;
 use crate::{Mode, Redaction};
 use std::path::{Path, PathBuf};
@@ -132,7 +132,7 @@ impl Station {
         profile: Profile,
         encryption: Encryption,
         auth: Auth,
-    ) -> Result<Permit, Refusal> {
+    ) -> Result<RxPermit, Refusal> {
         gate::check_start(self.mode, tuning, profile, &self.flags(encryption, auth))
     }
 
@@ -143,7 +143,7 @@ impl Station {
         profile: Profile,
         encryption: Encryption,
         auth: Auth,
-    ) -> Result<Permit, Refusal> {
+    ) -> Result<TxPermit, Refusal> {
         gate::check_transmit(self.mode, tuning, profile, &self.flags(encryption, auth))
     }
 
@@ -166,7 +166,7 @@ impl Station {
         profile: Profile,
         encryption: Encryption,
         auth: Auth,
-    ) -> Result<Permit, Refusal> {
+    ) -> Result<TxPermit, Refusal> {
         let permit = self.check_transmit(tuning, profile, encryption, auth)?;
         match permit.id_plan() {
             IdPlan::NoIdRequired => Ok(permit),
@@ -250,8 +250,7 @@ mod tests {
         let t = Tuning::carrier(915_000_000);
         assert!(s
             .check_transmit(t, Profile::ISM, Encryption::Sealed, Auth::None)
-            .unwrap()
-            .may_transmit());
+            .is_ok());
         assert!(s
             .check_transmit(t, Profile::AMATEUR, Encryption::None, Auth::None)
             .is_err());

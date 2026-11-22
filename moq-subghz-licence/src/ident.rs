@@ -1,11 +1,11 @@
 //! Station identification frames and their schedule.
 //!
 //! Only the licence ID goes on air (the operator name stays off air). Frames are built only
-//! from a [`Permit`] that says `station_id`, which [`crate::check_transmit`] grants only in
+//! from a [`TxPermit`] that says `station_id`, which [`crate::check_transmit`] grants only in
 //! licensed mode on an amateur profile with transmit explicitly allowed (never on ISM profiles). Plain text, never sealed.
 
 use crate::config::LicenceConfig;
-use crate::gate::Permit;
+use crate::gate::TxPermit;
 use std::time::{Duration, Instant};
 
 /// Frame magic: "MQID".
@@ -15,8 +15,8 @@ pub const VERSION: u8 = 1;
 
 /// Build an identification payload: `MQID`, version, length, ID bytes (ASCII, clear text).
 /// `None` unless the permit allows transmitting with a station ID and the config has an ID.
-pub fn id_frame(permit: &Permit, licence: &LicenceConfig) -> Option<Vec<u8>> {
-    if !(permit.may_transmit() && permit.station_id()) {
+pub fn id_frame(permit: &TxPermit, licence: &LicenceConfig) -> Option<Vec<u8>> {
+    if !permit.station_id() {
         return None;
     }
     let id = licence.on_air_id()?;
@@ -72,10 +72,10 @@ pub enum IdPlan {
     MustNotTransmit(ScheduleError),
 }
 
-impl Permit {
+impl TxPermit {
     /// What this permit requires for station identification.
     pub fn id_plan(&self) -> IdPlan {
-        if !(self.may_transmit() && self.station_id()) {
+        if !self.station_id() {
             return IdPlan::NoIdRequired;
         }
         let secs = match self.id_interval_secs() {
@@ -161,7 +161,7 @@ mod tests {
         end_hz: 915_000_000,
     };
 
-    fn setup() -> (LicenceConfig, Permit) {
+    fn setup() -> (LicenceConfig, TxPermit) {
         let c = LicenceConfig::from_parts(Region::Us, Some("K1AB"), Some("Test Person")).unwrap();
         let f = Flags {
             transmit: true,
@@ -172,7 +172,7 @@ mod tests {
         (c, p)
     }
 
-    fn sched(p: &Permit) -> IdScheduler {
+    fn sched(p: &TxPermit) -> IdScheduler {
         match p.id_plan() {
             IdPlan::Schedule(s) => s,
             other => panic!("{other:?}"),
@@ -195,8 +195,10 @@ mod tests {
             licence: Some(&c),
             ..Flags::default()
         };
-        let p = check_start(Mode::Licensed, HAM, Profile::AMATEUR, &rx).unwrap();
-        assert!(id_frame(&p, &c).is_none() && matches!(p.id_plan(), IdPlan::NoIdRequired));
+        // A receive permit has no station ID and no way to build a frame.
+        assert!(check_start(Mode::Licensed, HAM, Profile::AMATEUR, &rx).is_ok());
+        let p = check_transmit(Mode::Licensed, HAM, Profile::AMATEUR, &rx);
+        assert!(p.is_err());
         let f = Flags {
             transmit: true,
             ..Flags::default()
