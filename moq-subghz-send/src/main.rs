@@ -102,6 +102,10 @@ struct Args {
     /// (the receiver runs `--link ... --emu-udp ADDR`). Without it `--loopback FILE` is used.
     #[arg(long)]
     emu_udp: Option<String>,
+    /// With `--emu-udp`: fixed loopback source address for the datagrams, so the receiver can
+    /// accept only them (`moq-subghz-recv --emu-udp-peer`). Default: a random port.
+    #[arg(long)]
+    emu_udp_from: Option<String>,
     #[command(flatten)]
     emu: EmuArgs,
     /// Transmit through a CatWAN stick (sx1276-rs catwan-fw) on this serial port instead of
@@ -323,7 +327,7 @@ fn main() -> Result<()> {
                 .max(1);
             let name = cfg.name();
             let l = match (&a.emu_udp, &a.loopback) {
-                (Some(addr), _) => EmuLink::udp_sender(cfg, addr),
+                (Some(addr), _) => EmuLink::udp_sender(cfg, addr, a.emu_udp_from.as_deref()),
                 (None, Some(p)) => EmuLink::file_sender(cfg, p),
                 (None, None) => bail!("a -emu link needs --emu-udp ADDR or --loopback FILE"),
             }
