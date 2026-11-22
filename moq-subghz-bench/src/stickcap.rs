@@ -45,10 +45,7 @@ pub fn scan(buf: &mut Vec<u8>) -> Vec<Found> {
             .map(|i| i + from)
     };
     let mut out = Vec::new();
-    loop {
-        let Some(start) = find(buf, HEAD, 0) else {
-            break;
-        };
+    while let Some(start) = find(buf, HEAD, 0) {
         let body = start + HEAD.len();
         // The payload ends at the first "' with RSSI <digits>" that is followed by a line end.
         let mut at = body;
@@ -128,8 +125,8 @@ pub fn run(o: &Opts) -> Result<()> {
         if libc::tcsetattr(fd, libc::TCSANOW, &t) != 0 {
             bail!("set 9600 baud on {}", o.dev.display());
         }
-        libc::signal(libc::SIGINT, on_signal as usize);
-        libc::signal(libc::SIGTERM, on_signal as usize);
+        libc::signal(libc::SIGINT, on_signal as *const () as usize);
+        libc::signal(libc::SIGTERM, on_signal as *const () as usize);
     }
     let stem = o.out.display().to_string();
     let mut raw = open_raw(&PathBuf::from(format!("{stem}.raw.jsonl")))?;
