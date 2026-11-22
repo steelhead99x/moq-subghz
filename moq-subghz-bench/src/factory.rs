@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// A chunk line `<id>:<seq>/<total>:<hex>` as the stick printed it.
@@ -348,7 +349,7 @@ pub fn pretty(v: &Value) -> Result<String> {
     Ok(String::from_utf8(buf)?)
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct Opts {
     /// Name of the run, and its folder under --out
     #[arg(long)]
@@ -470,24 +471,82 @@ pub fn cap_plan(o: &Opts, exe: &str) -> Plan {
     )
 }
 
-/// The commands one pass runs, in order: copy the chunk list to the board, send it there.
-pub fn pass_plan(o: &Opts, pass: usize) -> [Plan; 2] {
+/// The remote scratch directory of one run: private (`mktemp -d`, mode 0700) and its own, so two
+/// runs on one board never share a chunk file.
+pub fn scratch_plan(o: &Opts) -> Plan {
+    crate::orch::ssh_plan(&o.pi, "mktemp -d /tmp/moq-bench.XXXXXXXXXX".to_string())
+}
+
+/// Removes the run's scratch directory, that exact directory only.
+pub fn cleanup_plan(o: &Opts, dir: &str) -> Plan {
+    crate::orch::ssh_plan(&o.pi, format!("rm -rf {}", shq(dir)))
+}
+
+/// The local run directory `out/label`, made exclusively (mode 0700): a second run with the same
+/// label and out dir fails instead of sharing its chunk files, stick capture and summary.
+pub fn reserve_run_dir(o: &Opts) -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let d = o.out.join(&o.label);
+    fs::create_dir_all(&o.out).with_context(|| format!("create {}", o.out.display()))?;
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&d)
+        .with_context(|| {
+            format!(
+                "the run directory {} exists or cannot be made: use another --label or --out, or remove it",
+                d.display()
+            )
+        })?;
+    Ok(d)
+}
+
+/// The run's remote scratch directory, removed when this drops (on success, error or early return).
+struct RemoteDir<'a> {
+    o: &'a Opts,
+    path: String,
+}
+
+impl RemoteDir<'_> {
+    fn make(o: &Opts) -> Result<RemoteDir<'_>> {
+        let made = capture(&scratch_plan(o)).context("make the scratch directory on the board")?;
+        let path = made.trim().to_string();
+        crate::orch::valid_scratch(&path)?;
+        Ok(RemoteDir { o, path })
+    }
+}
+
+impl Drop for RemoteDir<'_> {
+    fn drop(&mut self) {
+        if let Err(e) = run_ok(&cleanup_plan(self.o, &self.path)) {
+            eprintln!(
+                "warning: could not remove {} on {}: {e:#}",
+                self.path, self.o.pi
+            );
+        }
+    }
+}
+
+/// The commands one pass runs, in order: copy the chunk list into the run's scratch directory `dir`
+/// on the board (its own file per pass), send it there.
+pub fn pass_plan(o: &Opts, pass: usize, dir: &str) -> [Plan; 2] {
     let lic = o.licence.resolve().flags(Side::Pi, &[]);
     let lic: String = lic.iter().map(|f| format!("{} ", shq(f))).collect();
     let local = o.out.join(&o.label).join(format!("pass{pass}.chunks.txt"));
+    let remote = format!("{dir}/pass{pass}.chunks.txt");
     [
         crate::orch::scp_plan(
             local.display().to_string(),
-            format!("{}:factory-bench/chunks.txt", crate::orch::scp_host(&o.pi)),
+            format!("{}:{remote}", crate::orch::scp_host(&o.pi)),
         ),
         crate::orch::ssh_plan(
             &o.pi,
             format!(
-                "{} factory-send --i-have-an-antenna --transmit --freq-mhz {} --power-dbm {} {lic}--app-dir {} factory-bench/chunks.txt",
+                "{} factory-send --i-have-an-antenna --transmit --freq-mhz {} --power-dbm {} {lic}--app-dir {} {}",
                 shq(&o.pi_tool),
                 o.freq_mhz,
                 o.power_dbm,
-                shq(&o.pi_app_dir)
+                shq(&o.pi_app_dir),
+                shq(&remote)
             ),
         ),
     ]
@@ -568,28 +627,41 @@ pub fn run(o: &Opts) -> Result<()> {
             o.chunk, o.passes
         );
         println!("{}", cap_plan(o, &exe).shell());
-        for p in (1..=o.passes.min(2)).flat_map(|k| pass_plan(o, k)) {
+        println!("{}", scratch_plan(o).shell());
+        let dir = "/tmp/moq-bench.XXXXXXXXXX";
+        for p in (1..=o.passes.min(2)).flat_map(|k| pass_plan(o, k, dir)) {
             println!("{}", p.shell());
         }
+        println!("{}", cleanup_plan(o, dir).shell());
         return Ok(());
     }
     if !o.i_have_an_antenna {
         bail!("refusing to transmit without --i-have-an-antenna");
     }
-    let d = o.out.join(&o.label);
-    fs::create_dir_all(&d)?;
+    let d = reserve_run_dir(o)?;
+    println!("run directory: {}", d.display());
     let pkt_len = chunks.iter().map(String::len).max().unwrap_or(0);
     let at = airtime(pkt_len, 7, 125e3, 1, 1, 0, 8.0);
     let cp = cap_plan(o, &exe);
-    let mut cap = std::process::Command::new(&cp.prog)
-        .args(&cp.args)
-        .spawn()
-        .with_context(|| format!("start {}", cp.shell()))?;
-    let res = bench(o, &d, &jpeg, &chunks, pkt_len, at, &mut cap);
-    // SAFETY: signalling our own child.
-    unsafe { libc::kill(cap.id() as i32, libc::SIGTERM) };
-    let _ = cap.wait();
-    res
+    let mut cap = StopOnDrop(
+        std::process::Command::new(&cp.prog)
+            .args(&cp.args)
+            .spawn()
+            .with_context(|| format!("start {}", cp.shell()))?,
+    );
+    bench(o, &d, &jpeg, &chunks, pkt_len, at, &mut cap.0)
+}
+
+/// The stick capture, ended and reaped when this drops (any return, or a panic), so the serial
+/// device is free for a retry.
+struct StopOnDrop(std::process::Child);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        // SAFETY: signalling our own child.
+        unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+        let _ = self.0.wait();
+    }
 }
 
 fn bench(
@@ -613,6 +685,7 @@ fn bench(
     if let Some(st) = cap.try_wait()? {
         bail!("stick-cap exited early with {st}: check --dev");
     }
+    let remote = RemoteDir::make(o)?;
     let t_run = Instant::now();
     let mut re = Reassembly::new(o.id as u8, chunks.len(), o.limit);
     let mut passes = Vec::new();
@@ -622,7 +695,7 @@ fn bench(
         fs::write(&local, list.join("\n") + "\n")?;
         let before = read()?.len();
         let t0 = Instant::now();
-        let plan = pass_plan(o, ps);
+        let plan = pass_plan(o, ps, &remote.path);
         run_ok(&plan[0])?;
         let tx = capture(&plan[1])?;
         let wall = t0.elapsed().as_secs_f64();
@@ -681,7 +754,13 @@ pub fn verdict(label: &str, passes: usize, re: &Reassembly, jpeg: &[u8]) -> Resu
     Ok(())
 }
 
-/// The board side: send each chunk line with the stock the HAT maker app, and print `<start> <end> <id:seq>`.
+/// The board side: send each chunk line with the stock HAT maker app, and write `<start> <end> <id:seq>`
+/// for each to `out`.
+///
+/// The app does not exit on its own after a send, so it is cut off at `app_timeout` (the expected
+/// end). One that exits zero sooner is reported on stderr and its row ends in `early-exit`; one that
+/// exits non-zero sooner is a failed transmit: no row for it, and the whole run fails with its
+/// status and the tail of its stderr.
 ///
 /// `_permit` is the gate's answer ([`gate`]): the stock app is not started without one.
 pub fn send_chunks(
@@ -689,7 +768,11 @@ pub fn send_chunks(
     chunks: &Path,
     app_dir: &Path,
     app_timeout: Duration,
+    cancel: &AtomicBool,
+    out: &mut impl std::io::Write,
 ) -> Result<()> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let text = crate::cell::read_text(chunks, crate::cell::MAX_TEXT)?;
     let epoch = || {
@@ -699,30 +782,164 @@ pub fn send_chunks(
             .unwrap_or(0.0)
     };
     for line in text.lines() {
+        // No chunk starts after a cancellation.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Cancelled.into());
+        }
         let s = epoch();
         let mut child = Command::new("./hat_app")
             .args(["sender", line])
             .current_dir(app_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
+            .process_group(0)
             .spawn()
+            .map(TxGroup::new)
             .with_context(|| format!("start ./hat_app in {}", app_dir.display()))?;
-        // The stock app does not exit on its own after the send: the same cut-off as `timeout 1.3`.
+        // Read stderr as it comes into a shared tail, so a chatty app never blocks on a full pipe
+        // and a drain that outlasts the deadline still reports what it read.
+        let mut err = child.0.stderr.take().context("no stderr pipe")?;
+        let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let shared = tail.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n @ 1..) = err.read(&mut buf) {
+                if let Ok(mut keep) = shared.lock() {
+                    keep.extend_from_slice(&buf[..n]);
+                    let cut = keep.len().saturating_sub(STDERR_TAIL);
+                    keep.drain(..cut);
+                }
+            }
+            let _ = done_tx.send(());
+        });
+        // The same cut-off as `timeout 1.3`.
         let t0 = Instant::now();
-        while child.try_wait()?.is_none() {
+        let early = loop {
+            if cancel.load(Ordering::Relaxed) {
+                // `child` drops here: the whole group is ended and reaped.
+                return Err(Cancelled.into());
+            }
+            if let Some(st) = child.0.try_wait()? {
+                break Some(st);
+            }
             if t0.elapsed() >= app_timeout {
-                child.kill()?;
-                child.wait()?;
-                break;
+                child.end_now();
+                break None;
             }
             std::thread::sleep(Duration::from_millis(5));
+        };
+        // Anything the app started stays in its process group: end it, so nothing outlives the
+        // chunk, and bound the stderr drain by the same deadline (a grandchild may hold the pipe).
+        let drain_by = t0 + app_timeout;
+        let drained = loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(Cancelled.into());
+            }
+            let left = drain_by.saturating_duration_since(Instant::now());
+            match done_rx.recv_timeout(left.min(Duration::from_millis(20))) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !left.is_zero() => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break false,
+                _ => break true,
+            }
+        };
+        child.end_now();
+        if !drained {
+            let _ = done_rx.recv_timeout(Duration::from_millis(50));
+        }
+        let tail = String::from_utf8_lossy(&tail.lock().map(|t| t.clone()).unwrap_or_default())
+            .into_owned();
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Cancelled.into());
         }
         let head: Vec<&str> = line.splitn(3, ':').take(2).collect();
-        println!("{s:.9} {:.9} {}", epoch(), head.join(":"));
+        let id = head.join(":");
+        let mut note = "";
+        if let Some(st) = early {
+            if !st.success() {
+                bail!(
+                    "FAILED {id}: ./hat_app exited early with {st}; stderr tail: {:?}",
+                    tail.trim_end()
+                );
+            }
+            eprintln!("warning: {id}: ./hat_app exited 0 before the timeout, which it should not");
+            note = " early-exit";
+        }
+        writeln!(out, "{s:.9} {:.9} {id}{note}", epoch())?;
     }
     Ok(())
 }
+
+/// The stock app and everything it started (its own process group). Dropping it, on any return or
+/// a panic, ends the group with TERM, then KILL after a short grace, and reaps the app.
+struct TxGroup(std::process::Child);
+
+/// How long the group gets to leave on TERM before it is killed.
+const TX_GRACE: Duration = Duration::from_millis(300);
+
+impl TxGroup {
+    fn new(c: std::process::Child) -> TxGroup {
+        TxGroup(c)
+    }
+
+    fn signal(&self, sig: i32) {
+        // SAFETY: signalling the process group made for this child (its pid is the group id).
+        unsafe { libc::kill(-(self.0.id() as i32), sig) };
+    }
+
+    /// KILL the whole group now and reap the app.
+    fn end_now(&mut self) {
+        self.signal(libc::SIGKILL);
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for TxGroup {
+    fn drop(&mut self) {
+        self.signal(libc::SIGTERM);
+        let t = Instant::now();
+        while t.elapsed() < TX_GRACE && matches!(self.0.try_wait(), Ok(None)) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.end_now();
+    }
+}
+
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// The worker was stopped by SIGINT, SIGTERM or SIGHUP: its group is ended and the process exits 130.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled by a signal: the stock app's process group was ended")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+extern "C" fn on_signal(_: libc::c_int) {
+    CANCEL.store(true, Ordering::Relaxed);
+}
+
+/// A flag that SIGINT, SIGTERM and SIGHUP set, for the worker to stop and clean up on.
+pub fn cancel_flag() -> &'static AtomicBool {
+    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only stores to an atomic; the sigaction struct is zeroed then filled.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+        }
+    }
+    &CANCEL
+}
+
+/// Bytes of the stock app's stderr kept for a failure message.
+const STDERR_TAIL: usize = 1024;
 
 #[cfg(test)]
 mod tests {
@@ -809,6 +1026,273 @@ mod tests {
             .contains("not complete"));
     }
 
+    /// A scripted stand-in for the stock app, in its own directory.
+    fn fake_app(tag: &str, body: &str) -> (crate::testutil::Scratch, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::testutil::Scratch::new(tag);
+        let app = d.0.join("hat_app");
+        fs::write(&app, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
+        let list = d.0.join("chunks.txt");
+        fs::write(&list, "A:000/002:aa\nA:001/002:bb\n").unwrap();
+        (d, list)
+    }
+
+    /// One at a time: a fork in a sibling test while a script is open for writing makes exec fail
+    /// with "text file busy".
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ONE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The pid in `file` (written by a stand-in app), once it is there.
+    fn pid_of(file: &Path) -> i32 {
+        for _ in 0..200 {
+            if let Some(p) = fs::read_to_string(file)
+                .ok()
+                .and_then(|t| t.trim().parse().ok())
+            {
+                return p;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("no pid in {}", file.display());
+    }
+
+    /// True while `pid` is a process that can still run (a zombie awaiting its reaper is not).
+    fn runs(pid: i32) -> bool {
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z"))
+    }
+
+    fn send(tag: &str, body: &str, timeout_ms: u64) -> (Result<()>, String, Duration) {
+        let _one = one_at_a_time();
+        let (d, list) = fake_app(tag, body);
+        let st = LicenceOpts::default().gate_args(true).station().unwrap();
+        let permit = gate(
+            &st,
+            Declared {
+                freq_mhz: 915.0,
+                power_dbm: 5,
+            },
+        )
+        .unwrap();
+        let t = Instant::now(); // after the lock: waiting for a sibling is not the worker's time
+        let mut out = Vec::new();
+        let no = AtomicBool::new(false);
+        let r = send_chunks(
+            &permit,
+            &list,
+            &d.0,
+            Duration::from_millis(timeout_ms),
+            &no,
+            &mut out,
+        );
+        (r, String::from_utf8(out).unwrap(), t.elapsed())
+    }
+
+    #[test]
+    fn an_app_cut_off_by_the_timeout_is_the_normal_path() {
+        let (r, out, _) = send("fs-timeout", "exec sleep 5", 150);
+        r.unwrap();
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows.len(), 2, "{out}");
+        assert!(
+            rows[0].ends_with(" A:000/002") && rows[1].ends_with(" A:001/002"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn an_app_that_exits_zero_early_is_marked() {
+        let (r, out, _) = send("fs-zero", "exit 0", 3000);
+        r.unwrap();
+        assert!(out.lines().all(|l| l.ends_with(" early-exit")), "{out}");
+        assert_eq!(out.lines().count(), 2);
+    }
+
+    #[test]
+    fn an_app_that_exits_nonzero_early_fails_the_run_with_no_row() {
+        let (r, out, _) = send("fs-fail", "echo radio not found >&2; exit 1", 3000);
+        let e = r.unwrap_err().to_string();
+        assert!(e.starts_with("FAILED A:000"), "{e}");
+        assert!(
+            e.contains("exit status: 1") && e.contains("radio not found"),
+            "{e}"
+        );
+        assert_eq!(
+            out, "",
+            "no timing row for the failed chunk, and the run stops"
+        );
+    }
+
+    #[test]
+    fn a_grandchild_holding_stderr_does_not_delay_the_failure_report() {
+        let (r, out, took) = send("fs-grand", "sleep 20 & echo gone >&2; exit 1", 300);
+        let e = r.unwrap_err().to_string();
+        assert!(e.starts_with("FAILED A:000") && e.contains("gone"), "{e}");
+        assert_eq!(out, "");
+        assert!(took < Duration::from_millis(900), "{took:?}");
+    }
+
+    #[test]
+    fn a_cancelled_worker_ends_and_reaps_the_whole_group_even_if_it_ignores_term() {
+        let _one = one_at_a_time();
+        let (d, list) = fake_app(
+            "fs-cancel",
+            "trap '' TERM; sleep 60 & echo $! > gpid; echo $$ > pid; while :; do sleep 1; done",
+        );
+        let st = LicenceOpts::default().gate_args(true).station().unwrap();
+        let permit = gate(
+            &st,
+            Declared {
+                freq_mhz: 915.0,
+                power_dbm: 5,
+            },
+        )
+        .unwrap();
+        let cancel = AtomicBool::new(false);
+        let t = Instant::now();
+        let mut out = Vec::new();
+        let r = std::thread::scope(|sc| {
+            sc.spawn(|| {
+                pid_of(&d.0.join("gpid"));
+                pid_of(&d.0.join("pid"));
+                cancel.store(true, Ordering::Relaxed);
+            });
+            send_chunks(
+                &permit,
+                &list,
+                &d.0,
+                Duration::from_secs(60),
+                &cancel,
+                &mut out,
+            )
+        });
+        assert!(r.unwrap_err().to_string().contains("cancelled"));
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        let (app, grandchild) = (pid_of(&d.0.join("pid")), pid_of(&d.0.join("gpid")));
+        // the app was reaped (no zombie: its /proc entry is gone) and so is what it started
+        assert!(!Path::new(&format!("/proc/{app}")).exists());
+        for _ in 0..200 {
+            if !runs(grandchild) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!runs(grandchild));
+    }
+
+    /// Run the worker with `cancel` raised by `raise` once the stand-in app has started.
+    fn cancelled_run(
+        tag: &str,
+        body: &str,
+        preset: bool,
+    ) -> (Result<()>, String, Duration, crate::testutil::Scratch) {
+        let _one = one_at_a_time();
+        let (d, list) = fake_app(tag, body);
+        let st = LicenceOpts::default().gate_args(true).station().unwrap();
+        let permit = gate(
+            &st,
+            Declared {
+                freq_mhz: 915.0,
+                power_dbm: 5,
+            },
+        )
+        .unwrap();
+        let cancel = AtomicBool::new(preset);
+        let mut out = Vec::new();
+        let t = Instant::now();
+        let r = std::thread::scope(|sc| {
+            if !preset {
+                sc.spawn(|| {
+                    pid_of(&d.0.join("started"));
+                    std::thread::sleep(Duration::from_millis(100));
+                    cancel.store(true, Ordering::Relaxed);
+                });
+            }
+            send_chunks(
+                &permit,
+                &list,
+                &d.0,
+                Duration::from_secs(10),
+                &cancel,
+                &mut out,
+            )
+        });
+        (r, String::from_utf8(out).unwrap(), t.elapsed(), d)
+    }
+
+    #[test]
+    fn a_cancel_during_the_stderr_drain_is_nonzero_with_no_row_and_prompt() {
+        // the app exits 0 at once but a grandchild keeps stderr open: the drain waits, and a
+        // cancel then must not turn into a timing row and success
+        let (r, out, took, _d) = cancelled_run(
+            "fs-cancel-drain",
+            "echo 1 > started; sleep 20 & exit 0",
+            false,
+        );
+        let e = r.unwrap_err();
+        assert!(e.downcast_ref::<Cancelled>().is_some(), "{e}");
+        assert_eq!(out, "", "no timing row for the interrupted chunk");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+    }
+
+    #[test]
+    fn a_cancel_before_a_chunk_stops_it_from_starting() {
+        let (r, out, _, d) = cancelled_run("fs-cancel-pre", "echo 1 > started; exit 0", true);
+        assert!(r.unwrap_err().downcast_ref::<Cancelled>().is_some());
+        assert_eq!(out, "");
+        assert!(
+            !d.0.join("started").exists(),
+            "a chunk started after the cancel"
+        );
+    }
+
+    #[test]
+    fn sigterm_sets_the_cancel_flag() {
+        let f = cancel_flag();
+        assert!(!f.load(std::sync::atomic::Ordering::Relaxed));
+        // SAFETY: raising a signal whose handler we installed, which only sets the flag.
+        unsafe { libc::raise(libc::SIGTERM) };
+        assert!(f.load(std::sync::atomic::Ordering::Relaxed));
+        f.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn two_runs_with_one_label_and_out_dir_never_share_a_chunk_path() {
+        let d = crate::testutil::Scratch::new("fs-reserve");
+        let o = Opts {
+            label: "x".into(),
+            jpeg: "p.jpg".into(),
+            id: 'A',
+            passes: 1,
+            chunk: 120,
+            limit: 0,
+            out: d.0.join("out"),
+            pi: "pi".into(),
+            dev: "/dev/ttyACM0".into(),
+            pi_tool: "t".into(),
+            pi_app_dir: "a".into(),
+            i_have_an_antenna: true,
+            transmit: true,
+            freq_mhz: 915.0,
+            power_dbm: 5,
+            licence: LicenceOpts::default(),
+            dry_run: false,
+        };
+        let first = reserve_run_dir(&o).unwrap();
+        fs::write(first.join("pass1.chunks.txt"), "one").unwrap();
+        let e = reserve_run_dir(&o).unwrap_err().to_string();
+        assert!(e.contains("exists"), "{e}");
+        assert_eq!(
+            fs::read_to_string(first.join("pass1.chunks.txt")).unwrap(),
+            "one"
+        );
+        let mut other = o.clone();
+        other.label = "y".into();
+        assert_ne!(reserve_run_dir(&other).unwrap(), first);
+    }
+
     #[test]
     fn plan_is_printed_without_running() {
         let o = Opts {
@@ -830,14 +1314,39 @@ mod tests {
             licence: LicenceOpts::default(),
             dry_run: true,
         };
-        let p = pass_plan(&o, 1);
+        let p = pass_plan(&o, 1, "/tmp/moq-bench.AAA");
         assert_eq!(
             p[0].shell(),
-            "scp -q -o BatchMode=yes -- out/x/pass1.chunks.txt pi:factory-bench/chunks.txt"
+            "scp -q -o BatchMode=yes -- out/x/pass1.chunks.txt pi:/tmp/moq-bench.AAA/pass1.chunks.txt"
         );
         assert!(p[1].shell().starts_with(
-            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/gps-hat"
+            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/gps-hat /tmp/moq-bench.AAA/pass1.chunks.txt"
         ), "{}", p[1].shell());
+        // two runs on one board share no remote path, and each removes only its own directory
+        let (a, b) = (
+            pass_plan(&o, 1, "/tmp/moq-bench.AAA"),
+            pass_plan(&o, 1, "/tmp/moq-bench.BBB"),
+        );
+        for (x, y) in a.iter().zip(&b) {
+            assert_ne!(x.shell(), y.shell());
+            assert!(!x.shell().contains("BBB") && !y.shell().contains("AAA"));
+        }
+        assert_ne!(
+            pass_plan(&o, 2, "/tmp/moq-bench.AAA")[0].shell(),
+            a[0].shell(),
+            "a distinct chunk file per pass"
+        );
+        assert!(a
+            .iter()
+            .all(|p| !p.shell().contains("factory-bench/chunks.txt")));
+        assert_eq!(
+            cleanup_plan(&o, "/tmp/moq-bench.AAA").shell(),
+            "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.AAA'"
+        );
+        assert_eq!(
+            scratch_plan(&o).shell(),
+            "ssh -o BatchMode=yes -- pi 'mktemp -d /tmp/moq-bench.XXXXXXXXXX'"
+        );
         assert_eq!(
             cap_plan(&o, "bench").shell(),
             "bench stick-cap --dev /dev/ttyACM0 --out out/x/stick"

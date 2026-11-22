@@ -38,6 +38,31 @@ the one used in earlier runs. History: the old image had sha256
 `608bc4dd10e7b211440d87faf33933ccdcdcc63c1c40b6e3317438818b40528f`; the new one has
 `08ec0cdb576fe4c482e6638fb36452e2f5193f2a1b943789b0a739b1ccf9b999`. `rp2040-sx1276-fw-v5.uf2` was ALSO rebuilt, from the CURRENT source (band and power checks added; Rust 1.90.0, `--locked`, thumbv6m; it reports 0.5.1). It is NOT the image behind the earlier measured v5 runs, which stay labelled as measured with the old image. History: old sha256 `fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317`; new `d9d56afe9eae1b3fff3bcc242ca49bd0233cb31ce89c56b4f87f19eff5fd1b0e`. The new v5 file has not been flashed or run. The host tools accept both banners. Nothing was flashed.
 
+### Bench correctness
+
+* `analyze`: a run that sent frames and received none is 100% radio loss in `fsk.csv`, not the
+  receiver's 0% gap estimate.
+* `package-051` compresses a log through a private temp file renamed into place after the licence
+  scan, so a rejected log no longer removes an existing output.
+* The CSS logger window uses the sender's `--pass-gap-ms` and is printed.
+* `factory-bench` uses a private remote scratch directory per run and a chunk file per pass, and
+  removes only that directory.
+* `reverse` checks the serial port and run directories before any remote command, and kills the
+  receiver's ssh and removes its scratch directory on every early exit.
+* `factory-send` bounds its stderr drain by the timeout and ends the app's process group; `factory-bench` reserves its local run directory exclusively; the reverse cleanup confirms on the Pi that the receiver stopped (pidfile, TERM then KILL) before removing the scratch directory, and keeps it with a warning if it cannot.
+* `factory-send` ends the stock app's whole process group (TERM, then KILL, then reap) on Ctrl-C,
+  SIGTERM, SIGHUP, any error return or a panic. The reverse runner keeps its cleanup armed until
+  the Pi confirms the receiver stopped (a dropped ssh is checked before any copy), and an unknown
+  pid state keeps the scratch directory with a warning. `forward` and `css` kill and reap their
+  capture process on every early exit.
+* `factory-send` also checks for a cancel while it drains the app's stderr and before each chunk
+  (no timing row, exit 130). The reverse cleanup signals a receiver only if its pid and start time
+  match what the run recorded, so a reused pid is never touched. The CSS runner removes the Pi's
+  per frame log only after the copy succeeded and its size matches, and otherwise keeps it and
+  says where it is.
+* `factory-send` fails the run when the stock app exits non-zero before its timeout (no timing row)
+  and marks a zero exit before it.
+
 ### CI and hygiene
 
 * The leak guard fails closed (no git, an unreadable tracked file or a private licence file that
