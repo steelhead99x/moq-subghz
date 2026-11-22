@@ -1,0 +1,14 @@
+[package]
+name = "moq-subghz-radio-emu"
+version = "0.0.1"
+description = "Emulated links for moq-subghz-link: SX1276 FSK, SX1276 LoRa and 802.11ah HaLow channel models. MODELED, never measured; no radio is driven"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+moq-subghz-link = { path = "../../moq-subghz-link" }
+moq-subghz-wire = { path = "../../moq-subghz-wire", default-features = false }
+clap = { version = "4", features = ["derive"] }

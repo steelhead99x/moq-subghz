@@ -1,4 +1,4 @@
-//! Pi glue shared by `moq-subghz-send` and `moq-subghz-recv`: the Dragino HAT's SX1276
+//! Pi glue for the SX1276 backends (`moq-subghz-radio-sx1276`): the Dragino HAT's SX1276
 //! over spidev and GPIO cdev, in FSK mode. Linux only; empty elsewhere.
 #![cfg(target_os = "linux")]
 

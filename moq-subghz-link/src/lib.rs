@@ -120,7 +120,7 @@ impl fmt::Display for LinkError {
             LinkError::Crc => f.write_str("bad CRC"),
             LinkError::Busy => f.write_str("channel busy"),
             LinkError::Regulatory(m) => write!(f, "refused by a regulatory limit: {m}"),
-            LinkError::Io(m) => write!(f, "link I/O error: {m}"),
+            LinkError::Io(m) => f.write_str(m),
             LinkError::Unsupported => f.write_str("not supported by this link"),
         }
     }
@@ -139,6 +139,15 @@ pub trait Link: Send {
     /// A backend that must poll does so inside this call.
     fn recv(&mut self, buf: &mut [u8], timeout: Duration) -> Result<Option<RxMeta>, LinkError>;
 
-    /// Put the radio in standby. Every backend must leave it not transmitting.
-    fn idle(&mut self) {}
+    /// Finish up and put the radio in standby: flush files, stop a stick, drain its queue.
+    /// Every backend must leave the radio not transmitting.
+    fn idle(&mut self) -> Result<(), LinkError> {
+        Ok(())
+    }
+
+    /// Transmit errors the link learned of since the last call, for links that hear about them
+    /// after `send` returned (the CatWAN stick reports `ERR tx` asynchronously).
+    fn take_tx_errors(&mut self) -> u64 {
+        0
+    }
 }

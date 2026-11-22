@@ -136,8 +136,9 @@ Details in the [HOWTO](../HOWTO.md#9-radio-rules).
 | `moq-subghz-send` | sender: ffmpeg capture + x264, barcode, objects, radio TX |
 | `moq-subghz-recv` | receiver: radio RX, reassembly, GOP gate, ffplay, recording, latency |
 | `moq-subghz-wire` | the format: framing, FEC, Annex-B splitter, barcode, encryption |
-| `moq-subghz-pi` | the Pi's radio HAT glue (SPI + GPIO), shared by sender and receiver |
-| `moq-subghz-link` | the `Link` trait every radio implements (send, recv, caps), and an in-memory loopback pair; nothing uses it yet |
+| `moq-subghz-pi` | the Pi's radio HAT glue (SPI + GPIO), used by the SX1276 backends |
+| `moq-subghz-link` | the `Link` trait every radio implements (send, recv, caps), and an in-memory loopback pair |
+| `radios/moq-subghz-radio-sx1276` | the SX1276 backends of `Link`: FSK and LoRa on the Pi HAT, the CatWAN stick's `Q` writer, the `R`-line loopback file |
 | `moq-subghz-report` | turns run logs into the results table |
 | `moq-subghz-lora2015` | the 2015-style LoRa image test: `lora2015-send` on the Pi, `lora2015-log` on the host ([results/lora-2015](../results/lora-2015/README.md)) |
 | `firmware/catwan-fw` | Rust firmware for the USB stick, plus a prebuilt `.uf2` |

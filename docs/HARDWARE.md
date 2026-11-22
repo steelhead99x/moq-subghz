@@ -71,3 +71,18 @@ command set again.
 * No module is chosen. A module's interface (SPI, SDIO or a command channel), driver, firmware blob and
   regulatory table decide the whole design, so the plan keeps them blank rather than guessing.
 * Firmware blobs and GPL drivers must not be committed here: document how to fetch them instead.
+
+## Amateur receive-side SDR
+
+* **Direction, not a purchase.** For the planned receive-only amateur bridge ([AMATEUR.md](AMATEUR.md))
+  the chosen direction is an Airspy or SDRplay class receiver. The owner has **not bought one**, no
+  model is decided, there is no code, and nothing has been received with one. State: **Not started**.
+* Manufacturer figures, quoted from the product pages as read on 2026-11-21 and not measured here:
+  * SDRplay RSP1B: "1kHz - 2GHz continuous" and "up to 10MHz of spectrum at a time".
+    [sdrplay.com/rsp1b](https://www.sdrplay.com/rsp1b/)
+  * Airspy Mini: "Continuous 24 - 1700 MHz native RX range" and "Up to 6 MHz panoramic spectrum view".
+    [airspy.com/airspy-mini](https://airspy.com/airspy-mini/)
+* Other figures (noise, dynamic range, bands per model) are left out until read from a datasheet. A
+  receiver here is receive-only and never transmits. Receiving generally needs no licence, but verify
+  your local rules.
+

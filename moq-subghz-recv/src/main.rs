@@ -3,16 +3,18 @@
 //! (a) ffplay for live display, (b) a recording, (c) an ffmpeg decoder whose output
 //! frames are scanned for the burned-in barcode = capture->decoded latency, and
 //! (d) optionally `moq-subghz-publish`, which republishes the objects as real MoQ.
-#[cfg(target_os = "linux")]
-mod radio;
-
 use anyhow::{bail, Context, Result};
 
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
+use moq_subghz_link::Link;
+use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
+use moq_subghz_radio_emu::{pack, EmuLink};
+#[cfg(target_os = "linux")]
+use moq_subghz_radio_sx1276::Sx1276FskRx;
 use moq_subghz_wire::{
     parse_fsk_profile, parse_r_line, read_line_limited, seal, stamp, Event, FrameRange, GroupGate,
-    Line, ObjHdr, Reassembler, MAX_SERIAL_LINE,
+    Line, ObjHdr, Reassembler, MAX_FRAME, MAX_SERIAL_LINE,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
@@ -22,9 +24,40 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// What `--link` selects. `fsk` is the real receive path (CatWAN port, Pi HAT or a replay file);
+/// the `-emu` kinds read a MODELED channel from `--emu-udp` and drive no radio.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkKind {
+    Fsk,
+    FskEmu,
+    LoraEmu,
+    HalowEmu,
+}
+
+impl LinkKind {
+    fn emu(self) -> Option<EmuSel> {
+        match self {
+            LinkKind::Fsk => None,
+            LinkKind::FskEmu => Some(EmuSel::Fsk),
+            LinkKind::LoraEmu => Some(EmuSel::Lora),
+            LinkKind::HalowEmu => Some(EmuSel::Halow),
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
+    /// Link: `fsk` (default; CatWAN port, `--radio` or `--replay`, as before) or a modeled
+    /// channel, `fsk-emu`, `lora-emu` or `halow-emu`, read from `--emu-udp`
+    #[arg(long, value_enum, default_value_t = LinkKind::Fsk)]
+    link: LinkKind,
+    /// With a `-emu` link: loopback address to listen on for the sender's datagrams. Start the
+    /// receiver first; the sender must use the same link and `--halow-*` settings.
+    #[arg(long)]
+    emu_udp: Option<String>,
+    #[command(flatten)]
+    emu: EmuArgs,
     /// CatWAN serial port (macOS: /dev/cu.usbmodemXXXX)
     #[arg(long)]
     port: Option<String>,
@@ -370,7 +403,55 @@ fn main() -> Result<()> {
     let (ltx, lrx) = mpsc::channel::<(u64, String)>();
     let mut replay_th: Option<std::thread::JoinHandle<std::io::Result<()>>> = None;
     let mut port_w = None;
-    if let Some(port) = &a.port {
+    let emu_sel = a.link.emu();
+    if let Some(sel) = emu_sel {
+        let addr = a
+            .emu_udp
+            .as_deref()
+            .context("a -emu link needs --emu-udp ADDR")?;
+        let cfg = a.emu.to_cfg(sel).map_err(|e| anyhow::anyhow!(e))?;
+        let mut rx = EmuLink::udp_receiver(cfg, addr).map_err(|e| anyhow::anyhow!("{e}"))?;
+        eprintln!(
+            "modeled link: {} listening on {addr} (no radio is driven; results are MODELED)",
+            rx.cfg().name()
+        );
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; rx.caps().max_payload];
+            let packed = rx.caps().max_frames_per_packet > 1;
+            while !RADIO_STOP.load(std::sync::atomic::Ordering::Relaxed) {
+                let lines: Vec<String> = match rx.recv(&mut buf, Duration::from_millis(50)) {
+                    Ok(Some(m)) => {
+                        let pkt = &buf[..m.len];
+                        let frames = if packed {
+                            pack::unpack(pkt)
+                        } else {
+                            Some(vec![pkt.to_vec()])
+                        };
+                        match frames {
+                            Some(fs) => fs
+                                .iter()
+                                .map(|f| {
+                                    let hex: String =
+                                        f.iter().map(|b| format!("{b:02x}")).collect();
+                                    format!("R {} 0 0 {hex}", m.t_us)
+                                })
+                                .collect(),
+                            // not whole packed frames: counted like a garbled line
+                            None => vec!["X bad-packed-packet".to_string()],
+                        }
+                    }
+                    Ok(None) => continue,
+                    Err(e) => vec![format!("X {e}")],
+                };
+                for l in lines {
+                    if ltx.send((unix_us(), l)).is_err() {
+                        return;
+                    }
+                }
+            }
+            RADIO_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
+        });
+    } else if let Some(port) = &a.port {
         let f = open_serial(port)?;
         let mut wr = f.try_clone()?;
         let rd = f;
@@ -433,28 +514,31 @@ fn main() -> Result<()> {
             };
             cfg.validate()
                 .map_err(|x| anyhow::anyhow!("fsk config: {x:?}"))?;
-            let mut r = radio::Radio::open(8_000_000, (a.freq * 1e6).round() as u32, &cfg, 2)?;
-            r.start_rx()?;
-            let stall = 36 * 8_000_000 / br;
+            let mut r = Sx1276FskRx::open(8_000_000, (a.freq * 1e6).round() as u32, &cfg, 2)?;
             eprintln!("Pi SX1276 listening (FSK {br} bit/s)");
             std::thread::spawn(move || {
-                let t0 = Instant::now();
-                let mut st = sx1276::FskLongRx::default();
+                let mut buf = [0u8; MAX_FRAME];
                 while !RADIO_STOP.load(std::sync::atomic::Ordering::Relaxed) {
-                    let now = t0.elapsed().as_micros() as u32;
-                    let line = match r.poll(&mut st, now, stall) {
-                        Ok(Some((p, rssi))) => format!(
-                            "R {now} {rssi} 0 {}",
-                            p.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    // `t_us` is the poll clock, a wrapping 32-bit count: the same value the
+                    // line carried before the radio moved behind `Link`.
+                    let line = match r.recv(&mut buf, Duration::from_millis(50)) {
+                        Ok(Some(m)) => format!(
+                            "R {} {} 0 {}",
+                            m.t_us as u32,
+                            m.rssi_dbm.unwrap_or(0),
+                            buf[..m.len]
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>()
                         ),
                         Ok(None) => continue,
-                        Err(x) => format!("X {now} {x}"),
+                        Err(e) => format!("X {} {e}", r.now_us()),
                     };
                     if ltx.send((unix_us(), line)).is_err() {
                         break;
                     }
                 }
-                r.idle();
+                let _ = r.idle();
                 RADIO_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
             });
         }
@@ -793,7 +877,7 @@ fn main() -> Result<()> {
         _ => None,
     };
     let mut stats_line = String::new();
-    if a.radio {
+    if a.radio || emu_sel.is_some() {
         // stop the RX thread and put the SX1276 back to sleep (it clears the flag when done)
         RADIO_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
@@ -868,8 +952,13 @@ fn main() -> Result<()> {
     } else {
         1.0 - frames_delivered as f64 / frames_expected as f64
     };
+    let emu_field = if emu_sel.is_some() {
+        ",\"provenance\":\"modeled\""
+    } else {
+        ""
+    };
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}{emu_field}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad, re.frames_late, re.frames_stray, re.frames_stale,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),

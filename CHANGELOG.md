@@ -56,6 +56,14 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Added
 
+* **`moq-subghz-radio-emu`: modeled links behind `Link`**: SX1276 FSK, SX1276 LoRa and an 802.11ah
+  (HaLow) channel as seeded, virtual-time models, with in-memory, loopback UDP and `R`-file
+  transports. `moq-subghz-send` and `moq-subghz-recv` gain `--link fsk-emu|lora-emu|halow-emu`,
+  `--emu-udp` and the `--halow-*`, `--lora-*`, `--fsk-*`, `--emu-loss`, `--emu-seed` flags; the
+  sender packs whole wire frames into one packet when the link allows it. `moq-subghz-chan` pushes
+  a recording through a model offline. Everything it reports is MODELED (`"provenance":"modeled"`),
+  never measured. `--link fsk` stays the default and the bytes on the air are unchanged. See
+  `docs/HALOW.md`.
 * `moq-subghz-wire/tests/golden_v5.rs`: SHA-256 of the exact frame stream (k = 0, 4, 8, sealed and
   unsealed) for a fixed set of synthetic objects. It fails if a byte on the air changes.
 * `RLine` (a parsed `R` line) keeps the line's `t_us` and `snr`, which `parse_r_line` used to drop.
@@ -77,7 +85,28 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   `moq-subghz-pi` gains `open_hat_raw`, the part of `open_hat` that opens spidev and GPIO.
 
 * `moq-subghz-link`: the `Link` trait (`caps`, `send` returning a `TxReport`, `recv(buf, timeout)`, `idle`)
-  and an in-memory `loopback::pair` with deterministic drops. No binary uses it yet; nothing on the air changes.
+  and an in-memory `loopback::pair` with deterministic drops. Nothing on the air changes.
+
+### Link trait for the SX1276 code
+
+* **The SX1276 FSK and LoRa-mode code and the CatWAN writer now sit behind `moq_subghz_link::Link`**, in the new
+  `radios/moq-subghz-radio-sx1276` crate: `Sx1276FskTx` and `Sx1276FskRx` (the Pi HAT, from the two `radio.rs`
+  files), `Sx1276LoraTx` (from `lora2015-send`), `CatwanTx` (the `Q <hex>` writer from `moq-subghz-send`) and
+  `FileSink` (`--loopback`). The code was moved, not rewritten; frames, FEC, pacing, power and band checks and
+  the summary fields are unchanged. `moq-subghz-send` holds a `Box<dyn Link>` instead of its own `enum Link`.
+* `moq-subghz-send --link fsk` is the default and is the only value (`--catwan` and `--loopback` still pick the stick
+  and the file). The receiver's CatWAN and replay sources still read the stick's text lines (they feed `serial.log`
+  and the `X` line count), so only its `--radio` path goes through `Link`.
+* `Link::idle` returns a `Result` and `Link::take_tx_errors` is new (the stick reports `ERR tx` after `send`
+  returned); both have defaults. `LinkError::Io` prints its message as is.
+
+### Wire crate
+
+* `moq-subghz-wire` has a `seal` feature (on by default, so downstream builds are unchanged). Without it
+  the crate drops `rind` and `libc` and has no dependencies; framing, FEC and the Annex-B splitter are the
+  same. CI runs `cargo test -p moq-subghz-wire --no-default-features`.
+* New `moq_subghz_wire::plan(len, k, min_frame)` returns the length of every frame the `Fragmenter` makes for an
+  object, for airtime and overhead math without data. A test checks it against the real `Fragmenter`.
 
 ### Changed on the air
 

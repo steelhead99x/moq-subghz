@@ -7,10 +7,21 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
+[features]
+default = ["seal"]
+# Object sealing (`seal`): the AEAD and the key file reader. Framing, FEC and the Annex-B splitter
+# build without it.
+seal = ["dep:rind", "dep:libc"]
+
 [dependencies]
 # kixel-ai/rind main, pinned (pure-Rust AEAD; armv7 uses its portable/arm backend)
-rind = { git = "https://github.com/kixel-ai/rind", rev = "d2dc35bd796aaadc42df56aee0f1526cdee94b66" }
+rind = { git = "https://github.com/kixel-ai/rind", rev = "d2dc35bd796aaadc42df56aee0f1526cdee94b66", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # O_NONBLOCK for opening the key file, and mkfifo in its test
-libc = "0.2"
+libc = { version = "0.2", optional = true }
+
+[[test]]
+name = "golden_v5"
+# the sealed half of the golden hashes needs the sealer
+required-features = ["seal"]

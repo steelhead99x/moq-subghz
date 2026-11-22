@@ -683,7 +683,8 @@ dependencies = [
  "clap",
  "cmac",
  "libc",
- "moq-subghz-pi",
+ "moq-subghz-link",
+ "moq-subghz-radio-sx1276",
  "sx1276",
 ]
 
@@ -699,13 +700,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "moq-subghz-radio-emu"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "moq-subghz-link",
+ "moq-subghz-wire",
+]
+
+[[package]]
+name = "moq-subghz-radio-sx1276"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "libc",
+ "moq-subghz-link",
+ "moq-subghz-pi",
+ "moq-subghz-wire",
+ "sx1276",
+]
+
+[[package]]
 name = "moq-subghz-recv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "libc",
- "moq-subghz-pi",
+ "moq-subghz-link",
+ "moq-subghz-radio-emu",
+ "moq-subghz-radio-sx1276",
  "moq-subghz-wire",
  "sx1276",
 ]
@@ -726,7 +750,9 @@ dependencies = [
  "anyhow",
  "clap",
  "libc",
- "moq-subghz-pi",
+ "moq-subghz-link",
+ "moq-subghz-radio-emu",
+ "moq-subghz-radio-sx1276",
  "moq-subghz-wire",
  "sx1276",
 ]
