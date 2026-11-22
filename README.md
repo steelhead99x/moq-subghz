@@ -148,7 +148,7 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 ## Learn more
 
 * [docs/LINKS.md](docs/LINKS.md): each link (FSK, CSS mode, 802.11ah, 2.4 GHz, 5.8 GHz), a comparison table, the planned architecture
-* [docs/S1G-EMULATION.md](docs/S1G-EMULATION.md): the modeled 802.11ah sub-GHz Wi-Fi channel (formerly `docs/HALOW.md`)
+* [docs/S1G-EMULATION.md](docs/S1G-EMULATION.md): the modeled 802.11ah sub-GHz Wi-Fi channel
 * [docs/HARDWARE.md](docs/HARDWARE.md): boards and radio chips, with sources
 * [docs/BENCHMARKS.md](docs/BENCHMARKS.md): how to run and reproduce the benchmarks, labels, where reports live
 * [docs/REGULATORY.md](docs/REGULATORY.md): rules per band, and what the tools enforce

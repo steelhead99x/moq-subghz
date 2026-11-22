@@ -11,10 +11,10 @@ pub enum EmuSel {
     #[value(name = "fsk-emu")]
     Fsk,
     /// SX1276 CSS mode airtime and loss model, no radio.
-    #[value(name = "css-emu", alias = "lora-emu")]
+    #[value(name = "css-emu")]
     Css,
     /// 802.11ah S1G channel model, no radio.
-    #[value(name = "s1g-emu", alias = "halow-emu")]
+    #[value(name = "s1g-emu")]
     S1g,
 }
 
@@ -22,31 +22,31 @@ pub enum EmuSel {
 #[derive(Args, Clone, Debug)]
 pub struct EmuArgs {
     /// 802.11ah channel width in MHz (1, 2, 4, 8, 16)
-    #[arg(long, alias = "halow-bw", default_value_t = 1)]
+    #[arg(long, default_value_t = 1)]
     pub s1g_bw: u8,
     /// 802.11ah S1G MCS 0..=10 (10 only at 1 MHz)
-    #[arg(long, alias = "halow-mcs", default_value_t = 0)]
+    #[arg(long, default_value_t = 0)]
     pub s1g_mcs: u8,
     /// 802.11ah PHY payload limit in bytes
-    #[arg(long, alias = "halow-mtu", default_value_t = 1472)]
+    #[arg(long, default_value_t = 1472)]
     pub s1g_mtu: usize,
     /// Per-packet header bytes on air (MAC + LLC + IP + UDP)
-    #[arg(long, alias = "halow-overhead", default_value_t = 64)]
+    #[arg(long, default_value_t = 64)]
     pub s1g_overhead: usize,
     /// Most wire frames per 802.11ah packet (0 = as many as fit, 1 = no packing)
-    #[arg(long, alias = "halow-pack", default_value_t = 0)]
+    #[arg(long, default_value_t = 0)]
     pub s1g_pack: usize,
     /// Broadcast mode: no ACK, no retry (default is unicast with ACK and 7 retries)
-    #[arg(long, alias = "halow-bcast")]
+    #[arg(long)]
     pub s1g_bcast: bool,
     /// MAC retransmissions after the first attempt (unicast)
-    #[arg(long, alias = "halow-retries", default_value_t = 7)]
+    #[arg(long, default_value_t = 7)]
     pub s1g_retries: u32,
     /// Receive path latency in microseconds (driver and stack)
-    #[arg(long, alias = "halow-latency-us", default_value_t = 1500)]
+    #[arg(long, default_value_t = 1500)]
     pub s1g_latency_us: u64,
     /// Receive jitter, uniform 0..=N microseconds
-    #[arg(long, alias = "halow-jitter-us", default_value_t = 1000)]
+    #[arg(long, default_value_t = 1000)]
     pub s1g_jitter_us: u64,
     /// Loss per PHY attempt: none | iid:P | p_gb:p_bg:loss_good:loss_bad (Gilbert-Elliott)
     #[arg(long, default_value = "none")]
@@ -55,16 +55,16 @@ pub struct EmuArgs {
     #[arg(long, default_value_t = 1)]
     pub emu_seed: u64,
     /// CSS mode spreading factor 6..=12
-    #[arg(long, alias = "lora-sf", default_value_t = 7)]
+    #[arg(long, default_value_t = 7)]
     pub css_sf: u8,
     /// CSS mode bandwidth in Hz
-    #[arg(long, alias = "lora-bw", default_value_t = 500_000)]
+    #[arg(long, default_value_t = 500_000)]
     pub css_bw: u32,
     /// CSS mode coding rate 1..=4 (4/5..4/8)
-    #[arg(long, alias = "lora-cr", default_value_t = 1)]
+    #[arg(long, default_value_t = 1)]
     pub css_cr: u8,
     /// CSS mode implicit header: no header on air, both ends know the length (SF6 needs it)
-    #[arg(long, alias = "lora-implicit")]
+    #[arg(long)]
     pub css_implicit: bool,
     /// FSK bit rate of the modeled FSK channel
     #[arg(long, default_value_t = 300_000)]
@@ -107,54 +107,6 @@ impl EmuArgs {
         c.max_frames = self.s1g_pack;
         c.validate()?;
         Ok(c)
-    }
-}
-
-/// Old spellings that still parse as hidden aliases. Returns one stderr line per old spelling
-/// found in `args`, naming the new one. The CLIs print these before parsing.
-///
-/// The old words are the trademarked product names the project dropped; they stay here, in
-/// this one table, only so that old command lines keep working.
-pub fn deprecation_notes<I, S>(args: I) -> Vec<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    const VALUES: [(&str, &str); 2] = [("lora-emu", "css-emu"), ("halow-emu", "s1g-emu")];
-    const FLAG_PREFIXES: [(&str, &str); 3] = [
-        ("--halow-", "--s1g-"),
-        ("--lora-", "--css-"),
-        ("--catwan", "--rp2040"),
-    ];
-    let mut out = Vec::new();
-    for a in args {
-        let a = a.as_ref();
-        let (flag, val) = match a.split_once('=') {
-            Some((f, v)) => (f, Some(v)),
-            None => (a, None),
-        };
-        for (old, new) in VALUES {
-            if flag == old || val == Some(old) {
-                out.push(format!(
-                    "deprecated: `{old}` is now `{new}`; the old spelling still works for now"
-                ));
-            }
-        }
-        for (old, new) in FLAG_PREFIXES {
-            if let Some(rest) = flag.strip_prefix(old) {
-                out.push(format!(
-                    "deprecated: `{flag}` is now `{new}{rest}`; the old spelling still works for now"
-                ));
-            }
-        }
-    }
-    out
-}
-
-/// Print [`deprecation_notes`] for the process arguments to stderr.
-pub fn warn_deprecated_spellings() {
-    for n in deprecation_notes(std::env::args().skip(1)) {
-        eprintln!("{n}");
     }
 }
 
@@ -220,30 +172,11 @@ mod tests {
     }
 
     #[test]
-    fn old_flag_spellings_still_parse_and_are_noted() {
-        let p = P::parse_from(["x", "--halow-bw", "4", "--lora-sf", "9", "--halow-bcast"]);
-        assert_eq!(p.e.s1g_bw, 4);
-        assert_eq!(p.e.css_sf, 9);
-        assert!(p.e.s1g_bcast);
-        let n = deprecation_notes(["--halow-bw", "4", "--lora-sf=9", "--catwan", "/dev/x"]);
-        assert_eq!(n.len(), 3);
-        assert!(n[0].contains("--s1g-bw"));
-        assert!(n[1].contains("--css-sf"));
-        assert!(n[2].contains("--rp2040"));
-        let v = deprecation_notes(["--link", "lora-emu", "--link=halow-emu"]);
-        assert_eq!(v.len(), 2);
-        assert!(v[0].contains("css-emu") && v[1].contains("s1g-emu"));
-        assert!(
-            deprecation_notes(["--s1g-bw", "4", "--link", "css-emu", "--rp2040", "p"]).is_empty()
-        );
-    }
-
-    #[test]
-    fn old_link_values_are_aliases() {
+    fn only_the_neutral_spellings_parse() {
         use clap::ValueEnum;
-        assert_eq!(EmuSel::from_str("lora-emu", false).unwrap(), EmuSel::Css);
+        let p = P::parse_from(["x", "--s1g-bw", "4", "--css-sf", "9", "--s1g-bcast"]);
+        assert_eq!((p.e.s1g_bw, p.e.css_sf, p.e.s1g_bcast), (4, 9, true));
         assert_eq!(EmuSel::from_str("css-emu", false).unwrap(), EmuSel::Css);
-        assert_eq!(EmuSel::from_str("halow-emu", false).unwrap(), EmuSel::S1g);
         assert_eq!(EmuSel::from_str("s1g-emu", false).unwrap(), EmuSel::S1g);
     }
 }

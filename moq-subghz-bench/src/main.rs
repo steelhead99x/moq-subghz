@@ -39,11 +39,11 @@ enum Cmd {
         #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
         repo_root: PathBuf,
     },
-    /// Factory-vs-factory picture test: the stock the HAT maker app on the board, the stock receiver on the stick
+    /// Factory-vs-factory picture test: the HAT maker's stock app on the board, the stock receiver on the stick
     FactoryBench(factory::Opts),
     /// Raw logger for the stock receiver sketch on the stick (opens only --dev)
     StickCap(stickcap::Opts),
-    /// The board side of factory-bench: send each chunk with the stock the HAT maker app
+    /// The board side of factory-bench: send each chunk with the HAT maker's stock app
     FactorySend {
         /// Text file with one chunk per line
         chunks: PathBuf,

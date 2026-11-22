@@ -88,7 +88,9 @@ earlier image of the same name, `rp2040-sx1276-fw-v5.uf2` (0.5.0, old sha256 `fe
    picotool save -a rp2040-backup.bin
    ```
 2. Flash it: `picotool load -x firmware/rp2040-sx1276-fw-0.5.1.uf2`, or drag the `.uf2` onto the
-   `RPI-RP2` drive that appears.
+   `RPI-RP2` drive that appears. Which image: `rp2040-sx1276-fw-0.5.1.uf2` is the 0.5.1 source as released
+   and has NO band or power checks in the firmware (the host tools still check). `rp2040-sx1276-fw-v5.uf2`
+   is rebuilt from the current source and includes those checks, but it has not been flashed or run yet.
 3. Check it: open the serial port (macOS `/dev/cu.usbmodem*`, Linux `/dev/ttyACM0`), type `I`
    and press Enter. It should answer `I rp2040-sx1276-fw 0.5.1 sx_version=0x12 ...`. If it shows
    `sx_version=0x00`, send `X` (re-initialise the radio); on 0.5.0 send an `L` command first.

@@ -1,7 +1,8 @@
 # rp2040-sx1276-fw-v5.uf2 was rebuilt from the CURRENT source (band and power checks added; Rust 1.90.0, --locked,
 # thumbv6m, elf2uf2). It is NOT the image behind the earlier measured v5 runs; that one had sha256
 # fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317 (history only).
-# rp2040-sx1276-fw-0.5.1.uf2 was rebuilt from the 0.5.1 source as released; the old sha256 was
+# rp2040-sx1276-fw-0.5.1.uf2 was rebuilt from the 0.5.1 source as released, so it still PREDATES the band
+# and power checks (only the v5 file above has them); the old sha256 was
 # 608bc4dd10e7b211440d87faf33933ccdcdcc63c1c40b6e3317438818b40528f (history only). See ../CHANGELOG.md.
 d9d56afe9eae1b3fff3bcc242ca49bd0233cb31ce89c56b4f87f19eff5fd1b0e  rp2040-sx1276-fw-v5.uf2
 08ec0cdb576fe4c482e6638fb36452e2f5193f2a1b943789b0a739b1ccf9b999  rp2040-sx1276-fw-0.5.1.uf2

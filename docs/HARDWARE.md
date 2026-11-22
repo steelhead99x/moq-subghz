@@ -32,8 +32,11 @@ Do not read a board here as "supported" unless it says Measured.
 * An RP2040 microcontroller board with an SX1276 radio, from the board maker. This repo ships its own
   firmware (`firmware/rp2040-sx1276-fw`, prebuilt `.uf2` with sha256 sums) and the receiver tools talk to it over
   a USB serial port.
-* The shipped `.uf2` images predate the source's band and power checks (see [REVIEW.md](../REVIEW.md)),
-  so the checks live in the host tools. Do not type radio commands into a raw serial session.
+* Two images ship, and they differ in the band and power checks of the source (see [REVIEW.md](../REVIEW.md)).
+  `rp2040-sx1276-fw-v5.uf2` was rebuilt from the current source and includes the checks (it has not been
+  flashed or run yet). `rp2040-sx1276-fw-0.5.1.uf2` was rebuilt from the 0.5.1 source as released and still
+  predates them: it accepts any carrier and up to +17 dBm on `L` and `F`. Choose the v5 file if you want
+  the checks in the firmware; with either image the host tools also check the band and power. Do not type radio commands into a raw serial session.
 * Flashing the stick is the owner's action. The HOWTO has a backup-first procedure.
 
 ## Radio chips

@@ -4,30 +4,25 @@
 
 ### Neutral terminology and renames
 
-Product and brand names are out of file names, crate names, strings and docs. Chip names (SX1276,
-SX1262, LR1110, RP2040, ESP32-S3, MM6108) and standard names (IEEE 802.11ah, ISM 902-928 MHz, FSK)
-stay. The LoRa-class modulation is called chirp spread spectrum (CSS) mode, IEEE 802.11ah is
+Product and brand names are out of file names, crate names, strings, flags and docs. Chip names
+(SX1276, SX1262, LR1110, RP2040, ESP32-S3, MM6108) and standard names (IEEE 802.11ah, ISM 902-928 MHz,
+FSK) stay. The chirp-modulation mode is called chirp spread spectrum (CSS) mode, IEEE 802.11ah is
 "802.11ah sub-GHz Wi-Fi" (S1G for the PHY). This supersedes #52.
 
-| Old | New |
-|---|---|
-| crate and bins `moq-subghz-lora2015`, `lora2015-send`, `lora2015-log` | `moq-subghz-css2015`, `css2015-send`, `css2015-log` |
-| `firmware/catwan-fw`, `catwan-fw-v5.uf2`, `catwan-fw-0.5.1.uf2` | `firmware/rp2040-sx1276-fw`, `rp2040-sx1276-fw-v5.uf2`, `rp2040-sx1276-fw-0.5.1.uf2` (both rebuilt, see below) |
-| `firmware/vendor/dragino-lora-gps-hat`, `.../electronic-cats-catwan-rp2040` | `firmware/vendor/sx1276-gps-hat`, `firmware/vendor/rp2040-factory-receiver` |
-| `docs/HALOW.md` (moved: now `docs/S1G-EMULATION.md`) | `docs/S1G-EMULATION.md` |
-| `results/lora-2015/`, `results/stick-0.5.1/lora/`, `lora.csv`, `lora-summary.csv`, run names `lorawan-*` | `results/css-2015/`, `results/stick-0.5.1/css/`, `css.csv`, `css-summary.csv`, `framed-*` |
-| mode `lorawan` of `css2015-send`/`css2015-log` | mode `framed` |
-| `--link lora-emu`, `--link halow-emu` | `--link css-emu`, `--link s1g-emu` |
-| `--lora-*`, `--halow-*` emulation flags | `--css-*`, `--s1g-*` |
-| `--catwan PORT` of `moq-subghz-send` | `--rp2040 PORT` |
-| JSON key and link label `catwan` in run summaries | `rp2040` |
-
-The old link values and flags still parse as hidden aliases and print a `deprecated:` note on
-stderr (`moq_subghz_radio_emu::args::deprecation_notes`, tested). They will be removed in a later
-release. The serial banner check accepts any `*-fw` firmware name, so the shipped images, which
-were built before the rename, keep working; their binary content is unchanged on purpose (checksums
-in `firmware/SHA256SUMS`). New builds use the USB product string "RP2040-based device".
-Redirect: a link to `docs/HALOW.md` now goes to `docs/S1G-EMULATION.md`.
+* Renamed: the `moq-subghz-css2015` crate and its `css2015-send` and `css2015-log` bins, the firmware
+  directory and images (`firmware/rp2040-sx1276-fw`, `rp2040-sx1276-fw-v5.uf2`,
+  `rp2040-sx1276-fw-0.5.1.uf2`, both images rebuilt, see below), the vendor directories
+  (`firmware/vendor/sx1276-gps-hat`, `firmware/vendor/rp2040-factory-receiver`),
+  `docs/S1G-EMULATION.md` (the emulation doc), `results/css-2015/`, `results/stick-0.5.1/css/`,
+  `css.csv`, `css-summary.csv`, the `framed` mode and run names `framed-*`.
+* CLI: `--link css-emu` and `--link s1g-emu`, the `--css-*` and `--s1g-*` emulation flags and
+  `--rp2040 PORT` of `moq-subghz-send`. The former spellings are removed, not kept as aliases. The
+  JSON key and link label in run summaries is `rp2040`.
+* `moq-subghz-bench analyze` still reads archived run directories written under the earlier mode
+  name (old and new directory names give the same CSV; new output uses `framed-*`).
+* The serial banner check accepts any `*-fw` firmware name, so shipped images built before the rename
+  keep working; their binary content is unchanged on purpose (checksums in `firmware/SHA256SUMS`). New
+  builds use the USB product string "RP2040-based device".
 
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.

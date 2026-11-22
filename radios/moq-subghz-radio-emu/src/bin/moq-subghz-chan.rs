@@ -35,7 +35,6 @@ struct A {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    moq_subghz_radio_emu::args::warn_deprecated_spellings();
     let a = A::parse();
     let mut cfg = a.emu.to_cfg(a.link)?;
     cfg.expected = a.lens.is_some();

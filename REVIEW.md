@@ -43,8 +43,8 @@ Fixed in source (2026-11-21): `L` and `F` refuse a carrier outside 902-928 MHz o
 rate it used to replace silently. The same change makes a `Q` line wait for a queue slot
 (one USB read with several short `Q` lines used to drop the later ones) and reports a bad
 frame as `ERR tx`. The image measured earlier (old v5, old sha256 `fe86cc05...`) and `rp2040-sx1276-fw-0.5.1.uf2`
-predate it: until a new image is built, flashed and run on the stick, a stick on those
-images still accepts anything.
+predate it, so a stick on those images still accepts anything. The rebuilt
+`rp2040-sx1276-fw-v5.uf2` includes it, but has not been flashed or run on a stick yet.
 
 ### Replayed frames. Mostly fixed; long replays deferred.
 

@@ -282,6 +282,8 @@ pub struct CssRun {
 /// `chunk-sf7-125-small-r2` into (mode, profile, size, rep).
 fn parse_run_name(n: &str) -> Option<(String, String, String, i64)> {
     let (mode, rest) = n.split_once('-')?;
+    // `lorawan` is the name archived runs were written under; read it as `framed`.
+    let mode = if mode == "lorawan" { "framed" } else { mode };
     if !["chunk", "ssdv", "framed"].contains(&mode) {
         return None;
     }
@@ -327,6 +329,10 @@ fn css_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<CssR
     let Some((mode, profile, size, rep)) = parse_run_name(n) else {
         return Ok(None);
     };
+    // Archived runs keep their old directory name on disk; the CSV shows the neutral one.
+    let shown = n
+        .strip_prefix("lorawan-")
+        .map_or_else(|| n.to_string(), |r| format!("framed-{r}"));
     let d = runs.join(n);
     let images = d.join("exact/images.csv");
     if !images.exists() {
@@ -414,7 +420,7 @@ fn css_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<CssR
     let (snr_lo, snr_hi) = rng(&snr);
     let opt_i = |v: Option<i64>| v.map_or(Cell::None, Cell::Int);
     let cells = vec![
-        Cell::Str(n.into()),
+        Cell::Str(shown.clone()),
         Cell::Str(mode.clone()),
         Cell::Str(profile.clone()),
         Cell::Str(size.clone()),
@@ -1034,6 +1040,35 @@ mod tests {
         ] {
             assert_eq!(parse_run_name(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn archived_old_name_runs_are_read_like_new_ones() {
+        assert_eq!(
+            parse_run_name("lorawan-sf8-500-large-r12"),
+            Some(("framed".into(), "sf8-500".into(), "large".into(), 12))
+        );
+        let src = repo().join("results/stick-0.5.1/css/chunk-sf7-125-small-r1");
+        let stage = |tag: &str, name: &str| {
+            let s = Scratch::new(tag);
+            copy_tree(&src, &s.0.join(name).join("exact"));
+            fs::copy(src.join("send.txt"), s.0.join(format!("{name}.send"))).unwrap();
+            s
+        };
+        let old = stage("an-old-name", "lorawan-sf7-125-small-r1");
+        let new = stage("an-new-name", "framed-sf7-125-small-r1");
+        let inp = Inputs::under(&repo());
+        let none = |_: &Path, _: &Path, _: Option<&str>| Ok(None);
+        let (o, n) = (Scratch::new("an-old-out"), Scratch::new("an-new-out"));
+        run(&old.0, &o.0, &inp, &none).unwrap();
+        run(&new.0, &n.0, &inp, &none).unwrap();
+        let (a, b) = (
+            fs::read_to_string(o.0.join("css.csv")).unwrap(),
+            fs::read_to_string(n.0.join("css.csv")).unwrap(),
+        );
+        assert!(a.lines().count() > 1, "old-name run was skipped");
+        assert_eq!(a, b);
+        assert!(!a.contains("lorawan"));
     }
 
     #[test]

@@ -31,9 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 enum LinkKind {
     Fsk,
     FskEmu,
-    #[value(alias = "lora-emu")]
     CssEmu,
-    #[value(alias = "halow-emu")]
     S1gEmu,
 }
 
@@ -412,7 +410,6 @@ fn receive_permit(station: &Station, a: &Args, bitrate: u32, fdev: u32) -> Resul
 }
 
 fn main() -> Result<()> {
-    moq_subghz_radio_emu::args::warn_deprecated_spellings();
     let a = Args::parse();
     if let Some(h) = &a.clock_check {
         return clock_check(h);

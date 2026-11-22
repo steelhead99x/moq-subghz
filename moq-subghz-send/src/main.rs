@@ -26,9 +26,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 enum LinkKind {
     Fsk,
     FskEmu,
-    #[value(alias = "lora-emu")]
     CssEmu,
-    #[value(alias = "halow-emu")]
     S1gEmu,
 }
 
@@ -113,7 +111,7 @@ struct Args {
     emu: EmuArgs,
     /// Transmit through an RP2040-based device (sx1276-rs rp2040-sx1276-fw) on this serial port instead of
     /// the local SX1276 (reverse direction: Mac -> RP2040-based device -> Pi)
-    #[arg(long, alias = "catwan")]
+    #[arg(long)]
     rp2040: Option<String>,
     /// No radio: write frames as RP2040-based device `R` lines to FILE, paced at the FSK airtime
     #[arg(long)]
@@ -331,7 +329,6 @@ fn open_hat(
 }
 
 fn main() -> Result<()> {
-    moq_subghz_radio_emu::args::warn_deprecated_spellings();
     let a = Args::parse();
     if !(902.0..=928.0).contains(&a.freq) || (a.freq - 925.0).abs() < 0.3 {
         bail!("--freq must be inside 902-928 MHz and not 925.0");
@@ -1029,13 +1026,11 @@ mod tests {
     }
 
     #[test]
-    fn old_link_values_and_flag_still_parse() {
-        let a = Args::parse_from(["send", "--link", "lora-emu"]);
+    fn link_values_and_flag_parse() {
+        let a = Args::parse_from(["send", "--link", "css-emu"]);
         assert_eq!(a.link, LinkKind::CssEmu);
-        let a = Args::parse_from(["send", "--link", "halow-emu"]);
+        let a = Args::parse_from(["send", "--link", "s1g-emu"]);
         assert_eq!(a.link, LinkKind::S1gEmu);
-        let a = Args::parse_from(["send", "--catwan", "/dev/x"]);
-        assert_eq!(a.rp2040.as_deref(), Some("/dev/x"));
         let a = Args::parse_from(["send", "--rp2040", "/dev/y"]);
         assert_eq!(a.rp2040.as_deref(), Some("/dev/y"));
     }
