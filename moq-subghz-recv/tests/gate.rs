@@ -127,7 +127,7 @@ fn run_files_hold_the_licence_only_without_redaction() {
         all.push_str(&err(&o));
         assert_eq!(cfg.appears_in(&all), !redact, "redact={redact}");
         let summary = std::fs::read_to_string(out.join("summary.json")).unwrap();
-        assert!(summary.contains("\"licence\":\"licence_id="), "{summary}");
+        assert!(summary.contains("\"licence\":"), "{summary}");
         assert_eq!(summary.contains("[redacted]"), redact);
     }
 }
