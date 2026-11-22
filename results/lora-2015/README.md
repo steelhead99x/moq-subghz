@@ -9,6 +9,11 @@ compared on the same bench.
 [`results/stick-0.5.1/`](../stick-0.5.1/README.md), with the factory software next to them. The airtime table
 below is still the calculated one; the measured seconds match it within 1% when no frame is lost.
 
+**Wire version.** The wire version these captures used is not recorded in this README, and the
+current tools speak version 5 (`VERSION` in `moq-subghz-wire/src/lib.rs`). Treat the captures as
+supporting frame-size and airtime comparisons only. Any current loss or latency claim needs a
+fresh run of the current tools.
+
 ## What gets sent
 
 One test picture, cut three ways. It is a frame of the `testsrc2` pattern (`media/frame-f350-rind-120s.png`).

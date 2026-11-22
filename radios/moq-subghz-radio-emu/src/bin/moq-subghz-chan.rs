@@ -9,8 +9,9 @@
 use clap::Parser;
 use moq_subghz_link::Link;
 use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
-use moq_subghz_radio_emu::{pack, EmuLink};
+use moq_subghz_radio_emu::{outfile, pack, EmuLink};
 use moq_subghz_wire::{parse_r_line, FrameHdr};
+use std::path::Path;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -38,9 +39,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cfg = a.emu.to_cfg(a.link)?;
     cfg.expected = a.lens.is_some();
     let name = cfg.name();
-    // Without --out the survivors go nowhere: write to the null device.
-    let mut link = EmuLink::file_sender(cfg, a.out.as_deref().unwrap_or("/dev/null"))?;
-    let (mtu, maxf) = (link.caps().max_payload, link.caps().max_frames_per_packet);
     // frames: ((group, obj), bytes)
     let mut frames: Vec<((u16, u8), Vec<u8>)> = Vec::new();
     if let Some(l) = &a.lens {
@@ -64,7 +62,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 frames.push((key, r.frame));
             }
         }
+        if frames.is_empty() {
+            return Err("--in has no R lines to replay: refusing to write an empty result".into());
+        }
     }
+    // Read the whole input before any output file exists, so the output can never be the
+    // input in disguise, and write the survivors through a temporary file that replaces --out
+    // only after the run succeeded.
+    let pending = match a.out.as_deref() {
+        Some(o) => Some(outfile::plan(
+            Path::new(o),
+            a.input.as_deref().map(Path::new),
+        )?),
+        // Without --out the survivors go nowhere: write to the null device.
+        None => None,
+    };
+    let sink = pending.as_ref().map_or("/dev/null".to_string(), |p| {
+        p.write_path.to_string_lossy().into_owned()
+    });
+    let mut link = EmuLink::file_sender(cfg, &sink)?;
+    let (mtu, maxf) = (link.caps().max_payload, link.caps().max_frames_per_packet);
     let (mut t, mut i) = (0u64, 0usize);
     let (mut pkts, mut attempts, mut fl_sent, mut fl_ok, mut pay_bytes) =
         (0u64, 0u64, 0u64, 0u64, 0u64);
@@ -100,6 +117,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         i += n;
     }
     link.idle()?;
+    drop(link);
+    if let Some(p) = pending {
+        p.commit()?;
+    }
     lat.sort_unstable();
     let pct = |p: f64| {
         lat.get(((lat.len() as f64 - 1.0) * p).round() as usize)

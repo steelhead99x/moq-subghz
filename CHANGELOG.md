@@ -54,6 +54,26 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   CSV and SVG output is byte for byte the same). `elf2uf2` checks the whole segment range with
   checked arithmetic. New `deny.toml` and a non-blocking `cargo deny` job (licences, bans, sources).
 
+### Publisher, emulator and replay fixes (review 3)
+
+* `moq-subghz-publish` no longer reports success without a relay. It waits for the client's
+  session (`--connect-timeout-s`, default 10) before saying "first group live", fails with a
+  clear message and a non-zero exit when no session is established (an unserved port, a relay
+  that never answers), and on end of input lingers, finishes the broadcast and closes the
+  session gracefully within `--close-timeout-s` (default 5), failing if it did not drain.
+* `moq-subghz-chan` refuses an `--out` that is the same file as `--in` (same path, symlink or
+  hard link, by device and inode), writes the output through a temporary file in the same
+  directory that replaces `--out` only on success, and fails on an input with no `R` lines
+  instead of writing an empty result.
+* `moq-subghz-recv --replay` joins the reader thread when the line channel disconnects, so an
+  I/O error mid-file is a failed run instead of a clean end of file. A `--secs` cut-off is still
+  not an error.
+* The real-time emulated link queues each delivery at its modeled arrival time before pacing the
+  sender, so live UDP latency matches the model even when ACK retries keep the channel busy.
+* Results READMEs now say which wire version each capture used (video v3, loopback sweep v4,
+  current v5), that they support frame-size comparisons only, and that current loss and latency
+  claims need a fresh run.
+
 ### Docs
 
 * README rewritten around a per-link and per-hardware status table (Measured, Modeled, Planned, Not started).

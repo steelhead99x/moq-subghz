@@ -182,12 +182,18 @@ async fn publish_binary_through_a_relay() {
         .arg("--input")
         .arg(&input)
         .stdout(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let (catalog, groups) = watch(&relay, "lora/test", 4).await;
     let out = child.wait_with_output().unwrap();
     std::fs::remove_dir_all(&dir).ok();
     assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("live"),
+        "live is reported once the session is up: {err}"
+    );
 
     let video = &catalog.video.renditions[VIDEO_TRACK];
     assert_eq!(video.codec.to_string(), "avc3.42c01e");
@@ -264,4 +270,98 @@ async fn replay_through_recv() {
         got.iter().map(|g| g.0).collect::<Vec<_>>()
     );
     std::fs::remove_dir_all(&out).ok();
+}
+
+/// A localhost UDP port nothing listens on.
+fn closed_port() -> u16 {
+    let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    s.local_addr().unwrap().port()
+}
+
+fn write_records(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("moq-subghz-publish-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("objects.bin");
+    std::fs::write(
+        &input,
+        records()
+            .iter()
+            .flat_map(|r| r.encode())
+            .collect::<Vec<u8>>(),
+    )
+    .unwrap();
+    (dir, input)
+}
+
+/// With a valid H.264 record and no relay behind the port, the publisher must not say "live"
+/// and must exit non-zero within the connect deadline (it used to log "first group 0 live" and
+/// exit 0 while the client was still retrying).
+#[test]
+fn an_unserved_port_fails_instead_of_reporting_success() {
+    let (dir, input) = write_records("closed");
+    let started = std::time::Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_moq-subghz-publish"))
+        .args(["--url", &format!("moqt://localhost:{}", closed_port())])
+        .args(["--connect-timeout-s", "2", "--linger-s", "0.1", "--input"])
+        .arg(&input)
+        .stdout(Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(!out.status.success(), "must fail: {err}");
+    assert!(
+        !err.contains("live"),
+        "no success claim without a session: {err}"
+    );
+    assert!(
+        err.contains("relay session") || err.contains("relay connection"),
+        "clear message: {err}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "bounded by the deadline"
+    );
+}
+
+/// A relay that accepts QUIC but never completes the MoQ session also fails within the bound.
+#[test]
+fn a_relay_that_never_accepts_fails_within_the_deadline() {
+    let (dir, input) = write_records("mute");
+    // a UDP socket that is bound but never answers: the QUIC handshake gets no reply
+    let mute = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = mute.local_addr().unwrap().port();
+    let started = std::time::Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_moq-subghz-publish"))
+        .args(["--url", &format!("moqt://localhost:{port}")])
+        .args(["--connect-timeout-s", "2", "--linger-s", "0.1", "--input"])
+        .arg(&input)
+        .stdout(Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    std::fs::remove_dir_all(&dir).ok();
+    drop(mute);
+    assert!(!out.status.success(), "must fail: {err}");
+    assert!(!err.contains("live"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(15));
+}
+
+#[test]
+fn bad_deadlines_are_refused() {
+    let (dir, input) = write_records("badarg");
+    let out = Command::new(env!("CARGO_BIN_EXE_moq-subghz-publish"))
+        .args([
+            "--url",
+            "moqt://localhost:1",
+            "--connect-timeout-s",
+            "0",
+            "--input",
+        ])
+        .arg(&input)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--connect-timeout-s"));
 }

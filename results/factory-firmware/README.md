@@ -8,6 +8,12 @@ programs would have done it.
 Everything marked **measured** below came off the air on the bench on 2026-11-20. Everything
 marked **calculated** is from the SX1276 datasheet airtime formula.
 
+**Wire version.** The factory software does not use this project's wire format at all. Where
+this README compares against moq-subghz runs, those runs used older wire versions than the
+current version 5 (see [`../video/`](../video/README.md) and [`../loopback/`](../loopback/README.md)),
+so the comparison supports frame-size and airtime points only. Any current loss or latency claim
+needs a fresh run.
+
 ## What ran at each end
 
 | | sender (Raspberry Pi 2 B) | receiver (CatWAN USB Stick, RP2040 + SX1276) |
