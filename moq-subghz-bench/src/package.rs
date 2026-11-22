@@ -163,9 +163,9 @@ fn cp_pictures(dir: &Path, to: &Path) -> Result<()> {
 }
 
 pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
-    let (fsk, lora, dm): (PathBuf, PathBuf, PathBuf) =
-        (out.join("fsk"), out.join("lora"), out.join("demo"));
-    for d in [&fsk, &lora, &dm] {
+    let (fsk, css, dm): (PathBuf, PathBuf, PathBuf) =
+        (out.join("fsk"), out.join("css"), out.join("demo"));
+    for d in [&fsk, &css, &dm] {
         fs::create_dir_all(d)?;
     }
     for n in dirs(runs, |n| n.starts_with("f300-"))? {
@@ -209,7 +209,7 @@ pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
             && n.as_bytes()[n.len() - 3..n.len() - 1] == *b"-r"
             && n.as_bytes()[n.len() - 1].is_ascii_digit()
     })? {
-        let (d, o) = (runs.join(&n), lora.join(&n));
+        let (d, o) = (runs.join(&n), css.join(&n));
         fs::create_dir_all(&o)?;
         cp(g, &d.join("exact/images.csv"), &o.join("images.csv"))?;
         cp(g, &d.join("exact/rx.csv"), &o.join("rx.csv"))?;
@@ -480,14 +480,14 @@ mod tests {
         assert!(o.0.join("fsk/f300-a/summary.json").exists());
         assert!(!o.0.join("fsk/f300-dead").exists() && !o.0.join("fsk/f300-none").exists());
         assert_eq!(gunzip(&o.0.join("fsk/f300-a/serial.log.gz")), "serial.log");
-        let l = o.0.join("lora/chunk-sf7-125-small-r1");
+        let l = o.0.join("css/chunk-sf7-125-small-r1");
         assert_eq!(gunzip(&l.join("raw.log.gz")), "raw");
         assert_eq!(
             fs::read_to_string(l.join("send.txt")).unwrap(),
             "sent frames=5 bytes=1\n"
         );
         assert!(l.join("image0.jpg").exists() && l.join("tx.csv").exists());
-        assert!(!o.0.join("lora/chunk-sf7-125-small-r10").exists());
+        assert!(!o.0.join("css/chunk-sf7-125-small-r10").exists());
         assert!(o.0.join("demo/demo-chunk-sf7-500/image0.jpg").exists());
         assert_eq!(
             fs::read_to_string(o.0.join("demo/fsk-live-summary.json")).unwrap(),

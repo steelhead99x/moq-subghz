@@ -1,5 +1,5 @@
 //! [`EmuLink`]: a [`Link`] over the channel models. It carries real packets (what a sender hands
-//! to `send`) through a seeded model of FSK, LoRa or HaLow and reports what the model says the
+//! to `send`) through a seeded model of FSK, CSS mode or 802.11ah and reports what the model says the
 //! packet cost. Provenance is always [`Provenance::Modeled`].
 //!
 //! Where the delivered packets go depends on how the link was built:
@@ -114,8 +114,8 @@ impl EmuLink {
         cfg.validate().map_err(LinkError::Io)?;
         let (name, kind) = match &cfg.kind {
             PhyKind::Fsk(_) => ("fsk-emu", LinkKind::Emu),
-            PhyKind::Lora(_) => ("lora-emu", LinkKind::Emu),
-            PhyKind::Halow(_) => ("halow-emu", LinkKind::Emu),
+            PhyKind::Css(_) => ("css-emu", LinkKind::Emu),
+            PhyKind::S1g(_) => ("s1g-emu", LinkKind::Emu),
         };
         let caps = LinkCaps {
             name,
@@ -467,12 +467,12 @@ impl EmuLink {
 mod tests {
     use super::*;
     use crate::loss::LossModel;
-    use crate::model::{FskCfg, HalowCfg};
+    use crate::model::{FskCfg, S1gCfg};
 
-    fn halow(loss: LossModel, ack: bool) -> EmuCfg {
-        let mut c = EmuCfg::new(PhyKind::Halow(HalowCfg {
+    fn s1g(loss: LossModel, ack: bool) -> EmuCfg {
+        let mut c = EmuCfg::new(PhyKind::S1g(S1gCfg {
             ack,
-            ..HalowCfg::default()
+            ..S1gCfg::default()
         }));
         c.loss = loss;
         c
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn caps_say_modeled_and_what_the_model_allows() {
-        let (a, _b) = EmuLink::pair(halow(LossModel::None, true)).unwrap();
+        let (a, _b) = EmuLink::pair(s1g(LossModel::None, true)).unwrap();
         let c = a.caps();
         assert_eq!(c.provenance, Provenance::Modeled);
         assert_eq!(c.kind, LinkKind::Emu);
@@ -498,9 +498,9 @@ mod tests {
         let fsk = || EmuCfg::new(PhyKind::Fsk(FskCfg::default()));
         let (mut a, mut b) = EmuLink::pair(fsk()).unwrap();
         round_trip(&mut a, &mut b, &[1, 2, 3]);
-        let (mut a, mut b) = EmuLink::pair(halow(LossModel::None, true)).unwrap();
+        let (mut a, mut b) = EmuLink::pair(s1g(LossModel::None, true)).unwrap();
         round_trip(&mut a, &mut b, &pack::pack(&[&[7u8; 40][..]]).unwrap());
-        let (mut a, _b) = EmuLink::pair(halow(LossModel::None, true)).unwrap();
+        let (mut a, _b) = EmuLink::pair(s1g(LossModel::None, true)).unwrap();
         tx(&mut a, &pack::pack(&[&[7u8; 40][..]]).unwrap());
         let mut f = EmuLink::file_sender(fsk(), "/dev/null").unwrap();
         tx(&mut f, &[9, 9]);
@@ -603,13 +603,13 @@ mod tests {
 
     #[test]
     fn refuses_bad_packets_and_wrong_direction() {
-        let (mut a, _b) = EmuLink::pair(halow(LossModel::None, true)).unwrap();
+        let (mut a, _b) = EmuLink::pair(s1g(LossModel::None, true)).unwrap();
         assert_eq!(a.send(&[]), Err(LinkError::Empty));
         assert_eq!(a.send(&vec![1u8; 1473]), Err(LinkError::TooLong));
         // 3 bytes are not whole packed records: [len 9][1 2] is truncated
         assert!(matches!(a.send(&[9, 1, 2]), Err(LinkError::Io(_))));
         let mut rx =
-            EmuLink::udp_receiver(halow(LossModel::None, true), "127.0.0.1:0", None).unwrap();
+            EmuLink::udp_receiver(s1g(LossModel::None, true), "127.0.0.1:0", None).unwrap();
         assert_eq!(rx.send(&[1]), Err(LinkError::Unsupported));
         let mut tx =
             EmuLink::file_sender(EmuCfg::new(PhyKind::Fsk(FskCfg::default())), "/dev/null")
@@ -618,9 +618,9 @@ mod tests {
             tx.recv(&mut [0u8; 8], Duration::ZERO),
             Err(LinkError::Unsupported)
         );
-        let bad = EmuCfg::new(PhyKind::Halow(HalowCfg {
+        let bad = EmuCfg::new(PhyKind::S1g(S1gCfg {
             mtu: 10,
-            ..HalowCfg::default()
+            ..S1gCfg::default()
         }));
         assert!(EmuLink::pair(bad).is_err());
     }
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn udp_round_trip_on_loopback() {
-        let cfg = halow(LossModel::None, true);
+        let cfg = s1g(LossModel::None, true);
         let mut rx = EmuLink::udp_receiver(cfg.clone(), "127.0.0.1:0", None).unwrap();
         let addr = rx.local_addr().unwrap().to_string();
         let mut tx = EmuLink::udp_sender(cfg, &addr, None).unwrap();
@@ -654,7 +654,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("moq-emu-det-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let run = |name: &str, seed: u64| {
-            let mut cfg = halow(LossModel::Iid(0.3), false);
+            let mut cfg = s1g(LossModel::Iid(0.3), false);
             cfg.seed = seed;
             let path = dir.join(name);
             let mut l = EmuLink::file_sender(cfg, path.to_str().unwrap()).unwrap();
@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn virtual_clock_adds_busy_time() {
-        let mut c = EmuCfg::new(PhyKind::Halow(HalowCfg::default()));
+        let mut c = EmuCfg::new(PhyKind::S1g(S1gCfg::default()));
         c.expected = true;
         let (mut a, mut b) = EmuLink::pair(c).unwrap();
         let p = pack::pack(&[&[1u8; 255][..]]).unwrap();
@@ -712,7 +712,7 @@ mod tests {
         let f = [5u8; 255];
         let pkt = pack::pack(&[&f[..], &f[..], &f[..], &f[..]]).unwrap();
         for seed in 1..5000u64 {
-            let mut c = halow(LossModel::Iid(0.5), true);
+            let mut c = s1g(LossModel::Iid(0.5), true);
             c.seed = seed;
             let o = Channel::new(c.clone()).transmit(pkt.len());
             if o.delivered && o.busy_us > o.deliver_after_us + 40_000 {

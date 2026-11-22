@@ -15,8 +15,8 @@ runs the whole pipeline through a file, with no radios.
 | part | job |
 |---|---|
 | Raspberry Pi 2 Model B (any Pi with a 40-pin header works) | sender: makes the video and transmits it |
-| Dragino LoRa/GPS HAT, **915 MHz version** | the Pi's radio (the GPS part goes unused) |
-| Electronic Cats **CatWAN USB Stick RP2040**, 915 MHz | receiver: plugs into your laptop |
+| SX1276 GPS HAT, **915 MHz version** | the Pi's radio (the GPS part goes unused) |
+| the board maker **RP2040-based device**, 915 MHz | receiver: plugs into your laptop |
 | two 915 MHz antennas | both boards come with one |
 | a laptop (macOS or Linux) | runs the receiver and the player |
 
@@ -25,7 +25,7 @@ You don't need a camera. The sender uses ffmpeg's `testsrc2` pattern by default.
 <details>
 <summary>Pinouts (you only need these if you use a different board)</summary>
 
-**Dragino HAT on the Pi**
+**the HAT maker HAT on the Pi**
 
 | radio pin | Pi GPIO (BCM) | header pin |
 |---|---|---|
@@ -35,7 +35,7 @@ You don't need a camera. The sender uses ffmpeg's `testsrc2` pattern by default.
 | DIO0 | 4 | 7 |
 | DIO1 | not wired | |
 
-**CatWAN stick**
+**RP2040-based device**
 
 | radio pin | RP2040 GPIO |
 |---|---|
@@ -77,29 +77,29 @@ The only thing the Pi needs besides these two files is ffmpeg.
 
 ## 4. Flash the USB stick
 
-The stick needs this repo's firmware. A prebuilt image is at `firmware/catwan-fw-0.5.1.uf2`. The runs in `results/video/` used the
-earlier `firmware/catwan-fw-v5.uf2` (0.5.0), which answers `I` with `sx_version=0x00` until the first `L` or
+The stick needs this repo's firmware. A prebuilt image is at `firmware/rp2040-sx1276-fw-0.5.1.uf2`. The runs in `results/video/` used the
+earlier `firmware/rp2040-sx1276-fw-v5.uf2` (0.5.0), which answers `I` with `sx_version=0x00` until the first `L` or
 `F` command; 0.5.1 fixes that and is otherwise the same.
 
 1. **Back up the stick first.** Hold its BOOT button while plugging it in. Then, with
    [picotool](https://github.com/raspberrypi/picotool):
    ```sh
    picotool info -a                              # check that it's the stick
-   picotool save -a catwan-backup.bin
+   picotool save -a rp2040-backup.bin
    ```
-2. Flash it: `picotool load -x firmware/catwan-fw-0.5.1.uf2`, or drag the `.uf2` onto the
+2. Flash it: `picotool load -x firmware/rp2040-sx1276-fw-0.5.1.uf2`, or drag the `.uf2` onto the
    `RPI-RP2` drive that appears.
 3. Check it: open the serial port (macOS `/dev/cu.usbmodem*`, Linux `/dev/ttyACM0`), type `I`
-   and press Enter. It should answer `I catwan-fw 0.5.1 sx_version=0x12 ...`. If it shows
+   and press Enter. It should answer `I rp2040-sx1276-fw 0.5.1 sx_version=0x12 ...`. If it shows
    `sx_version=0x00`, send `X` (re-initialise the radio); on 0.5.0 send an `L` command first.
 
 To build the firmware yourself instead:
 
 ```sh
-cd firmware/catwan-fw
+cd firmware/rp2040-sx1276-fw
 rustup target add thumbv6m-none-eabi
 cargo build --release
-cargo run --release --manifest-path ../../Cargo.toml -p moq-subghz-bench -- elf2uf2 target/thumbv6m-none-eabi/release/catwan-fw catwan-fw.uf2
+cargo run --release --manifest-path ../../Cargo.toml -p moq-subghz-bench -- elf2uf2 target/thumbv6m-none-eabi/release/rp2040-sx1276-fw rp2040-sx1276-fw.uf2
 ```
 
 ## 5. First picture
@@ -201,7 +201,7 @@ themselves; the bench never adds them. More detail is in [moq-subghz-bench/READM
   sent unencrypted, so an attacker can cause loss or skew the loss counts. Apart from
   replaying recorded frames, it can't read or change the picture. The tools refuse a key
   file that other users can read.
-* **Reverse direction (laptop to Pi).** Run `moq-subghz-send --catwan /dev/cu.usbmodemXXXX` on
+* **Reverse direction (laptop to Pi).** Run `moq-subghz-send --rp2040 /dev/cu.usbmodemXXXX` on
   the laptop and `moq-subghz-recv --radio` on the Pi. Use a longer preamble, `300000:100000:12`
   (or `350000:100000:14:x`). The Pi's HAT can't signal when data has arrived, so the Pi has to
   keep checking, which uses a whole core. Expect more loss than the forward direction.

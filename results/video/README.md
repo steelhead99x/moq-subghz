@@ -1,11 +1,11 @@
 # results/video: rind off/on benchmark, 2026-11-17
 
 Eight 330 s runs, 10:43-11:32 PT, back to back, in this order: f300_off, f300_on, r300_off,
-r300_on, f350_off, f350_on, r350_off, r350_on. `f` = Pi 2 -> CatWAN/Mac, `r` = Mac -> CatWAN -> Pi 2.
+r300_on, f350_off, f350_on, r350_off, r350_on. `f` = Pi 2 -> RP2040-based device/Mac, `r` = Mac -> RP2040-based device -> Pi 2.
 
 Fixed settings: 915.0 MHz, +5 dBm, 320x240, 15 fps, GOP 15, x264 ultrafast/zerolatency at 180 kbit/s,
-FEC k=8, 96 B minimum frame, max object age 1000 ms. CatWAN firmware v5
-(`firmware/catwan-fw-v5.uf2`, sha256 fe86cc05...). rind main d2dc35bd796aaadc42df56aee0f1526cdee94b66,
+FEC k=8, 96 B minimum frame, max object age 1000 ms. RP2040-based device firmware v5
+(`firmware/rp2040-sx1276-fw-v5.uf2`, sha256 fe86cc05...). rind main d2dc35bd796aaadc42df56aee0f1526cdee94b66,
 ChaCha20-Poly1305. Antennas ~1 m apart, indoors.
 
 **Wire version: these are historical runs.** They were recorded with frame format version 3. The
@@ -62,7 +62,7 @@ your own ssh host, serial device, and key file (mode 0600, never commit it):
 
 ```sh
 export PI=pi                     # ssh host of the Pi
-export PORT=/dev/cu.usbmodemXXX  # macOS CatWAN port; Linux is typically /dev/ttyACM0
+export PORT=/dev/cu.usbmodemXXX  # macOS RP2040-based device port; Linux is typically /dev/ttyACM0
 export LKEY="$HOME/moq-subghz-key.hex"
 export PKEY="$LKEY"              # path of that same file on the Pi
 ( umask 077; openssl rand -hex 32 > "$LKEY" )
@@ -87,7 +87,7 @@ Mac -> Pi (`moq-subghz-bench rev`), e.g. r350_off (12 B preamble at 300k, 14 B a
 moq-subghz-recv --clock-check "$PI"                       # X = Pi minus laptop; the Pi receiver gets -X
 ssh "$PI" "cd ~/moq-subghz && ./moq-subghz-recv --radio --profile 350000:100000:14:x --secs 340 \
     --out /tmp/r350_off --decode --raw-log --clock-offset-ms=-$X"
-moq-subghz-send --catwan "$PORT" --profile 350000:100000:14:x --secs 330 \
+moq-subghz-send --rp2040 "$PORT" --profile 350000:100000:14:x --secs 330 \
     --log runs/r350_off.send.jsonl --i-have-an-antenna --transmit --fec-k 8
 ```
 

@@ -1,8 +1,8 @@
-//! The channel models: SX1276 FSK, SX1276 LoRa and 802.11ah HaLow, as pure seeded functions of
+//! The channel models: SX1276 FSK, SX1276 CSS mode and 802.11ah, as pure seeded functions of
 //! virtual time. Nothing here sleeps, opens a socket or touches hardware.
 //!
 //! Every constant is labelled SOURCE (a standard, datasheet or file in this repository) or
-//! ASSUMPTION. The result is MODELED: it is never a measurement. `docs/HALOW.md` lists every
+//! ASSUMPTION. The result is MODELED: it is never a measurement. `docs/S1G-EMULATION.md` lists every
 //! parameter with its label.
 use crate::loss::{LossModel, LossState, Rng};
 use crate::{pack, s1g};
@@ -18,7 +18,7 @@ pub struct Outcome {
     /// The far side got at least one copy. A real sender cannot know this: see `acked`.
     pub delivered: bool,
     /// The sender saw an ACK, which is all a real sender can know. `None` when no ACK exists
-    /// (FSK, LoRa, HaLow broadcast). `delivered && acked == Some(false)` is the case where the
+    /// (FSK, CSS mode, 802.11ah broadcast). `delivered && acked == Some(false)` is the case where the
     /// data arrived and every ACK was lost: the sender reports failure, the receiver has it.
     pub acked: Option<bool>,
     /// From the start of the transmission to the moment the far side has it.
@@ -28,7 +28,7 @@ pub struct Outcome {
 }
 
 /// Most MAC retransmissions the model accepts. Far above any real retry limit (7), and it keeps a
-/// pathological `--halow-retries` from looping for billions of attempts.
+/// pathological `--s1g-retries` from looping for billions of attempts.
 pub const MAX_RETRIES: u32 = 255;
 /// Most per-packet header bytes the model accepts.
 pub const MAX_OVERHEAD: usize = 4096;
@@ -37,9 +37,9 @@ pub const MAX_MTU: usize = 65_507;
 /// Longest latency, jitter or timing parameter the model accepts, in microseconds (10 s).
 pub const MAX_TIME_US: u64 = 10_000_000;
 
-/// HaLow MAC/PHY parameters. Defaults are ASSUMPTIONS unless a SOURCE is named.
+/// 802.11ah MAC/PHY parameters. Defaults are ASSUMPTIONS unless a SOURCE is named.
 #[derive(Clone, Debug, PartialEq)]
-pub struct HalowCfg {
+pub struct S1gCfg {
     /// SOURCE for the allowed values: 802.11ah S1G widths 1, 2, 4, 8, 16 MHz. The default is an
     /// ASSUMPTION (1 MHz, the narrowest and longest range choice).
     pub bw_mhz: u8,
@@ -51,7 +51,7 @@ pub struct HalowCfg {
     /// Per-packet bytes on top of the payload. ASSUMPTION 64 = 28 MAC header and FCS (an
     /// 802.11 data frame figure recalled, not checked; 802.11ah's short S1G header is
     /// smaller) + 8 LLC/SNAP + 20 IPv4 + 8 UDP, i.e. the packet goes through the Linux
-    /// network stack of a HaLow netdev. A raw-frame driver would pay about 36 less.
+    /// network stack of a 802.11ah netdev. A raw-frame driver would pay about 36 less.
     pub overhead: usize,
     /// ASSUMPTION: SIFS 160 us (sub-1 GHz S1G value as recalled from 802.11ah; not verified
     /// against the standard text, no datasheet cited).
@@ -76,9 +76,9 @@ pub struct HalowCfg {
     pub jitter_us: u64,
 }
 
-impl Default for HalowCfg {
+impl Default for S1gCfg {
     fn default() -> Self {
-        HalowCfg {
+        S1gCfg {
             bw_mhz: 1,
             mcs: 0,
             mtu: 1472,
@@ -97,9 +97,9 @@ impl Default for HalowCfg {
     }
 }
 
-/// SX1276 LoRa modem settings (SOURCE: Semtech SX1276 datasheet, "Time on Air").
+/// SX1276 Cssm settings (SOURCE: Semtech SX1276 datasheet, "Time on Air").
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LoraCfg {
+pub struct CssCfg {
     pub sf: u8,
     pub bw_hz: u32,
     /// 1..=4 meaning 4/5..4/8.
@@ -109,10 +109,10 @@ pub struct LoraCfg {
     pub explicit_header: bool,
 }
 
-impl Default for LoraCfg {
+impl Default for CssCfg {
     fn default() -> Self {
-        // The repo's fastest lora-2015 profile family (sf7, 500 kHz) is `sf7-500`.
-        LoraCfg {
+        // The repo's fastest css-2015 profile family (sf7, 500 kHz) is `sf7-500`.
+        CssCfg {
             sf: 7,
             bw_hz: 500_000,
             cr: 1,
@@ -123,7 +123,7 @@ impl Default for LoraCfg {
     }
 }
 
-impl LoraCfg {
+impl CssCfg {
     pub fn airtime_us(&self, payload: usize) -> u64 {
         let sf = i64::from(self.sf);
         let tsym = f64::from(1u32 << self.sf) / f64::from(self.bw_hz);
@@ -138,8 +138,8 @@ impl LoraCfg {
     }
 }
 
-/// The LoRa bandwidths the SX1276 can select, Hz.
-const LORA_BW_HZ: [u32; 10] = [
+/// The CSS mode bandwidths the SX1276 can select, Hz.
+const CSS_BW_HZ: [u32; 10] = [
     7_800, 10_400, 15_600, 20_800, 31_250, 41_700, 62_500, 125_000, 250_000, 500_000,
 ];
 
@@ -170,8 +170,8 @@ impl FskCfg {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PhyKind {
     Fsk(FskCfg),
-    Lora(LoraCfg),
-    Halow(HalowCfg),
+    Css(CssCfg),
+    S1g(S1gCfg),
 }
 
 /// Per-run emulation settings shared by every kind.
@@ -180,12 +180,12 @@ pub struct EmuCfg {
     pub kind: PhyKind,
     pub loss: LossModel,
     pub seed: u64,
-    /// Cap on wire frames per packet (HaLow only). 0 = as many as fit.
+    /// Cap on wire frames per packet (802.11ah only). 0 = as many as fit.
     pub max_frames: usize,
     /// Use the mean backoff (CW/2 slots) and no jitter instead of random draws: a
     /// deterministic airtime for tables.
     pub expected: bool,
-    /// Latency added to FSK/LoRa deliveries. SOURCE: none; 0 by default (the airtime is the
+    /// Latency added to FSK/CSS mode deliveries. SOURCE: none; 0 by default (the airtime is the
     /// latency, as in the repo's own loopback path). At most [`MAX_TIME_US`].
     pub fixed_latency_us: u64,
 }
@@ -205,7 +205,7 @@ impl EmuCfg {
     /// Is the configuration usable (MCS defined at this bandwidth, MTU holds a wire frame)?
     pub fn validate(&self) -> Result<(), String> {
         match &self.kind {
-            PhyKind::Halow(h) => {
+            PhyKind::S1g(h) => {
                 if s1g::n_dbps(h.bw_mhz, h.mcs).is_none() {
                     return Err(format!(
                         "MCS{} is not defined at {} MHz (1 stream)",
@@ -214,35 +214,32 @@ impl EmuCfg {
                 }
                 if h.mtu < MAX_FRAME + pack::RECORD_OVERHEAD {
                     return Err(
-                        "halow mtu must be at least 256 (one 255 B wire frame plus its length byte)"
+                        "s1g mtu must be at least 256 (one 255 B wire frame plus its length byte)"
                             .into(),
                     );
                 }
                 let bounded = [
-                    (h.mtu <= MAX_MTU, "halow mtu must be at most 65507"),
-                    (
-                        h.retries <= MAX_RETRIES,
-                        "halow retries must be at most 255",
-                    ),
+                    (h.mtu <= MAX_MTU, "s1g mtu must be at most 65507"),
+                    (h.retries <= MAX_RETRIES, "s1g retries must be at most 255"),
                     (
                         h.overhead <= MAX_OVERHEAD,
-                        "halow overhead must be at most 4096 bytes",
+                        "s1g overhead must be at most 4096 bytes",
                     ),
                     (
                         h.ack_bytes <= MAX_OVERHEAD,
-                        "halow ack size must be at most 4096 bytes",
+                        "s1g ack size must be at most 4096 bytes",
                     ),
                     (
                         h.proc_latency_us <= MAX_TIME_US
                             && h.jitter_us <= MAX_TIME_US
                             && h.sifs_us <= MAX_TIME_US
                             && h.slot_us <= MAX_TIME_US,
-                        "halow latency, jitter, SIFS and slot time must be at most 10 s",
+                        "s1g latency, jitter, SIFS and slot time must be at most 10 s",
                     ),
-                    (h.aifsn <= 16, "halow AIFSN must be at most 16"),
+                    (h.aifsn <= 16, "s1g AIFSN must be at most 16"),
                     (
                         h.cw_min <= h.cw_max && h.cw_max <= 65_535,
-                        "halow contention window: cw_min <= cw_max <= 65535",
+                        "s1g contention window: cw_min <= cw_max <= 65535",
                     ),
                 ];
                 if let Some((_, m)) = bounded.iter().find(|(ok, _)| !ok) {
@@ -254,17 +251,17 @@ impl EmuCfg {
                     return Err("fsk bit rate must be above 0".into());
                 }
             }
-            PhyKind::Lora(l) => {
+            PhyKind::Css(l) => {
                 if !(6..=12).contains(&l.sf) || !(1..=4).contains(&l.cr) {
-                    return Err("lora: sf 6..=12, cr 1..=4".into());
+                    return Err("css: sf 6..=12, cr 1..=4".into());
                 }
                 // SOURCE: SX1276 datasheet, the bandwidths RegModemConfig1 can select
-                if !LORA_BW_HZ.contains(&l.bw_hz) {
-                    return Err(format!("lora: bw must be one of {LORA_BW_HZ:?} Hz"));
+                if !CSS_BW_HZ.contains(&l.bw_hz) {
+                    return Err(format!("css: bw must be one of {CSS_BW_HZ:?} Hz"));
                 }
                 // SOURCE: SX1276 datasheet, SF6 works only with the implicit header
                 if l.sf == 6 && l.explicit_header {
-                    return Err("lora: SF6 needs the implicit header on the SX1276".into());
+                    return Err("css: SF6 needs the implicit header on the SX1276".into());
                 }
             }
         }
@@ -274,15 +271,15 @@ impl EmuCfg {
         Ok(())
     }
 
-    /// Short name for logs, such as `halow-emu 1 MHz MCS0 ack`.
+    /// Short name for logs, such as `s1g-emu 1 MHz MCS0 ack`.
     pub fn name(&self) -> String {
         match &self.kind {
             PhyKind::Fsk(f) => format!("fsk-emu {} bit/s", f.bitrate_bps),
-            PhyKind::Lora(l) => {
-                format!("lora-emu SF{} BW{}k CR4/{}", l.sf, l.bw_hz / 1000, l.cr + 4)
+            PhyKind::Css(l) => {
+                format!("css-emu SF{} BW{}k CR4/{}", l.sf, l.bw_hz / 1000, l.cr + 4)
             }
-            PhyKind::Halow(h) => format!(
-                "halow-emu {} MHz MCS{} {}",
+            PhyKind::S1g(h) => format!(
+                "s1g-emu {} MHz MCS{} {}",
                 h.bw_mhz,
                 h.mcs,
                 if h.ack { "ack" } else { "bcast" }
@@ -293,7 +290,7 @@ impl EmuCfg {
     /// Largest PHY payload in bytes.
     pub fn mtu(&self) -> usize {
         match &self.kind {
-            PhyKind::Halow(h) => h.mtu,
+            PhyKind::S1g(h) => h.mtu,
             _ => MAX_FRAME,
         }
     }
@@ -301,7 +298,7 @@ impl EmuCfg {
     /// Most wire frames one packet may hold (1 = no packing).
     pub fn max_frames_per_packet(&self) -> usize {
         match &self.kind {
-            PhyKind::Halow(h) => {
+            PhyKind::S1g(h) => {
                 let fit = h.mtu / (MAX_FRAME + pack::RECORD_OVERHEAD);
                 if self.max_frames == 0 {
                     fit
@@ -318,19 +315,19 @@ impl EmuCfg {
     pub fn airtime_us(&self, payload_len: usize) -> u64 {
         match &self.kind {
             PhyKind::Fsk(f) => f.airtime_us(payload_len),
-            PhyKind::Lora(l) => l.airtime_us(payload_len),
-            PhyKind::Halow(h) => data_us(h, payload_len),
+            PhyKind::Css(l) => l.airtime_us(payload_len),
+            PhyKind::S1g(h) => data_us(h, payload_len),
         }
     }
 }
 
 /// Airtime of the ACK control frame.
-fn ack_us(h: &HalowCfg) -> u64 {
+fn ack_us(h: &S1gCfg) -> u64 {
     s1g::ppdu_us(h.bw_mhz, 0, h.ack_bytes).unwrap_or(0)
 }
 
 /// Time of the data PPDU for `payload_len` payload bytes, headers included.
-fn data_us(h: &HalowCfg, payload_len: usize) -> u64 {
+fn data_us(h: &S1gCfg, payload_len: usize) -> u64 {
     s1g::ppdu_us(h.bw_mhz, h.mcs, payload_len + h.overhead).unwrap_or(u64::MAX / 4)
 }
 
@@ -352,7 +349,7 @@ impl Channel {
     pub fn transmit(&mut self, n: usize) -> Outcome {
         let expected = self.cfg.expected;
         match self.cfg.kind.clone() {
-            PhyKind::Fsk(_) | PhyKind::Lora(_) => {
+            PhyKind::Fsk(_) | PhyKind::Css(_) => {
                 let air = self.cfg.airtime_us(n);
                 let lost = self.loss.lost(&mut self.rng);
                 Outcome {
@@ -364,7 +361,7 @@ impl Channel {
                     attempts: 1,
                 }
             }
-            PhyKind::Halow(h) => {
+            PhyKind::S1g(h) => {
                 let data = data_us(&h, n);
                 let ack = ack_us(&h);
                 let aifs = h.sifs_us + h.aifsn * h.slot_us;
@@ -444,53 +441,53 @@ mod tests {
     }
 
     #[test]
-    fn lora_matches_semtech_reference() {
+    fn css_matches_semtech_reference() {
         // SX1276 datasheet formula, 125 kHz CR4/5, 8 symbols preamble, explicit header, CRC:
         // SF7 10 B = 41.216 ms, SF12 10 B = 991.232 ms, SF7 51 B = 102.656 ms. These are this
         // formula's own outputs, a regression guard, not an independent measurement.
-        let l = |sf| LoraCfg {
+        let l = |sf| CssCfg {
             sf,
             bw_hz: 125_000,
-            ..LoraCfg::default()
+            ..CssCfg::default()
         };
         assert_eq!(l(7).airtime_us(10), 41_216);
         assert_eq!(l(12).airtime_us(10), 991_232);
         assert_eq!(l(7).airtime_us(51), 102_656);
     }
 
-    fn expected_halow() -> Channel {
-        let mut cfg = EmuCfg::new(PhyKind::Halow(HalowCfg::default()));
+    fn expected_s1g() -> Channel {
+        let mut cfg = EmuCfg::new(PhyKind::S1g(S1gCfg::default()));
         cfg.expected = true;
         Channel::new(cfg)
     }
 
     #[test]
-    fn lora_implicit_header_airtime() {
+    fn css_implicit_header_airtime() {
         // ASSUMPTION: hand computation of the same datasheet formula with IH = 1 (20 fewer bits
         // in the numerator); no published implicit-header reference value is cited.
         // SF6, 125 kHz, CR4/5, 8 preamble symbols, CRC, 10 B:
         // num = 80 - 24 + 28 + 16 - 20 = 80, den = 4 * 6 = 24, 4 blocks, 8 + 4 * 5 = 28 symbols,
         // Tsym = 64 / 125000 = 0.512 ms, (8 + 4.25 + 28) * 0.512 ms = 20.608 ms.
-        let l = LoraCfg {
+        let l = CssCfg {
             sf: 6,
             bw_hz: 125_000,
             explicit_header: false,
-            ..LoraCfg::default()
+            ..CssCfg::default()
         };
         assert_eq!(l.airtime_us(10), 20_608);
         // the implicit header is never longer than the explicit one
-        let e = LoraCfg {
+        let e = CssCfg {
             explicit_header: true,
             ..l
         };
         assert!(l.airtime_us(10) <= e.airtime_us(10));
-        assert!(EmuCfg::new(PhyKind::Lora(l)).validate().is_ok());
+        assert!(EmuCfg::new(PhyKind::Css(l)).validate().is_ok());
     }
 
     #[test]
-    fn halow_clean_attempt_adds_up() {
-        let o = expected_halow().transmit(1000);
-        let h = HalowCfg::default();
+    fn s1g_clean_attempt_adds_up() {
+        let o = expected_s1g().transmit(1000);
+        let h = S1gCfg::default();
         let data = s1g::ppdu_us(1, 0, 1064).unwrap();
         let ack = s1g::ppdu_us(1, 0, 14).unwrap();
         assert_eq!(o.busy_us, 160 + 3 * 52 + 7 * 52 + data + h.sifs_us + ack);
@@ -500,7 +497,7 @@ mod tests {
 
     #[test]
     fn retries_hide_random_loss_but_cost_airtime() {
-        let mut cfg = EmuCfg::new(PhyKind::Halow(HalowCfg::default()));
+        let mut cfg = EmuCfg::new(PhyKind::S1g(S1gCfg::default()));
         cfg.loss = LossModel::Iid(0.2);
         let mut p = Channel::new(cfg.clone());
         let n = 20_000;
@@ -516,7 +513,7 @@ mod tests {
         assert!(mean > 1.3 && mean < 1.6, "{mean}"); // about 1 / (1 - 0.2 * ...) with ACK loss
                                                      // broadcast: no retry, loss passes through
         let mut b = cfg;
-        if let PhyKind::Halow(h) = &mut b.kind {
+        if let PhyKind::S1g(h) = &mut b.kind {
             h.ack = false;
         }
         let mut p = Channel::new(b);
@@ -526,30 +523,30 @@ mod tests {
 
     #[test]
     fn invalid_settings_are_refused() {
-        let h = HalowCfg {
+        let h = S1gCfg {
             bw_mhz: 2,
             mcs: 9,
-            ..HalowCfg::default()
+            ..S1gCfg::default()
         };
-        assert!(EmuCfg::new(PhyKind::Halow(h)).validate().is_err());
-        let h = HalowCfg {
+        assert!(EmuCfg::new(PhyKind::S1g(h)).validate().is_err());
+        let h = S1gCfg {
             mtu: 255,
-            ..HalowCfg::default()
+            ..S1gCfg::default()
         };
-        assert!(EmuCfg::new(PhyKind::Halow(h)).validate().is_err());
-        let l = LoraCfg {
+        assert!(EmuCfg::new(PhyKind::S1g(h)).validate().is_err());
+        let l = CssCfg {
             sf: 5,
-            ..LoraCfg::default()
+            ..CssCfg::default()
         };
-        assert!(EmuCfg::new(PhyKind::Lora(l)).validate().is_err());
-        assert!(EmuCfg::new(PhyKind::Halow(HalowCfg::default()))
+        assert!(EmuCfg::new(PhyKind::Css(l)).validate().is_err());
+        assert!(EmuCfg::new(PhyKind::S1g(S1gCfg::default()))
             .validate()
             .is_ok());
     }
 
     #[test]
     fn frames_per_packet_follows_mtu() {
-        let c = EmuCfg::new(PhyKind::Halow(HalowCfg::default()));
+        let c = EmuCfg::new(PhyKind::S1g(S1gCfg::default()));
         assert_eq!(c.max_frames_per_packet(), 5);
         let mut c = c;
         c.max_frames = 1;
@@ -562,7 +559,7 @@ mod tests {
 
     #[test]
     fn same_seed_same_outcomes() {
-        let mut c = EmuCfg::new(PhyKind::Halow(HalowCfg::default()));
+        let mut c = EmuCfg::new(PhyKind::S1g(S1gCfg::default()));
         c.loss = LossModel::Iid(0.3);
         let run = |c: &EmuCfg| {
             let mut p = Channel::new(c.clone());
@@ -575,11 +572,11 @@ mod tests {
     }
 
     #[test]
-    fn halow_arguments_are_bounded() {
-        let bad = |f: &dyn Fn(&mut HalowCfg)| {
-            let mut h = HalowCfg::default();
+    fn s1g_arguments_are_bounded() {
+        let bad = |f: &dyn Fn(&mut S1gCfg)| {
+            let mut h = S1gCfg::default();
             f(&mut h);
-            EmuCfg::new(PhyKind::Halow(h)).validate().is_err()
+            EmuCfg::new(PhyKind::S1g(h)).validate().is_err()
         };
         assert!(bad(&|h| h.retries = u32::MAX));
         assert!(bad(&|h| h.retries = MAX_RETRIES + 1));
@@ -593,39 +590,39 @@ mod tests {
         c.fixed_latency_us = u64::MAX;
         assert!(c.validate().is_err());
         // the edges are allowed, and the worst case terminates without overflow
-        let mut h = HalowCfg {
+        let mut h = S1gCfg {
             retries: MAX_RETRIES,
             overhead: MAX_OVERHEAD,
             proc_latency_us: MAX_TIME_US,
             jitter_us: MAX_TIME_US,
-            ..HalowCfg::default()
+            ..S1gCfg::default()
         };
         h.cw_min = h.cw_max;
-        let mut cfg = EmuCfg::new(PhyKind::Halow(h));
+        let mut cfg = EmuCfg::new(PhyKind::S1g(h));
         cfg.loss = LossModel::Iid(1.0);
         cfg.validate().unwrap();
         let o = Channel::new(cfg).transmit(1472);
         assert_eq!((o.attempts, o.delivered), (256, false));
         // even an unvalidated config cannot overflow or panic
-        let h = HalowCfg {
+        let h = S1gCfg {
             retries: u32::MAX,
             proc_latency_us: u64::MAX,
             jitter_us: u64::MAX,
             ack: false,
-            ..HalowCfg::default()
+            ..S1gCfg::default()
         };
-        let o = Channel::new(EmuCfg::new(PhyKind::Halow(h))).transmit(10);
+        let o = Channel::new(EmuCfg::new(PhyKind::S1g(h))).transmit(10);
         assert!(o.delivered && o.deliver_after_us == u64::MAX);
     }
 
     #[test]
-    fn lora_settings_the_sx1276_cannot_do_are_refused() {
+    fn css_settings_the_sx1276_cannot_do_are_refused() {
         let cfg = |sf, bw_hz, explicit_header| {
-            EmuCfg::new(PhyKind::Lora(LoraCfg {
+            EmuCfg::new(PhyKind::Css(CssCfg {
                 sf,
                 bw_hz,
                 explicit_header,
-                ..LoraCfg::default()
+                ..CssCfg::default()
             }))
         };
         assert!(cfg(7, 123_456, true).validate().is_err());
@@ -638,9 +635,9 @@ mod tests {
     #[test]
     fn a_lost_ack_is_delivered_but_not_acked() {
         // one attempt, 50 % loss on data and ACK alike: all three outcomes must occur
-        let mut cfg = EmuCfg::new(PhyKind::Halow(HalowCfg {
+        let mut cfg = EmuCfg::new(PhyKind::S1g(S1gCfg {
             retries: 0,
-            ..HalowCfg::default()
+            ..S1gCfg::default()
         }));
         cfg.loss = LossModel::Iid(0.5);
         let mut c = Channel::new(cfg);
@@ -658,9 +655,9 @@ mod tests {
         );
         // broadcast and FSK have no ACK to see
         for kind in [
-            PhyKind::Halow(HalowCfg {
+            PhyKind::S1g(S1gCfg {
                 ack: false,
-                ..HalowCfg::default()
+                ..S1gCfg::default()
             }),
             PhyKind::Fsk(FskCfg::default()),
         ] {

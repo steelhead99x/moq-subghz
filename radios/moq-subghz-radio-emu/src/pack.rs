@@ -1,7 +1,7 @@
 //! Packing of several 255 B wire frames into one PHY packet.
 //!
 //! The wire format is untouched: a wire frame is at most `MAX_FRAME` (255) bytes, with `idx`
-//! and `nfrag` as `u8`. A HaLow packet can carry far more than that, so the sender glues
+//! and `nfrag` as `u8`. A 802.11ah packet can carry far more than that, so the sender glues
 //! whole wire frames together as `[len u8][frame bytes]` records. `len` is 1..=255, so no
 //! record can be mistaken for another and the unpacker needs no count field. Each frame keeps
 //! its own CRC-16, so a corrupted record is rejected by the normal frame check.

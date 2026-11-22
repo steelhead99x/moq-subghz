@@ -1,4 +1,4 @@
-//! No radio: frames written as CatWAN `R` lines, paced at the FSK airtime. Moved from
+//! No radio: frames written as RP2040-based device `R` lines, paced at the FSK airtime. Moved from
 //! `moq-subghz-send` (`--loopback`); the file is what `moq-subghz-recv --replay` reads.
 
 use moq_subghz_link::{

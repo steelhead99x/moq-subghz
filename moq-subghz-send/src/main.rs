@@ -11,7 +11,7 @@ use moq_subghz_licence::{Auth, Encryption, GateArgs, Profile, Station, Tuning, T
 use moq_subghz_link::Link;
 use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
 use moq_subghz_radio_emu::{pack, EmuLink};
-use moq_subghz_radio_sx1276::{CatwanTx, FileSink};
+use moq_subghz_radio_sx1276::{FileSink, Rp2040Tx};
 use moq_subghz_wire::{annexb, parse_fsk_profile, seal, stamp, Fragmenter, ObjHdr};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -26,8 +26,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 enum LinkKind {
     Fsk,
     FskEmu,
-    LoraEmu,
-    HalowEmu,
+    #[value(alias = "lora-emu")]
+    CssEmu,
+    #[value(alias = "halow-emu")]
+    S1gEmu,
 }
 
 impl LinkKind {
@@ -35,8 +37,8 @@ impl LinkKind {
         match self {
             LinkKind::Fsk => None,
             LinkKind::FskEmu => Some(EmuSel::Fsk),
-            LinkKind::LoraEmu => Some(EmuSel::Lora),
-            LinkKind::HalowEmu => Some(EmuSel::Halow),
+            LinkKind::CssEmu => Some(EmuSel::Css),
+            LinkKind::S1gEmu => Some(EmuSel::S1g),
         }
     }
 }
@@ -73,7 +75,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     fec_k: u8,
     /// Zero-pad radio frames shorter than this (a tiny frame right after a 255 B one is
-    /// the one the CatWAN misses; 0 = off)
+    /// the one the RP2040-based device misses; 0 = off)
     #[arg(long, default_value_t = 96)]
     min_frame: usize,
     /// Drop (MoQ-style, whole rest of group) objects older than this before they start TX
@@ -94,8 +96,8 @@ struct Args {
     /// Per-object JSON lines log
     #[arg(long)]
     log: Option<String>,
-    /// Radio link. `fsk` is the SX1276 in FSK mode: the Pi HAT, or the CatWAN stick or a file when
-    /// `--catwan` or `--loopback` is given. `fsk-emu`, `lora-emu` and `halow-emu` are modeled
+    /// Radio link. `fsk` is the SX1276 in FSK mode: the Pi HAT, or the RP2040-based device or a file when
+    /// `--rp2040` or `--loopback` is given. `fsk-emu`, `css-emu` and `s1g-emu` are modeled
     /// channels (no radio is driven, results are MODELED).
     #[arg(long, value_enum, default_value_t = LinkKind::Fsk)]
     link: LinkKind,
@@ -109,11 +111,11 @@ struct Args {
     emu_udp_from: Option<String>,
     #[command(flatten)]
     emu: EmuArgs,
-    /// Transmit through a CatWAN stick (sx1276-rs catwan-fw) on this serial port instead of
-    /// the local SX1276 (reverse direction: Mac -> CatWAN -> Pi)
-    #[arg(long)]
-    catwan: Option<String>,
-    /// No radio: write frames as CatWAN `R` lines to FILE, paced at the FSK airtime
+    /// Transmit through an RP2040-based device (sx1276-rs rp2040-sx1276-fw) on this serial port instead of
+    /// the local SX1276 (reverse direction: Mac -> RP2040-based device -> Pi)
+    #[arg(long, alias = "catwan")]
+    rp2040: Option<String>,
+    /// No radio: write frames as RP2040-based device `R` lines to FILE, paced at the FSK airtime
     #[arg(long)]
     loopback: Option<String>,
     #[arg(long, default_value_t = 8_000_000)]
@@ -304,16 +306,16 @@ fn transmit_permit(
         .map_err(|e| anyhow::anyhow!("refusing to transmit: {e}"))
 }
 
-/// Open the CatWAN stick for transmitting. The permit is the proof that the gate said yes.
-fn open_catwan(
+/// Open the RP2040-based device for transmitting. The permit is the proof that the gate said yes.
+fn open_rp2040(
     permit: &TxPermit,
     port: &str,
     freq_hz: u32,
     prof: &moq_subghz_wire::FskProfile,
     power: i8,
     frame_toa_us: u64,
-) -> Result<CatwanTx> {
-    CatwanTx::open(permit, port, freq_hz, prof, power, frame_toa_us)
+) -> Result<Rp2040Tx> {
+    Rp2040Tx::open(permit, port, freq_hz, prof, power, frame_toa_us)
 }
 
 /// Open the Pi's SX1276 for transmitting. The permit is the proof that the gate said yes.
@@ -329,6 +331,7 @@ fn open_hat(
 }
 
 fn main() -> Result<()> {
+    moq_subghz_radio_emu::args::warn_deprecated_spellings();
     let a = Args::parse();
     if !(902.0..=928.0).contains(&a.freq) || (a.freq - 925.0).abs() < 0.3 {
         bail!("--freq must be inside 902-928 MHz and not 925.0");
@@ -374,8 +377,8 @@ fn main() -> Result<()> {
     let mut frame_toa_us = frame_toa_us;
     let mut link: Box<dyn Link> = match &a.loopback {
         _ if emu_sel.is_some() => {
-            if a.catwan.is_some() {
-                bail!("--catwan is a real link; a -emu link drives no radio");
+            if a.rp2040.is_some() {
+                bail!("--rp2040 is a real link; a -emu link drives no radio");
             }
             let cfg = a
                 .emu
@@ -399,14 +402,14 @@ fn main() -> Result<()> {
             eprintln!("modeled link: {name} (no radio is driven; results are MODELED)");
             Box::new(l.realtime(true))
         }
-        None if a.catwan.is_some() => {
+        None if a.rp2040.is_some() => {
             if !a.i_have_an_antenna {
                 bail!("refusing to transmit without --i-have-an-antenna");
             }
             let permit = transmit_permit(&station, &a, freq_hz, &prof)?;
-            Box::new(open_catwan(
+            Box::new(open_rp2040(
                 &permit,
-                a.catwan.as_ref().unwrap(),
+                a.rp2040.as_ref().unwrap(),
                 freq_hz,
                 &prof,
                 a.power,
@@ -690,7 +693,7 @@ fn main() -> Result<()> {
                 let t = Instant::now();
                 let mut errs = link.take_tx_errors();
                 if errs > 0 {
-                    eprintln!("tx error: CatWAN reported {errs}");
+                    eprintln!("tx error: RP2040-based device reported {errs}");
                 }
                 match link.send(&f) {
                     Ok(r) => {
@@ -911,7 +914,7 @@ fn main() -> Result<()> {
         1e6 * seal_s / sealed.max(1) as f64,
         100.0 * cpu_self / wall, 100.0 * cpu_child / wall, 100.0 * (cpu_self + cpu_child) / wall,
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
-        if modeled { link_name } else if a.loopback.is_some() { "loopback" } else if a.catwan.is_some() { "catwan" } else { "sx1276" }
+        if modeled { link_name } else if a.loopback.is_some() { "loopback" } else if a.rp2040.is_some() { "rp2040" } else { "sx1276" }
     );
     // An AU with no capture record means the encoder and the capture count disagree,
     // so the run's latency and loss numbers can't be trusted.
@@ -1012,16 +1015,28 @@ mod tests {
             Args::parse_from(["send", "--link", "fsk"]).link,
             LinkKind::Fsk
         );
-        assert!(Args::try_parse_from(["send", "--link", "lora"]).is_err());
+        assert!(Args::try_parse_from(["send", "--link", "css"]).is_err());
         for (name, kind) in [
             ("fsk-emu", LinkKind::FskEmu),
-            ("lora-emu", LinkKind::LoraEmu),
-            ("halow-emu", LinkKind::HalowEmu),
+            ("css-emu", LinkKind::CssEmu),
+            ("s1g-emu", LinkKind::S1gEmu),
         ] {
             let a = Args::parse_from(["send", "--link", name]);
             assert_eq!(a.link, kind);
             assert!(a.link.emu().is_some());
         }
         assert!(LinkKind::Fsk.emu().is_none());
+    }
+
+    #[test]
+    fn old_link_values_and_flag_still_parse() {
+        let a = Args::parse_from(["send", "--link", "lora-emu"]);
+        assert_eq!(a.link, LinkKind::CssEmu);
+        let a = Args::parse_from(["send", "--link", "halow-emu"]);
+        assert_eq!(a.link, LinkKind::S1gEmu);
+        let a = Args::parse_from(["send", "--catwan", "/dev/x"]);
+        assert_eq!(a.rp2040.as_deref(), Some("/dev/x"));
+        let a = Args::parse_from(["send", "--rp2040", "/dev/y"]);
+        assert_eq!(a.rp2040.as_deref(), Some("/dev/y"));
     }
 }

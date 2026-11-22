@@ -51,16 +51,16 @@ fn reset_and_version() {
 }
 
 #[test]
-fn lora_mode_and_frequency_burst() {
+fn css_mode_and_frequency_burst() {
     let mut s = vec![];
     s.extend(rd(0x01, 0x09)); // FSK standby, LF bit set after reset
     s.extend(wr(0x01, 0x08)); // FSK sleep (keeps LF)
-    s.extend(wr(0x01, 0x88)); // LoRa sleep
+    s.extend(wr(0x01, 0x88)); // CSS mode sleep
     s.extend(xfer(&[0x86, 0xE4, 0xC0, 0x00], &[0; 4])); // RegFrf burst
     s.extend(wr(0x01, 0x80)); // HF page selected
     s.extend(xfer(&[0x06, 0, 0, 0], &[0, 0xE4, 0xC0, 0x00]));
     let mut r = radio(s, &[], &[]);
-    r.enter_lora_mode().unwrap();
+    r.enter_css_mode().unwrap();
     r.set_frequency(915_000_000).unwrap();
     assert_eq!(r.frequency().unwrap(), 915_000_000);
     assert_eq!(
@@ -72,7 +72,7 @@ fn lora_mode_and_frequency_burst() {
 
 #[test]
 fn configure_is_one_burst_plus_extras() {
-    let c = LoRaConfig::default();
+    let c = CssConfig::default();
     let mut s = vec![];
     s.extend(xfer(
         &[0x9D, 0x72, 0x74, 0x64, 0x00, 0x08, 0xFF, 0xFF, 0x00],

@@ -1,6 +1,6 @@
 //! FSK packet-mode configuration (the SX1276's fast mode, up to 300 kbit/s).
 //!
-//! FSK registers alias the LoRa page addresses, so they are written by raw
+//! FSK registers alias the CSS mode page addresses, so they are written by raw
 //! address with LongRangeMode = 0. Everything here is pure encoding plus the
 //! airtime model; [`crate::Sx1276::configure_fsk`] applies it.
 

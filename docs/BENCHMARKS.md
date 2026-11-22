@@ -9,7 +9,7 @@ Every number in this project should carry one of:
 * **MODELED**: computed from a formula or an emulation. Name the model. A fit of measured data is MODELED.
 
 A MODELED number is never placed in a MEASURED column. Today the only MEASURED numbers are SX1276 FSK and
-LoRa mode on a Pi 2 B and a CatWAN stick. HaLow, 2.4 GHz and 5.8 GHz have none.
+chirp spread spectrum (CSS) mode on a Pi 2 B and an RP2040-based device. 802.11ah sub-GHz Wi-Fi, 2.4 GHz and 5.8 GHz have none.
 
 ## Reproduce without a radio
 
@@ -21,8 +21,8 @@ cargo build --release
 ./target/release/moq-subghz-send --loopback /tmp/air.txt --fec-k 8 --secs 20
 ./target/release/moq-subghz-recv --replay /tmp/air.txt --paced --play --decode --out /tmp/run
 
-# 2. the airtime table for the LoRa-mode pictures (calculated, no transmit)
-target/release/moq-subghz-bench lora2015-table
+# 2. the airtime table for the CSS-mode pictures (calculated, no transmit)
+target/release/moq-subghz-bench css2015-table
 ```
 
 `/tmp/run/summary.json` has the counters. Latency in a replay is meaningless, because the playback
@@ -34,7 +34,7 @@ removed, not an over-the-air result.
 
 ## Reproduce with radios
 
-Needs the Pi 2 B, the HAT and the CatWAN stick from the [HOWTO](../HOWTO.md). Set `PORT` and `PI` to your
+Needs the Pi 2 B, the HAT and the RP2040-based device from the [HOWTO](../HOWTO.md). Set `PORT` and `PI` to your
 own values, then:
 
 ```sh
@@ -42,7 +42,7 @@ B=target/release/moq-subghz-bench
 $B run --i-have-an-antenna --transmit myrun 300000:100000:6 330 --fec-k 8    # Pi to laptop
 $B rev --i-have-an-antenna --transmit myrun 300000:100000:12 330 --fec-k 8   # laptop to Pi
 $B bench --i-have-an-antenna --transmit                                      # the 8-run set
-$B bench-051 --i-have-an-antenna --transmit                                  # the stick 0.5.1 matrix (--part fsk, lora, all)
+$B bench-051 --i-have-an-antenna --transmit                                  # the stick 0.5.1 matrix (--part fsk, css, all)
 cargo run --release -p moq-subghz-report -- runs/*/     # table from run directories
 ```
 
@@ -57,7 +57,7 @@ permit where the gate asks for one ([LICENSING.md](LICENSING.md)). See the HOWTO
 | [results/video](../results/video/README.md) | the 8-run FSK video set, 2026-11-17 | MEASURED, frame format 3 |
 | [results/stick-0.5.1](../results/stick-0.5.1/README.md) | 72 still-picture runs and 8 FSK video runs on firmware 0.5.1, 2026-11-20 | MEASURED, with some calculated columns marked |
 | [results/factory-firmware](../results/factory-firmware/README.md) | the factory software baseline | MEASURED |
-| [results/lora-2015](../results/lora-2015/README.md) | the 2015-style picture test and its airtime table | calculated table, measured runs in stick-0.5.1 |
+| [results/css-2015](../results/css-2015/README.md) | the 2015-style picture test and its airtime table | calculated table, measured runs in stick-0.5.1 |
 | [results/loopback](../results/loopback/README.md) | the loss sweep, no radio | replay with frames removed, not over the air |
 
 ## Caveats to carry with the numbers

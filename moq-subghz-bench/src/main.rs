@@ -2,11 +2,11 @@
 
 mod analyze;
 mod cell;
+mod css2015;
 mod demo;
 mod exec;
 mod factory;
 mod licence;
-mod lora2015;
 mod matrix;
 mod orch;
 mod package;
@@ -39,15 +39,15 @@ enum Cmd {
         #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
         repo_root: PathBuf,
     },
-    /// Factory-vs-factory picture test: the stock Dragino app on the Pi, the stock receiver on the stick
+    /// Factory-vs-factory picture test: the stock the HAT maker app on the Pi, the stock receiver on the stick
     FactoryBench(factory::Opts),
     /// Raw logger for the stock receiver sketch on the stick (opens only --dev)
     StickCap(stickcap::Opts),
-    /// The Pi side of factory-bench: send each chunk with the stock Dragino app
+    /// The Pi side of factory-bench: send each chunk with the stock the HAT maker app
     FactorySend {
         /// Text file with one chunk per line
         chunks: PathBuf,
-        /// Directory of the stock `dragino_lora_app`
+        /// Directory of the stock `hat_app`
         #[arg(long, default_value = ".")]
         app_dir: PathBuf,
         /// Required: the antenna is on the HAT
@@ -100,14 +100,14 @@ enum Cmd {
         #[arg(long)]
         no_play: bool,
     },
-    /// One lora2015 picture run: logger here, sender on the Pi, exact loss from a replay
-    Lora2015Run {
+    /// One css2015 picture run: logger here, sender on the Pi, exact loss from a replay
+    Css2015Run {
         #[command(flatten)]
         env: orch::Env,
         name: String,
-        /// chunk, ssdv or lorawan
+        /// chunk, ssdv or framed
         mode: String,
-        /// A file name under results/lora-2015/frames/
+        /// A file name under results/css-2015/frames/
         file: String,
         profile: String,
         passes: u32,
@@ -146,16 +146,16 @@ enum Cmd {
         #[arg(long)]
         no_licence: bool,
     },
-    /// Print the calculated airtime table of results/lora-2015/README.md
-    Lora2015Table {
+    /// Print the calculated airtime table of results/css-2015/README.md
+    Css2015Table {
         /// Directory of the built binaries (default: the directory of this one)
         #[arg(long, env = "BIN")]
         bin: Option<PathBuf>,
         #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
         repo_root: PathBuf,
     },
-    /// Rebuild the test pictures of results/lora-2015/frames
-    Lora2015Frames {
+    /// Rebuild the test pictures of results/css-2015/frames
+    Css2015Frames {
         #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
         repo_root: PathBuf,
     },
@@ -295,7 +295,7 @@ fn real_main() -> Result<()> {
             };
             matrix::run_matrix(&mut *h, &c, !no_play, &k, &steps, &mut say)
         }
-        Cmd::Lora2015Run {
+        Cmd::Css2015Run {
             env,
             name,
             mode,
@@ -306,10 +306,10 @@ fn real_main() -> Result<()> {
         } => {
             let (c, mut h) = (env.cfg()?, host(env.dry_run));
             c.announce();
-            orch::lora(
+            orch::css(
                 &mut *h,
                 &c,
-                &orch::Lora {
+                &orch::Css {
                     name: &name,
                     mode: &mode,
                     file: &file,
@@ -343,7 +343,7 @@ fn real_main() -> Result<()> {
             let g = package::Guard::load(licence_file, no_licence)?;
             package::run(&g, &runs, &demo, &out)
         }
-        Cmd::Lora2015Table { bin, repo_root } => {
+        Cmd::Css2015Table { bin, repo_root } => {
             let bin = match bin {
                 Some(b) => b,
                 None => std::env::current_exe()?
@@ -351,18 +351,18 @@ fn real_main() -> Result<()> {
                     .context("no directory")?
                     .to_path_buf(),
             };
-            let t = lora2015::table(
+            let t = css2015::table(
                 &mut exec::Real::default(),
-                &bin.join("lora2015-send").display().to_string(),
-                &repo_root.join("results/lora-2015/frames"),
+                &bin.join("css2015-send").display().to_string(),
+                &repo_root.join("results/css-2015/frames"),
             )?;
             println!("{t}");
             Ok(())
         }
-        Cmd::Lora2015Frames { repo_root } => {
+        Cmd::Css2015Frames { repo_root } => {
             let have = std::env::var_os("PATH")
                 .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("ssdv").is_file()));
-            lora2015::make_frames(&mut exec::Real::default(), &repo_root, have)
+            css2015::make_frames(&mut exec::Real::default(), &repo_root, have)
         }
         Cmd::Analyze {
             runs,

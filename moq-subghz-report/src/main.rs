@@ -130,7 +130,7 @@ fn main() -> Result<()> {
         // The CPU guess is only for summaries without `link`, such as the published runs
         // in results/video; it labels a low-CPU forward run (the hardware encoder) reverse.
         let reverse = match s["link"].as_str() {
-            Some(l) => l == "catwan",
+            Some(l) => l == "rp2040",
             None => {
                 r["cpu_pct_recv"].is_number() && s["cpu_pct_total"].as_f64().unwrap_or(0.0) < 30.0
             }

@@ -1,11 +1,11 @@
 //! `factory-bench`: the factory-vs-factory picture test of `results/factory-firmware/`. The Pi
-//! runs the stock Dragino app, once per text chunk of a JPEG, and the stock Electronic Cats
+//! runs the stock the HAT maker app, once per text chunk of a JPEG, and the stock the board maker
 //! receiver on the stick prints what it hears.  The stick capture is the `stick-cap` subcommand.
 //!
 //! This transmits, so it needs `--i-have-an-antenna`, `--transmit`, the serial port of the stick
 //! as `--dev`, and the licence gate's permit for the carrier and power the stock app is built for.
 //! The stock app cannot be queried, so the user declares them (`--freq-mhz`, `--power-dbm`) and
-//! the gate checks the declaration: the stock Dragino build (868.1 MHz, up to +17 dBm) is
+//! the gate checks the declaration: the stock the HAT maker build (868.1 MHz, up to +17 dBm) is
 //! refused, the project's patched build (915.0 MHz, +5 dBm) is not. The gate runs before
 //! anything else: before a file is read, a serial port opened, or ssh started.
 
@@ -87,7 +87,7 @@ pub fn make_chunks(jpeg: &[u8], id: char, size: usize) -> Vec<String> {
         .collect()
 }
 
-/// LoRa airtime of a packet of `pl` bytes, in seconds (SX1276 datasheet formula, explicit header off).
+/// CSS mode airtime of a packet of `pl` bytes, in seconds (SX1276 datasheet formula, explicit header off).
 pub fn airtime(pl: usize, sf: u32, bw: f64, cr: u32, crc: u32, h: u32, pre: f64) -> f64 {
     let ts = 2f64.powi(sf as i32) / bw;
     let num = 8.0 * pl as f64 - 4.0 * sf as f64 + 28.0 + 16.0 * crc as f64 - 20.0 * h as f64;
@@ -379,8 +379,8 @@ pub struct Opts {
     /// This binary on the Pi, built for it (`factory-send` runs there)
     #[arg(long, default_value = "factory-bench/moq-subghz-bench")]
     pub pi_tool: String,
-    /// Directory of the stock `dragino_lora_app` on the Pi
-    #[arg(long, default_value = "factory-bench/dragino")]
+    /// Directory of the stock `hat_app` on the Pi
+    #[arg(long, default_value = "factory-bench/gps-hat")]
     pub pi_app_dir: String,
     /// Required: the antennas are on both radios
     #[arg(long)]
@@ -409,13 +409,13 @@ pub struct Declared {
     pub power_dbm: i8,
 }
 
-/// The stock app's LoRa bandwidth (125 kHz), the width of the span the gate checks.
+/// The stock app's CSS mode bandwidth (125 kHz), the width of the span the gate checks.
 const APP_WIDTH_HZ: u64 = 125_000;
 
-/// Why the stock Dragino build cannot be benched through this tool, and the way that can.
-const STOCK_868: &str = "the stock Dragino app transmits 868.1 MHz at up to +17 dBm, which is outside the \
+/// Why the stock the HAT maker build cannot be benched through this tool, and the way that can.
+const STOCK_868: &str = "the stock the HAT maker app transmits 868.1 MHz at up to +17 dBm, which is outside the \
 project's US ISM rules, and the gate has no 868 MHz profile to check it against (the EU region is not \
-enabled; region \"other\" is blocked). To bench legitimately, apply firmware/vendor/dragino-lora-gps-hat/dragino-bench.patch \
+enabled; region \"other\" is blocked). To bench legitimately, apply firmware/vendor/sx1276-gps-hat/gps-hat-bench.patch \
 (915.0 MHz, +5 dBm), rebuild the app on the Pi and declare --freq-mhz 915.0 --power-dbm 5";
 
 /// The licence gate for the stock app on the declared carrier and power. The result is the proof
@@ -439,7 +439,7 @@ pub fn gate(station: &Station, d: Declared) -> Result<TxPermit> {
             e => anyhow::anyhow!("refusing to transmit: {e}"),
         })?;
     // The project's own rule on top of the gate's table (which also lists 2.4 and 5.8 GHz): the
-    // stock app is a sub-GHz LoRa build, and this repo operates inside 902-928 MHz only.
+    // stock app is a sub-GHz CSS mode build, and this repo operates inside 902-928 MHz only.
     if !(902.0..=928.0).contains(&d.freq_mhz) {
         bail!(
             "refusing to transmit: --freq-mhz {} is outside the project's 902-928 MHz. {STOCK_868}",
@@ -506,7 +506,7 @@ pub fn shq(s: &str) -> String {
 
 /// Most chunks of a picture: the counters are three digits (`007/123`).
 pub const MAX_CHUNKS: usize = 999;
-/// Longest packet the LoRa radio takes.
+/// Longest packet the CSS mode radio takes.
 pub const MAX_PACKET: usize = 255;
 
 /// Refuse a picture whose chunks the receiver cannot parse or the radio cannot send, before
@@ -681,7 +681,7 @@ pub fn verdict(label: &str, passes: usize, re: &Reassembly, jpeg: &[u8]) -> Resu
     Ok(())
 }
 
-/// The Pi side: send each chunk line with the stock Dragino app, and print `<start> <end> <id:seq>`.
+/// The Pi side: send each chunk line with the stock the HAT maker app, and print `<start> <end> <id:seq>`.
 ///
 /// `_permit` is the gate's answer ([`gate`]): the stock app is not started without one.
 pub fn send_chunks(
@@ -700,14 +700,14 @@ pub fn send_chunks(
     };
     for line in text.lines() {
         let s = epoch();
-        let mut child = Command::new("./dragino_lora_app")
+        let mut child = Command::new("./hat_app")
             .args(["sender", line])
             .current_dir(app_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .with_context(|| format!("start ./dragino_lora_app in {}", app_dir.display()))?;
+            .with_context(|| format!("start ./hat_app in {}", app_dir.display()))?;
         // The stock app does not exit on its own after the send: the same cut-off as `timeout 1.3`.
         let t0 = Instant::now();
         while child.try_wait()?.is_none() {
@@ -822,7 +822,7 @@ mod tests {
             pi: "pi".into(),
             dev: "/dev/ttyACM0".into(),
             pi_tool: "factory-bench/moq-subghz-bench".into(),
-            pi_app_dir: "factory-bench/dragino".into(),
+            pi_app_dir: "factory-bench/gps-hat".into(),
             i_have_an_antenna: false,
             transmit: true,
             freq_mhz: 915.0,
@@ -836,7 +836,7 @@ mod tests {
             "scp -q -o BatchMode=yes -- out/x/pass1.chunks.txt pi:factory-bench/chunks.txt"
         );
         assert!(p[1].shell().starts_with(
-            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/dragino"
+            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/gps-hat"
         ), "{}", p[1].shell());
         assert_eq!(
             cap_plan(&o, "bench").shell(),
@@ -898,7 +898,7 @@ mod gate_tests {
         assert!(e.contains("refusing to transmit"), "{e}");
         assert!(e.contains("868.1 MHz at up to +17 dBm"), "{e}");
         assert!(e.contains("EU region is not enabled"), "{e}");
-        assert!(e.contains("dragino-bench.patch"), "{e}");
+        assert!(e.contains("gps-hat-bench.patch"), "{e}");
         assert!(e.contains("--freq-mhz 915.0 --power-dbm 5"), "{e}");
         // the carrier alone is enough to refuse it, whatever power is declared
         assert!(gate(&station(true), d(868.1, 5)).is_err());
@@ -967,7 +967,7 @@ mod parity {
                     .unwrap();
             let jpeg = fs::read(
                 repo()
-                    .join("results/lora-2015/frames")
+                    .join("results/css-2015/frames")
                     .join(want["jpeg"].as_str().unwrap()),
             )
             .unwrap();

@@ -1,4 +1,4 @@
-//! `run`, `rev` and `lora2015-run`: one over-the-air run each. They start the project's own binaries and ssh,
+//! `run`, `rev` and `css2015-run`: one over-the-air run each. They start the project's own binaries and ssh,
 //! then check every artifact: a run counts only when the sender, the receiver or logger and the
 //! log copy all succeeded and left their summaries. Any failure is `FAILED <run>: <why>`, exit 1.
 //!
@@ -35,7 +35,7 @@ pub struct Env {
     /// Where the runs are written
     #[arg(long, env = "RUNS", default_value = "runs")]
     pub runs: PathBuf,
-    /// Serial device of the CatWAN stick. No default: it is opened by the receiver, logger or sender
+    /// Serial device of the RP2040-based device. No default: it is opened by the receiver, logger or sender
     #[arg(long, env = "PORT")]
     pub port: Option<PathBuf>,
     /// Root of this repository, for the test pictures
@@ -89,7 +89,7 @@ impl Env {
                 .repo_root
                 .canonicalize()
                 .unwrap_or_else(|_| self.repo_root.clone())
-                .join("results/lora-2015/frames"),
+                .join("results/css-2015/frames"),
             antenna: self.i_have_an_antenna,
             transmit: self.transmit,
             lic: self.licence.resolve(),
@@ -485,7 +485,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     Ok(())
 }
 
-/// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here.
+/// Laptop to RP2040-based device to Pi: the receiver on the Pi, the sender here.
 pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -515,7 +515,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let rx = h.start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
     h.sleep(Duration::from_secs(4));
     let mut a = vec![
-        "--catwan".to_string(),
+        "--rp2040".to_string(),
         c.port()?,
         "--profile".into(),
         r.profile.into(),
@@ -601,11 +601,11 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     Ok(())
 }
 
-/// One lora2015 picture run.
-pub struct Lora<'a> {
+/// One css2015 picture run.
+pub struct Css<'a> {
     pub name: &'a str,
     pub mode: &'a str,
-    /// A file name under `results/lora-2015/frames/`
+    /// A file name under `results/css-2015/frames/`
     pub file: &'a str,
     pub profile: &'a str,
     pub passes: u32,
@@ -674,7 +674,7 @@ fn after_digits(text: &str, key: &str, dot: bool) -> Option<String> {
 }
 
 /// Logger here, sender on the Pi, then the exact loss from a replay.
-pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
+pub fn css(h: &mut dyn Host, c: &Cfg, r: &Css) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
@@ -691,7 +691,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         }
     );
     let dry = Plan::new(
-        c.bin("lora2015-send"),
+        c.bin("css2015-send"),
         [
             "--mode",
             r.mode,
@@ -738,7 +738,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     a.extend(reference.iter().cloned());
     a.extend(c.lic_flags(Side::Local, &[]));
     let lg = h.start(
-        &Plan::new(c.bin("lora2015-log"), a)
+        &Plan::new(c.bin("css2015-log"), a)
             .out(c.run_file(n, ".log.out"))
             .err_to_out(),
     )?;
@@ -752,7 +752,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         .map(|a| format!("{} ", shq(a)))
         .collect();
     let script = format!(
-        "cd ~/lora2015 && ./lora2015-send --mode {} --file frames/{} --profile {} --power 5 --passes {} --tx-log {} {args}> {so} 2>&1; st=$?; tail -n 3 {so}; rm -f {so}; exit $st",
+        "cd ~/css2015 && ./css2015-send --mode {} --file frames/{} --profile {} --power 5 --passes {} --tx-log {} {args}> {so} 2>&1; st=$?; tail -n 3 {so}; rm -f {so}; exit $st",
         shq(r.mode),
         shq(r.file),
         shq(r.profile),
@@ -793,7 +793,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         a.extend(c.lic_flags(Side::Local, &[]));
         exact_st = h
             .run(
-                &Plan::new(c.bin("lora2015-log"), a)
+                &Plan::new(c.bin("css2015-log"), a)
                     .out(c.run_file(n, ".exact.out"))
                     .err_to_out(),
             )?
@@ -1118,7 +1118,7 @@ mod tests {
             .to_string()
             .contains("--i-have-an-antenna"));
         assert!(reverse(&mut f, &c, &run("t", &[])).is_err());
-        let l = Lora {
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "a.jpg",
@@ -1126,7 +1126,7 @@ mod tests {
             passes: 1,
             args: &[],
         };
-        assert!(lora(&mut f, &c, &l).is_err());
+        assert!(css(&mut f, &c, &l).is_err());
         assert!(f.log.is_empty());
         for bad in ["", "../x", "-x", "a b", "a;b", ".h"] {
             assert!(
@@ -1149,7 +1149,7 @@ mod tests {
         ] {
             assert!(e.to_string().contains("without --transmit"), "{e}");
         }
-        let l = Lora {
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "a.jpg",
@@ -1157,7 +1157,7 @@ mod tests {
             passes: 1,
             args: &[],
         };
-        assert!(lora(&mut f, &c, &l).is_err());
+        assert!(css(&mut f, &c, &l).is_err());
         assert!(f.log.is_empty());
         // Given among the sender arguments instead, it passes the gate (once, not doubled).
         let a = vec!["--transmit".to_string()];
@@ -1207,7 +1207,7 @@ mod tests {
         f.rule("--clock-check", 0, CLOCK, vec![]);
         f.rule("moq-subghz-recv --radio", 0, "", vec![]);
         f.rule(
-            "moq-subghz-send --catwan",
+            "moq-subghz-send --rp2040",
             0,
             "{\"role\":\"send\"}\n",
             vec![(d.0.join("t.send.jsonl"), "{\"seq\":1}\n")],
@@ -1231,7 +1231,7 @@ mod tests {
         );
         assert_eq!(f.slept, [Duration::from_secs(4)]);
         assert!(f.log[3].starts_with(
-            "bin/moq-subghz-send --catwan /dev/ttyTEST --profile 300000:100000:6 --secs 330 --log"
+            "bin/moq-subghz-send --rp2040 /dev/ttyTEST --profile 300000:100000:6 --secs 330 --log"
         ));
         assert!(f.log[3]
             .contains("--i-have-an-antenna --transmit --no-licence --redact-licence --fec-k 8 > "));
@@ -1252,7 +1252,7 @@ mod tests {
         let mut f = Fake::default();
         f.rule("--clock-check", 0, CLOCK, vec![]);
         f.rule(
-            "moq-subghz-send --catwan",
+            "moq-subghz-send --rp2040",
             0,
             "{\"role\":\"send\"}\n",
             vec![(d.0.join("t.send.jsonl"), "x\n")],
@@ -1271,7 +1271,7 @@ mod tests {
             .any(|l| l == "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'"));
     }
 
-    fn lora_job(d: &Path) -> Fake {
+    fn css_job(d: &Path) -> Fake {
         let mut f = Fake::default();
         f.rule(
             "--dry-run",
@@ -1280,13 +1280,13 @@ mod tests {
             vec![],
         );
         f.rule(
-            "lora2015-log --port",
+            "css2015-log --port",
             0,
             "",
             vec![(d.join("t/raw.log"), "raw")],
         );
         f.rule(
-            "lora2015-send --mode",
+            "css2015-send --mode",
             0,
             "sent frames=105 bytes=26064 wall_s=43.017\n",
             vec![],
@@ -1302,10 +1302,10 @@ mod tests {
     }
 
     #[test]
-    fn lora_run_listens_for_the_passes_and_replays_with_the_sent_count() {
-        let d = Scratch::new("lora");
-        let mut f = lora_job(&d.0);
-        let l = Lora {
+    fn css_run_listens_for_the_passes_and_replays_with_the_sent_count() {
+        let d = Scratch::new("css");
+        let mut f = css_job(&d.0);
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "f.jpg",
@@ -1313,7 +1313,7 @@ mod tests {
             passes: 3,
             args: &["--dr".to_string(), "dr3".into()],
         };
-        lora(&mut f, &cfg(&d.0), &l).unwrap();
+        css(&mut f, &cfg(&d.0), &l).unwrap();
         assert!(
             f.log[1].contains("--secs 59 ") && f.log[1].contains("--reference frames/f.jpg"),
             "{}",
@@ -1330,7 +1330,7 @@ mod tests {
     }
 
     #[test]
-    fn lora_run_fails_loud() {
+    fn css_run_fails_loud() {
         for (why, rule) in [
             ("sender exited 5", "send"),
             ("logger exited 6", "log"),
@@ -1338,8 +1338,8 @@ mod tests {
             ("exact replay failed", "replay"),
             ("tx.csv", "tx"),
         ] {
-            let d = Scratch::new("lorafail");
-            let mut f = lora_job(&d.0);
+            let d = Scratch::new("cssfail");
+            let mut f = css_job(&d.0);
             match rule {
                 "send" => f.rules[2].code = 5,
                 "log" => f.rules[1].code = 6,
@@ -1350,7 +1350,7 @@ mod tests {
             if rule == "tx" {
                 f.rules[3].files.clear();
             }
-            let l = Lora {
+            let l = Css {
                 name: "t",
                 mode: "ssdv",
                 file: "f.ssdv",
@@ -1358,7 +1358,7 @@ mod tests {
                 passes: 1,
                 args: &[],
             };
-            let e = lora(&mut f, &cfg(&d.0), &l).unwrap_err().to_string();
+            let e = css(&mut f, &cfg(&d.0), &l).unwrap_err().to_string();
             assert!(
                 e.starts_with("FAILED t: ") && e.contains(why),
                 "{rule}: {e}"
@@ -1622,12 +1622,12 @@ mod tests {
 
     #[test]
     fn a_frequency_and_coding_rate_override_reaches_every_stage() {
-        let d = Scratch::new("loraov");
-        let mut f = lora_job(&d.0);
+        let d = Scratch::new("cssov");
+        let mut f = css_job(&d.0);
         let args: Vec<String> = ["--freq", "903.5", "--cr=7", "--dr", "dr3"]
             .map(String::from)
             .into();
-        let l = Lora {
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "f.jpg",
@@ -1635,7 +1635,7 @@ mod tests {
             passes: 3,
             args: &args,
         };
-        lora(&mut f, &cfg(&d.0), &l).unwrap();
+        css(&mut f, &cfg(&d.0), &l).unwrap();
         let has = |pat: &str| {
             let hits: Vec<&String> = f.log.iter().filter(|l| l.contains(pat)).collect();
             assert!(!hits.is_empty(), "no stage with {pat}");
@@ -1643,8 +1643,8 @@ mod tests {
         };
         // dry run, transmitter (ssh), live logger, replay
         for pat in [
-            "lora2015-send --mode chunk --file",
-            "lora2015-log --port",
+            "css2015-send --mode chunk --file",
+            "css2015-log --port",
             "--replay",
         ] {
             for l in has(pat) {
@@ -1654,7 +1654,7 @@ mod tests {
                 );
             }
         }
-        for l in has("lora2015-log") {
+        for l in has("css2015-log") {
             assert!(l.contains("--freq 903.5") && l.contains("--cr 7"), "{l}");
         }
     }
@@ -1689,7 +1689,7 @@ mod tests {
         let mut f = Fake::default();
         f.rule("--clock-check", 0, CLOCK, vec![]);
         f.rule(
-            "moq-subghz-send --catwan",
+            "moq-subghz-send --rp2040",
             0,
             "{}\n",
             vec![(d.0.join("t.send.jsonl"), "x\n")],

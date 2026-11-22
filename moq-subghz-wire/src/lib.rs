@@ -28,7 +28,7 @@ pub mod objstream;
 pub mod seal;
 pub mod stamp;
 
-/// Longest CatWAN / replay line we will buffer. A 255-byte radio frame is about
+/// Longest RP2040-based device / replay line we will buffer. A 255-byte radio frame is about
 /// 550 bytes once it is hex-encoded on a `R` line; anything longer is not a frame
 /// this link can carry.
 pub const MAX_SERIAL_LINE: usize = 1024;
@@ -125,11 +125,11 @@ pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// One received frame as reported by the CatWAN firmware, the Pi receiver thread or
+/// One received frame as reported by the RP2040-based device firmware, the Pi receiver thread or
 /// the loopback file: `R <t_us> <rssi> <snr> <hex>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RLine {
-    /// Timestamp in microseconds: the stick's clock for a CatWAN line, time since the run
+    /// Timestamp in microseconds: the stick's clock for an RP2040-based device line, time since the run
     /// started for a loopback file.
     pub t_us: u64,
     /// RSSI in dBm.

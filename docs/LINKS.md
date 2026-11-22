@@ -14,8 +14,8 @@ Not legal advice. You are responsible for what you transmit. See [REGULATORY.md]
 | link | band | state | where |
 |---|---|---|---|
 | [SX1276 FSK](#sx1276-fsk) | sub-GHz ISM (tools allow 902-928 MHz only) | **Measured** | `vendor/sx1276`, `moq-subghz-send`, `moq-subghz-recv`, `results/video` |
-| [SX1276 LoRa mode](#sx1276-lora-mode) | same | **Measured** (still pictures only) | `moq-subghz-lora2015`, `results/stick-0.5.1` |
-| [Wi-Fi HaLow](#wi-fi-halow-80211ah) | sub-GHz ISM, varies by country | **Modeled** | modeled link in `main` (`docs/HALOW.md`), no hardware; see below |
+| [SX1276 chirp spread spectrum (CSS) mode](#sx1276-css-mode) | same | **Measured** (still pictures only) | `moq-subghz-css2015`, `results/stick-0.5.1` |
+| [Wi-Fi 802.11ah sub-GHz Wi-Fi](#wi-fi-s1g-80211ah) | sub-GHz ISM, varies by country | **Modeled** | modeled link in `main` (`docs/S1G-EMULATION.md`), no hardware; see below |
 | [2.4 GHz](#24-ghz) | 2.4 GHz ISM | **Not started** | nothing in this repo |
 | [5.8 GHz](#58-ghz) | 5 GHz / 5.8 GHz | **Not started** | nothing in this repo |
 | [Amateur radio / satellite](AMATEUR.md) | amateur bands | **Not started** | receive-only first |
@@ -25,7 +25,7 @@ Not legal advice. You are responsible for what you transmit. See [REGULATORY.md]
 The qualitative columns are general radio knowledge, not measurements made here. Only the measured
 column is this project's own data.
 
-| | SX1276 FSK | SX1276 LoRa | HaLow | 2.4 GHz | 5.8 GHz |
+| | SX1276 FSK | SX1276 CSS mode | 802.11ah | 2.4 GHz | 5.8 GHz |
 |---|---|---|---|---|---|
 | rate class | low (hundreds of kbit/s configured) | very low (a few to tens of kbit/s) | higher than the other sub-GHz links (model only) | high | highest |
 | range class | short to medium | longest of the five for the power | long for Wi-Fi, per the design goal of 802.11ah (Reported, [Wi-Fi Alliance](https://www.wi-fi.org/discover-wi-fi/wi-fi-halow)) | short to medium, crowded band | shortest, walls hurt most |
@@ -38,32 +38,32 @@ runs lost about 3.5 to 4.6%. The cause of the extra loss is not found.
 
 ## SX1276 FSK
 
-* **State: Measured.** Live H.264 (320x240, 15 fps) from a Raspberry Pi 2 B with a Dragino HAT to a
-  CatWAN USB stick on a laptop. Chip: Semtech SX1276 ([product page](https://www.semtech.com/products/wireless-rf/lora-connect/sx1276)).
+* **State: Measured.** Live H.264 (320x240, 15 fps) from a Raspberry Pi 2 B with a the HAT maker HAT to a
+  RP2040-based device on a laptop. Chip: Semtech SX1276 ([product page](https://www.semtech.com/products/wireless-rf/lora-connect/sx1276)).
 * 300 kbit/s is inside the datasheet's tested range; 350 kbit/s is outside it and worked on the units
   tested.
 * The Pi side cannot be told when data arrives (DIO1 is not wired on the HAT), so receiving on the Pi
   polls and uses a core, and the reverse direction loses 8 to 15% of frames.
 * Details: [DETAILS.md](DETAILS.md), [HOWTO.md](../HOWTO.md).
 
-## SX1276 LoRa mode
+## SX1276 CSS mode
 
-* **State: Measured**, still pictures only (chunked JPEG, SSDV, LoRaWAN-style frames with no network).
-  There is no live video in LoRa mode: it is too slow.
+* **State: Measured**, still pictures only (chunked JPEG, SSDV, uplink-style frames with no network).
+  There is no live video in CSS mode: it is too slow.
 * Settings measured: SF7 at 125, 250 and 500 kHz, and SF8 at 500 kHz. 72 runs, 8 of 4932 frames lost.
-* Code: `moq-subghz-lora2015`. Results: [results/stick-0.5.1](../results/stick-0.5.1/README.md),
-  [results/lora-2015](../results/lora-2015/README.md).
+* Code: `moq-subghz-css2015`. Results: [results/stick-0.5.1](../results/stick-0.5.1/README.md),
+  [results/css-2015](../results/css-2015/README.md).
 
-## Wi-Fi HaLow (802.11ah)
+## Wi-Fi 802.11ah (802.11ah)
 
-* **State: Modeled only.** The HaLow module and its pins are not decided, so there is no real driver
-  and nothing was ever sent over a HaLow radio.
+* **State: Modeled only.** The 802.11ah module and its pins are not decided, so there is no real driver
+  and nothing was ever sent over a 802.11ah radio.
 * An emulation (channel timing, loss models, packing several 255-byte frames into one larger packet)
   exists on an unmerged local branch and in a private workshop. It is planned to land in small pull
   requests. Its figures are a **best case**: no aggregation, real preambles or power save are modeled.
 * Rules differ by country: channels, bandwidth (1, 2 or 4 MHz in the standard) and power. Modules
   often ship with a per-country table; do not override it. The standard is IEEE 802.11ah-2016; the
-  industry programme is [Wi-Fi CERTIFIED HaLow](https://www.wi-fi.org/discover-wi-fi/wi-fi-halow).
+  industry programme is [Wi-Fi CERTIFIED 802.11ah](https://www.wi-fi.org/discover-wi-fi/wi-fi-halow).
 * Open questions: which module, SPI or SDIO, whether the module runs its own stack, driver licence
   (many Linux drivers are GPL and could not be vendored into an MIT or Apache repo), and which country
   profile to ship first.
@@ -74,7 +74,7 @@ runs lost about 3.5 to 4.6%. The cause of the extra loss is not found.
 
 * Candidates: ordinary Wi-Fi (UDP over a LAN or access point), ESP-NOW between ESP32 boards
   ([ESP-IDF docs](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_now.html)),
-  or raw 802.11 frames from an ESP32. Candidate boards: Seeed XIAO ESP32-S3 and ESP32-C6, see
+  or raw 802.11 frames from an ESP32. Candidate boards: ESP32-S3 and ESP32-C6 boards, see
   [HARDWARE.md](HARDWARE.md).
 * Open questions: does the 255-byte frame size make sense here (a Wi-Fi payload is far bigger, so
   packing may be the better fit); how much a microcontroller can buffer (an object can be up to 61965
@@ -99,13 +99,13 @@ runs lost about 3.5 to 4.6%. The cause of the extra loss is not found.
 evolution plan, which is not yet published in this repo.
 
 Today the radio code is not behind a trait: `moq-subghz-send` and `moq-subghz-recv` choose between
-the Pi HAT, the CatWAN serial port, and a replay file inside their own `main.rs`. The plan:
+the Pi HAT, the RP2040-based device serial port, and a replay file inside their own `main.rs`. The plan:
 
 ```
 moq-subghz-wire        unchanged: frames, objects, XOR parity, sealing
 moq-subghz-link        planned: a small Link trait (send a packet, receive a packet, report caps),
                        emulated links, file and loopback links
-radios/                planned: one crate per radio (SX1276 moved as-is, later HaLow, SX1262, LR1121)
+radios/                planned: one crate per radio (SX1276 moved as-is, later 802.11ah, SX1262, LR1121)
 profiles/              planned: board TOML (pins, limits) and region TOML (band, power, duty)
 ```
 
@@ -117,7 +117,7 @@ Rules the plan sets for itself:
 3. Effective limits are the minimum of the command line, the board profile and the region file.
 4. Every number carries a label: Measured, Reported or Modeled. A Modeled row is never placed in a
    Measured column.
-5. A HaLow board profile starts with the module and every pin blank, and a real backend refuses to
+5. A 802.11ah board profile starts with the module and every pin blank, and a real backend refuses to
    load it blank.
 
 The ordered pull request series, and the open questions it needs the owner to answer, are in

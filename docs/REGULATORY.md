@@ -12,7 +12,7 @@ Check your regulator's current text. This page is orientation for the project's 
 * The checks are in the host tools, not in the shipped stick firmware. See [HOWTO section 9](../HOWTO.md#9-radio-rules).
 * Nothing enforces rules for any other band, because no code uses another band yet.
 
-## Sub-GHz ISM (SX1276 today, HaLow and SX1262 planned)
+## Sub-GHz ISM (SX1276 today, 802.11ah sub-GHz Wi-Fi and SX1262 planned)
 
 * Varies by region. 915 MHz is licence-free in the Americas, **not in Europe and many other places**.
   Europe uses 868 MHz with duty-cycle limits this video link breaks.
@@ -21,7 +21,7 @@ Check your regulator's current text. This page is orientation for the project's 
   was not measured. Short indoor bench tests at 3 mW only.
 * Rule texts: [FCC 47 CFR Part 15](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-A/part-15);
   Europe: ETSI EN 300 220 for short range devices (see [etsi.org](https://www.etsi.org/standards)).
-* HaLow channels, bandwidth and power also differ per country. Never override a module's regulatory table.
+* 802.11ah channels, bandwidth and power also differ per country. Never override a module's regulatory table.
 
 ## 2.4 GHz and 5.8 GHz (no code yet)
 

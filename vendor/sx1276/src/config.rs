@@ -176,9 +176,9 @@ pub enum LowDataRateOptimize {
     Off,
 }
 
-/// LoRa modem configuration.
+/// Cssm configuration.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct LoRaConfig {
+pub struct CssConfig {
     pub bandwidth: Bandwidth,
     pub spreading_factor: SpreadingFactor,
     pub coding_rate: CodingRate,
@@ -186,7 +186,7 @@ pub struct LoRaConfig {
     pub crc: bool,
     /// Preamble length in symbols (the modem adds 4.25 symbols).
     pub preamble_len: u16,
-    /// Sync word: 0x12 private networks (default), 0x34 LoRaWAN public.
+    /// Sync word: 0x12 private networks (default), 0x34 framed public.
     pub sync_word: u8,
     pub header: HeaderMode,
     pub low_data_rate_optimize: LowDataRateOptimize,
@@ -194,9 +194,9 @@ pub struct LoRaConfig {
     pub symbol_timeout: u16,
 }
 
-impl Default for LoRaConfig {
+impl Default for CssConfig {
     fn default() -> Self {
-        LoRaConfig {
+        CssConfig {
             bandwidth: Bandwidth::Bw125kHz,
             spreading_factor: SpreadingFactor::Sf7,
             coding_rate: CodingRate::Cr4_5,
@@ -210,7 +210,7 @@ impl Default for LoRaConfig {
     }
 }
 
-impl LoRaConfig {
+impl CssConfig {
     /// Symbol duration in microseconds: 2^SF / BW.
     pub const fn symbol_time_us(&self) -> u32 {
         (((1u64 << self.spreading_factor.value()) * 1_000_000) / self.bandwidth.hz() as u64) as u32
@@ -299,9 +299,9 @@ impl LoRaConfig {
     /// Decode `RegModemConfig1/2/3` back into the fields they carry.
     /// Preamble, sync word and the implicit payload length live in other registers
     /// and are taken from `rest`.
-    pub fn from_registers(mc1: u8, mc2: u8, mc3: u8, rest: &LoRaConfig) -> Option<LoRaConfig> {
+    pub fn from_registers(mc1: u8, mc2: u8, mc3: u8, rest: &CssConfig) -> Option<CssConfig> {
         let implicit = mc1 & 0x01 != 0;
-        Some(LoRaConfig {
+        Some(CssConfig {
             bandwidth: Bandwidth::from_bits(mc1 >> 4)?,
             coding_rate: match (mc1 >> 1) & 0x07 {
                 1 => CodingRate::Cr4_5,
@@ -346,7 +346,7 @@ pub enum ConfigError {
 /// Which PA output pin the antenna is connected to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PaOutput {
-    /// PA_BOOST pin: +2..=+20 dBm (RFM95 / Dragino HAT use this).
+    /// PA_BOOST pin: +2..=+20 dBm (RFM95 / the SX1276 GPS HAT use this).
     PaBoost,
     /// RFO pin: -4..=+15 dBm.
     Rfo,
@@ -436,7 +436,7 @@ pub const fn rssi_dbm(rssi: u8, high_frequency: bool) -> i16 {
     offset + rssi as i16
 }
 
-impl LoRaConfig {
+impl CssConfig {
     /// Number of payload symbols for `payload_len` bytes (datasheet 4.1.1.7).
     pub const fn payload_symbols(&self, payload_len: u8) -> u32 {
         let sf = self.spreading_factor.value() as i32;

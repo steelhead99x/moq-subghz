@@ -1,4 +1,4 @@
-//! `stick-cap`: the raw logger for the stock Electronic Cats LoRa receiver sketch. Writes every byte read from the stick with a timestamp to `<out>.raw.jsonl`
+//! `stick-cap`: the raw logger for the stock the board maker CSS mode receiver sketch. Writes every byte read from the stick with a timestamp to `<out>.raw.jsonl`
 //! (base64) and the parsed packets to `<out>.packets.csv`. Stop with SIGINT or SIGTERM, or
 //! `--seconds`. It opens only the serial device it is given.
 

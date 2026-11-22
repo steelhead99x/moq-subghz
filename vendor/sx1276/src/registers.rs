@@ -1,9 +1,9 @@
-//! Typed LoRa-mode register map of the SX1276 (datasheet rev. 7, section 6.4).
+//! Typed CSS-mode register map of the SX1276 (datasheet rev. 7, section 6.4).
 //!
-//! Only the LoRa page is modelled; FSK/OOK registers that alias the same
+//! Only the CSS mode page is modelled; FSK/OOK registers that alias the same
 //! addresses are not exposed.
 
-/// LoRa-mode register addresses.
+/// CSS-mode register addresses.
 #[allow(missing_docs)]
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -85,9 +85,9 @@ pub const FIFO_SIZE: usize = 256;
 
 /// `RegOpMode` bit fields.
 pub mod opmode {
-    /// LongRangeMode: 1 = LoRa (only writable in sleep).
+    /// LongRangeMode: 1 = CSS mode (only writable in sleep).
     pub const LONG_RANGE_MODE: u8 = 0x80;
-    /// AccessSharedReg: 1 = access FSK registers 0x0D..0x3F while in LoRa mode.
+    /// AccessSharedReg: 1 = access FSK registers 0x0D..0x3F while in CSS mode.
     pub const ACCESS_SHARED_REG: u8 = 0x40;
     /// LowFrequencyModeOn: 1 = LF register page (band 3, < 525 MHz).
     pub const LOW_FREQUENCY_MODE_ON: u8 = 0x08;
@@ -187,7 +187,7 @@ impl core::ops::BitAnd for Irq {
     }
 }
 
-/// Function routed to the DIO0 pin in LoRa mode (`RegDioMapping1` bits 7..6).
+/// Function routed to the DIO0 pin in CSS mode (`RegDioMapping1` bits 7..6).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Dio0Mapping {

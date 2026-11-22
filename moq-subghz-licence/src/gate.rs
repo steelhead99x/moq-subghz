@@ -18,7 +18,7 @@ pub enum Encryption {
     None,
     /// ChaCha20-Poly1305 sealing of objects.
     Sealed,
-    /// AES payload in the LoRaWAN-style frames of `lora2015`.
+    /// AES payload in the uplink-style frames of `css2015`.
     AesPayload,
 }
 
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn the_eu_868_band_is_refused_because_the_table_has_no_such_entry() {
-        // The stock Dragino app keys 868.1 MHz. No region profile for it is enabled.
+        // The stock the HAT maker app keys 868.1 MHz. No region profile for it is enabled.
         let f = Flags {
             transmit: true,
             ..Flags::default()

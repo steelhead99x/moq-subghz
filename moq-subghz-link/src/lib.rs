@@ -1,5 +1,5 @@
 //! One trait for every radio the tools can use: send a packet, wait for a packet, and say what the
-//! link can do. Backends (the SX1276 on the Pi HAT, the CatWAN stick, emulations, replay files)
+//! link can do. Backends (the SX1276 on the Pi HAT, the RP2040-based device, emulations, replay files)
 //! implement [`Link`]; the sender and receiver talk only to it.
 //!
 //! The trait is synchronous: the sender is a blocking loop and the receiver already runs a
@@ -36,10 +36,10 @@ pub fn check_packet(max_payload: usize, packet: &[u8]) -> Result<(), LinkError> 
 pub enum LinkKind {
     /// SX1276 (or similar) in FSK mode.
     Fsk,
-    /// LoRa modulation.
-    Lora,
+    /// CSS mode modulation.
+    Css,
     /// 802.11ah.
-    Halow,
+    S1g,
     /// A modeled channel in memory or a socket.
     Emu,
     /// Frames read back from a recorded file.
@@ -180,7 +180,7 @@ pub trait Link: Send {
     }
 
     /// Transmit errors the link learned of since the last call, for links that hear about them
-    /// after `send` returned (the CatWAN stick reports `ERR tx` asynchronously).
+    /// after `send` returned (the RP2040-based device reports `ERR tx` asynchronously).
     fn take_tx_errors(&mut self) -> u64 {
         0
     }

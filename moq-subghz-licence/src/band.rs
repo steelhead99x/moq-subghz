@@ -73,7 +73,7 @@ const PART97: &str = "47 CFR 97.301 https://www.ecfr.gov/current/title-47/chapte
 /// * 2400-2483.5 and 5725-5850 MHz: ISM bands named in 47 CFR 15.247(a). No code uses them yet.
 /// * 144-148, 420-450 MHz: US amateur bands listed in 47 CFR 97.301(a).
 ///
-/// TODO(owner): EU 868 MHz (ETSI EN 300 220), HaLow country channel plans, amateur 2.4 GHz and
+/// TODO(owner): EU 868 MHz (ETSI EN 300 220), 802.11ah country channel plans, amateur 2.4 GHz and
 /// other amateur bands. Not listed because no frequency has been checked against a source.
 pub const US_BANDS: &[Band] = &[
     Band {

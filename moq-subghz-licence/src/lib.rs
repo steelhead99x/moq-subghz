@@ -9,8 +9,8 @@
 //! and a plausible ID is not proof that you hold a licence. See `docs/LICENSING.md`.
 //!
 //! This crate transmits nothing. [`check_transmit`] is the gate that `moq-subghz-send`,
-//! `moq-subghz-recv` and `lora2015-send` pass before they open a radio, through [`GateArgs`].
-//! The CatWAN firmware images shipped in this repository do not enforce it; see
+//! `moq-subghz-recv` and `css2015-send` pass before they open a radio, through [`GateArgs`].
+//! The RP2040-based device firmware images shipped in this repository do not enforce it; see
 //! `docs/LICENSING.md`. Not legal advice; you are responsible for what you transmit.
 
 pub mod band;

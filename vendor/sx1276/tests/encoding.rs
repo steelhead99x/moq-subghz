@@ -29,7 +29,7 @@ fn frequency_math() {
 
 #[test]
 fn modem_config_defaults() {
-    let c = LoRaConfig::default();
+    let c = CssConfig::default();
     // BW125 (7) <<4 | CR4/5 (1) <<1 | explicit
     assert_eq!(c.modem_config1(), 0x72);
     // SF7 <<4 | CRC on | symbtimeout msb 0
@@ -44,7 +44,7 @@ fn modem_config_defaults() {
 
 #[test]
 fn modem_config_bitfields() {
-    let c = LoRaConfig {
+    let c = CssConfig {
         bandwidth: Bandwidth::Bw500kHz,
         spreading_factor: SpreadingFactor::Sf12,
         coding_rate: CodingRate::Cr4_8,
@@ -62,7 +62,7 @@ fn modem_config_bitfields() {
     assert_eq!(c.symbol_time_us(), 8192);
     assert_eq!(c.modem_config3(), 0x04);
     let back =
-        LoRaConfig::from_registers(c.modem_config1(), c.modem_config2(), c.modem_config3(), &c)
+        CssConfig::from_registers(c.modem_config1(), c.modem_config2(), c.modem_config3(), &c)
             .unwrap();
     assert_eq!(back.bandwidth, c.bandwidth);
     assert_eq!(back.spreading_factor, c.spreading_factor);
@@ -76,7 +76,7 @@ fn modem_config_bitfields() {
         (Bandwidth::Bw62_5kHz, 6),
         (Bandwidth::Bw250kHz, 8),
     ] {
-        let c = LoRaConfig {
+        let c = CssConfig {
             bandwidth: bw,
             ..Default::default()
         };
@@ -86,7 +86,7 @@ fn modem_config_bitfields() {
     }
     for sf in 6..=12u8 {
         let s = SpreadingFactor::from_u8(sf).unwrap();
-        let c = LoRaConfig {
+        let c = CssConfig {
             spreading_factor: s,
             header: HeaderMode::Implicit { payload_len: 8 },
             ..Default::default()
@@ -99,20 +99,20 @@ fn modem_config_bitfields() {
 
 #[test]
 fn ldro_auto() {
-    let sf12 = LoRaConfig {
+    let sf12 = CssConfig {
         spreading_factor: SpreadingFactor::Sf12,
         ..Default::default()
     };
     assert_eq!(sf12.symbol_time_us(), 32_768);
     assert!(sf12.ldro_enabled());
     assert_eq!(sf12.modem_config3(), 0x0C);
-    let sf11_250 = LoRaConfig {
+    let sf11_250 = CssConfig {
         spreading_factor: SpreadingFactor::Sf11,
         bandwidth: Bandwidth::Bw250kHz,
         ..Default::default()
     };
     assert!(!sf11_250.ldro_enabled());
-    let forced = LoRaConfig {
+    let forced = CssConfig {
         low_data_rate_optimize: LowDataRateOptimize::On,
         ..Default::default()
     };
@@ -121,12 +121,12 @@ fn ldro_auto() {
 
 #[test]
 fn sf6_rules() {
-    let bad = LoRaConfig {
+    let bad = CssConfig {
         spreading_factor: SpreadingFactor::Sf6,
         ..Default::default()
     };
     assert_eq!(bad.validate(), Err(ConfigError::Sf6RequiresImplicitHeader));
-    let ok = LoRaConfig {
+    let ok = CssConfig {
         header: HeaderMode::Implicit { payload_len: 16 },
         ..bad
     };
@@ -134,7 +134,7 @@ fn sf6_rules() {
     assert_eq!(ok.detect_optimize(), 0x05);
     assert_eq!(ok.detection_threshold(), 0x0C);
     assert_eq!(ok.modem_config1() & 1, 1);
-    let zero = LoRaConfig {
+    let zero = CssConfig {
         header: HeaderMode::Implicit { payload_len: 0 },
         ..Default::default()
     };
@@ -143,19 +143,19 @@ fn sf6_rules() {
 
 #[test]
 fn time_on_air_and_rate() {
-    // Semtech LoRa calculator: SF7/125k/CR4-5, 8 preamble, explicit header, CRC, 10 B -> 41.216 ms
-    let c = LoRaConfig::default();
+    // Semtech CSS mode calculator: SF7/125k/CR4-5, 8 preamble, explicit header, CRC, 10 B -> 41.216 ms
+    let c = CssConfig::default();
     assert_eq!(c.payload_symbols(10), 28);
     assert_eq!(c.time_on_air_us(10), 41_216);
     assert_eq!(c.bit_rate_bps(), 5_468);
     // SF12/125k/CR4-5 + LDRO, 51 B -> 2465.792 ms
-    let slow = LoRaConfig {
+    let slow = CssConfig {
         spreading_factor: SpreadingFactor::Sf12,
         ..Default::default()
     };
     assert_eq!(slow.time_on_air_us(51), 2_465_792);
     // Fastest standard setting: SF7/500k, 255 B: 390.25 symbols x 256 us
-    let fast = LoRaConfig {
+    let fast = CssConfig {
         bandwidth: Bandwidth::Bw500kHz,
         ..Default::default()
     };

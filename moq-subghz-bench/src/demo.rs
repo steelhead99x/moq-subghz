@@ -1,23 +1,27 @@
-//! `demo-051`: the 6 minute guided demo of the CatWAN stick.
+//! `demo-051`: the 6 minute guided demo of the RP2040-based device.
 //! All over the air: a preflight of the stick and the Pi, 45 s of live FSK video, one small
 //! picture three 2015 ways at SF7/500, and the chunked picture at SF7/125.
 
 use crate::cell::Cell;
 use crate::exec::{read, Host, Plan};
-use crate::orch::{forward, lora, Cfg, Lora, Run};
+use crate::orch::{css, forward, Cfg, Css, Run};
 use crate::serial::{self, Baud};
 use anyhow::{bail, ensure, Context, Result};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// The stick's `I` banner from what it printed: the last `I catwan-fw` line, if it is the
+/// The stick's `I` banner from what it printed: the last `I rp2040-sx1276-fw` line, if it is the
 /// expected radio (`sx_version=0x12`).
 pub fn banner(text: &str) -> Result<String> {
     let line = text
         .lines()
-        .rfind(|l| l.starts_with("I catwan-fw"))
-        .context("no banner: wrong port, or not catwan-fw")?;
+        .rfind(|l| {
+            l.strip_prefix("I ")
+                .and_then(|r| r.split(' ').next())
+                .is_some_and(|n| n.ends_with("-fw"))
+        })
+        .context("no banner: wrong port, or not rp2040-sx1276-fw")?;
     ensure!(
         line.contains("sx_version=0x12"),
         "{line}\nthe radio is not an SX1276 (sx_version=0x12)"
@@ -106,11 +110,11 @@ pub fn run(h: &mut dyn Host, c: &Cfg, out: &Path, play: bool) -> Result<()> {
         .clone()
         .context("--port (or PORT) is needed: no serial device is assumed")?;
     if h.dry() {
-        println!("(would send `I` on {} at 115200 baud and expect an `I catwan-fw` banner with sx_version=0x12)", port.display());
+        println!("(would send `I` on {} at 115200 baud and expect an `I rp2040-sx1276-fw` banner with sx_version=0x12)", port.display());
     } else {
         println!("{}", banner(&ask(&port)?)?);
     }
-    let remote = format!("test -x ~/{d}/moq-subghz-send && test -x ~/lora2015/lora2015-send && echo pi: senders present", d = crate::factory::shq(&c.pi_dir));
+    let remote = format!("test -x ~/{d}/moq-subghz-send && test -x ~/css2015/css2015-send && echo pi: senders present", d = crate::factory::shq(&c.pi_dir));
     ok(h, c.ssh(remote))?;
     say("2. live FSK video, 45 s, FEC k=8");
     let args = ["--fec-k".to_string(), "8".into()];
@@ -173,17 +177,17 @@ pub fn run(h: &mut dyn Host, c: &Cfg, out: &Path, play: bool) -> Result<()> {
         ),
     )?;
     say("3. one small picture, three 2015 ways, SF7/500, 2 passes");
-    for mode in ["chunk", "ssdv", "lorawan"] {
+    for mode in ["chunk", "ssdv", "framed"] {
         let file = if mode == "ssdv" {
             "f160x112-q20.ssdv"
         } else {
             "f160x120-q20.jpg"
         };
         let name = format!("demo-{mode}-sf7-500");
-        lora(
+        css(
             h,
             &c,
-            &Lora {
+            &Css {
                 name: &name,
                 mode,
                 file,
@@ -200,10 +204,10 @@ pub fn run(h: &mut dyn Host, c: &Cfg, out: &Path, play: bool) -> Result<()> {
         }
     }
     say("4. chunked picture at SF7/125, 2 passes");
-    lora(
+    css(
         h,
         &c,
-        &Lora {
+        &Css {
             name: "demo-chunk-sf7-125",
             mode: "chunk",
             file: "f160x120-q20.jpg",
@@ -237,13 +241,16 @@ mod tests {
 
     #[test]
     fn the_banner_has_to_be_the_sx1276_stick() {
-        let ok = "noise\nI catwan-fw 0.5.1 sx_version=0x12 x\nstuff\n";
-        assert_eq!(banner(ok).unwrap(), "I catwan-fw 0.5.1 sx_version=0x12 x");
+        let ok = "noise\nI rp2040-sx1276-fw 0.5.1 sx_version=0x12 x\nstuff\n";
+        assert_eq!(
+            banner(ok).unwrap(),
+            "I rp2040-sx1276-fw 0.5.1 sx_version=0x12 x"
+        );
         assert!(banner("nothing")
             .unwrap_err()
             .to_string()
             .contains("no banner"));
-        assert!(banner("I catwan-fw 0.5.1 sx_version=0x22").is_err());
+        assert!(banner("I rp2040-sx1276-fw 0.5.1 sx_version=0x22").is_err());
     }
 
     fn cfg(antenna: bool, transmit: bool) -> Cfg {

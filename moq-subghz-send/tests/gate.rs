@@ -28,7 +28,7 @@ fn reached_radio(o: &Output) -> bool {
 
 #[test]
 fn without_transmit_the_radio_is_never_opened() {
-    let o = send(&["--catwan", PORT, "--i-have-an-antenna"]);
+    let o = send(&["--rp2040", PORT, "--i-have-an-antenna"]);
     assert!(!o.status.success());
     assert!(!reached_radio(&o), "{}", err(&o));
     assert!(err(&o).contains("pass --transmit"), "{}", err(&o));
@@ -36,7 +36,7 @@ fn without_transmit_the_radio_is_never_opened() {
 
 #[test]
 fn without_the_antenna_flag_the_radio_is_never_opened() {
-    let o = send(&["--catwan", PORT, "--transmit"]);
+    let o = send(&["--rp2040", PORT, "--transmit"]);
     assert!(!o.status.success());
     assert!(!reached_radio(&o), "{}", err(&o));
     assert!(err(&o).contains("--i-have-an-antenna"), "{}", err(&o));
@@ -46,7 +46,7 @@ fn without_the_antenna_flag_the_radio_is_never_opened() {
 fn with_both_flags_the_gate_lets_the_run_reach_the_port() {
     // The positive control for the tests above: the same command with --transmit gets to the
     // port open, which fails because the port does not exist.
-    let o = send(&["--catwan", PORT, "--i-have-an-antenna", "--transmit"]);
+    let o = send(&["--rp2040", PORT, "--i-have-an-antenna", "--transmit"]);
     assert!(!o.status.success());
     assert!(reached_radio(&o), "{}", err(&o));
 }
@@ -55,7 +55,7 @@ fn with_both_flags_the_gate_lets_the_run_reach_the_port() {
 fn the_gate_refuses_a_span_outside_the_band_before_the_radio() {
     // 902.1 MHz passes the old carrier check, but the 500 kHz wide signal leaves the band.
     let o = send(&[
-        "--catwan",
+        "--rp2040",
         PORT,
         "--i-have-an-antenna",
         "--transmit",
@@ -76,7 +76,7 @@ fn a_bad_licence_file_stops_the_run_whatever_the_link() {
     let d = TempDir::new("send-bad");
     let missing = d.path().join("missing.toml");
     for extra in [
-        &["--catwan", PORT, "--i-have-an-antenna", "--transmit"][..],
+        &["--rp2040", PORT, "--i-have-an-antenna", "--transmit"][..],
         &["--loopback", "/nonexistent/dir/out.txt"][..],
     ] {
         let mut args = vec!["--licence-file", missing.to_str().unwrap()];
@@ -96,7 +96,7 @@ fn licensed_mode_with_a_good_file_still_needs_transmit() {
     let o = send(&[
         "--licence-file",
         lic,
-        "--catwan",
+        "--rp2040",
         PORT,
         "--i-have-an-antenna",
     ]);
@@ -106,7 +106,7 @@ fn licensed_mode_with_a_good_file_still_needs_transmit() {
     let o = send(&[
         "--licence-file",
         lic,
-        "--catwan",
+        "--rp2040",
         PORT,
         "--i-have-an-antenna",
         "--transmit",
@@ -126,7 +126,7 @@ fn the_pi_hat_is_not_opened_without_transmit() {
 }
 
 /// A whole loopback run needs ffmpeg; skip (loudly) where it is missing. The recv and
-/// lora2015-send tests cover the same scan without it.
+/// css2015-send tests cover the same scan without it.
 #[test]
 fn loopback_run_scan_for_the_licence_with_redaction() {
     if Command::new("ffmpeg").arg("-version").output().is_err() {

@@ -5,28 +5,28 @@ the `moq-subghz-licence` crate and how the tools use it.
 
 ## What is enforced, and where
 
-* `moq-subghz-send`, `moq-subghz-recv`, `lora2015-send`, `lora2015-log` and the bench crate's
+* `moq-subghz-send`, `moq-subghz-recv`, `css2015-send`, `css2015-log` and the bench crate's
   `factory-send` / `factory-bench` run the gate before they open a real
-  radio (a CatWAN port or the Pi's SX1276). Transmitting needs the gate to return a permit, which
+  radio (an RP2040-based device port or the Pi's SX1276). Transmitting needs the gate to return a permit, which
   needs `--transmit` as well as `--i-have-an-antenna`. Without `--transmit` the senders never
   transmit; the receivers never transmit at all. The existing frequency (902-928 MHz, not within
   0.3 MHz of 925.0) and power (2 to 5 dBm) checks still run first.
 * `moq-subghz-bench` is gated too. Its orchestration commands (`run`, `rev`, `bench`, `bench-051`,
-  `lora2015-run`, `demo-051`) start the project's own programs, which run the gate; the bench adds
+  `css2015-run`, `demo-051`) start the project's own programs, which run the gate; the bench adds
   neither transmit flag for you, and `demo-051` runs the transmit check before it writes to the
-  stick or calls the Pi. `factory-send` and `factory-bench` drive the **stock Dragino app**, which
+  stick or calls the Pi. `factory-send` and `factory-bench` drive the **stock the HAT maker app**, which
   cannot be queried, so they need `--transmit`, `--i-have-an-antenna` and a declaration of what the
   build on the Pi transmits (`--freq-mhz`, `--power-dbm`); the gate checks the declaration and runs
   on the Pi as well as on the laptop, before anything is read or started. **The stock build
   (868.1 MHz, up to +17 dBm) is refused**: it is outside the project's US ISM rules and the gate
   has no 868 MHz profile (the EU region is not enabled, and region `other` is blocked). To bench
-  it legitimately, apply `firmware/vendor/dragino-lora-gps-hat/dragino-bench.patch` (915.0 MHz,
+  it legitimately, apply `firmware/vendor/sx1276-gps-hat/gps-hat-bench.patch` (915.0 MHz,
   +5 dBm) and declare `--freq-mhz 915.0 --power-dbm 5`. The declaration is yours: the tool cannot
   verify that the app on the Pi really is the patched build.
 * In the radio crates every `open` takes the gate's permit (`TxPermit` to transmit, `RxPermit` to
   receive) and refuses a frequency the permit did not check, so opening a radio without asking the
   gate does not compile. The lower Pi glue crate (`moq-subghz-pi`) is below that line. A raw serial
-  session, `stick-cap` (read only) and the CatWAN firmware images are not covered.
+  session, `stick-cap` (read only) and the RP2040-based device firmware images are not covered.
 * The bench passes every program it starts either `--licence-file PATH` (`--licence-file` for the
   programs here, `--pi-licence-file` for those on the Pi) or `--no-licence`, which also stops the
   program from looking at `MOQ_SUBGHZ_LICENCE` and the XDG path. With neither option the bench
@@ -40,23 +40,23 @@ the `moq-subghz-licence` crate and how the tools use it.
   refused.
 * The no-radio paths (`--loopback`, `--replay`, the `-emu` links) drive no radio and need no
   permit. They still load the licence file if you give one, so a bad file is an error.
-* `lora2015-log` listens only. It runs the same receive gate before opening the stick, with
+* `css2015-log` listens only. It runs the same receive gate before opening the stick, with
   `--licence-file`, `--rx-amateur` and `--amateur` (`--transmit` has no effect).
-* **Not covered:** anything you type into a raw serial session; and the **shipped CatWAN firmware images**.
-  `firmware/catwan-fw-v5.uf2` and `firmware/catwan-fw-0.5.1.uf2` still accept any carrier and up
+* **Not covered:** anything you type into a raw serial session; and the **shipped RP2040-based device firmware images**.
+  `firmware/rp2040-sx1276-fw-v5.uf2` and `firmware/rp2040-sx1276-fw-0.5.1.uf2` still accept any carrier and up
   to +17 dBm on their `L` and `F` commands. The source refuses those, but no new image has been
   built, flashed and run, so a stick on the shipped images ignores all of this. The checks are in
   the host tools only.
 * **Amateur transmit is not available.** The scheduler and the identification frame exist, but no
   tool sends station ID frames yet, so a transmit permit that would need them is refused
-  (`moq-subghz-send` and `lora2015-send` only have ISM profiles anyway). Receiving on the amateur
+  (`moq-subghz-send` and `css2015-send` only have ISM profiles anyway). Receiving on the amateur
   profile works in `moq-subghz-recv` (`--amateur`).
 
 ## Modes
 
 | | Unlicensed (default) | Licensed |
 |---|---|---|
-| Meaning | licence-free ISM operation only (for example 915 MHz in the Americas, 868 MHz, 2.4 GHz, HaLow where allowed) | operation under a radio licence (amateur or other licensed bands) |
+| Meaning | licence-free ISM operation only (for example 915 MHz in the Americas, 868 MHz, 2.4 GHz, 802.11ah sub-GHz Wi-Fi where allowed) | operation under a radio licence (amateur or other licensed bands) |
 | Licensed-only bands | **blocked**, including receive-only starts | allowed with a valid licence |
 | Amateur profiles | blocked, except **receive-only with `--rx-amateur`** | allowed |
 | Needs a licence ID and name | no | **yes, both**, or the tool refuses to start, transmit or enable an amateur profile |
@@ -79,7 +79,7 @@ entered without real config. The example file holds fake placeholders that the l
 | `--transmit` | allow transmitting. Default off: the tools never transmit. `moq-subghz-recv` has no transmit path and ignores it |
 | `--rx-amateur` | receive-only use of an amateur band in unlicensed mode |
 | `--redact-licence` | write `[redacted]` instead of the ID and name in logs and reports |
-| `--amateur` (`moq-subghz-recv`, `lora2015-log`) | use the amateur 33 cm profile on 902-928 MHz |
+| `--amateur` (`moq-subghz-recv`, `css2015-log`) | use the amateur 33 cm profile on 902-928 MHz |
 
 ## Amateur profiles
 
@@ -159,7 +159,7 @@ them yet**, so the tools refuse such a permit instead of transmitting without th
 
 In licensed mode the ID and name are written into the run's summary as one `licence_id` /
 `operator` pair (`"licence"` in the JSON summary of `moq-subghz-send` and `moq-subghz-recv`, a
-line with the same pair on `lora2015-send`'s stdout). Redaction is opt-in, as the owner
+line with the same pair on `css2015-send`'s stdout). Redaction is opt-in, as the owner
 chose: `--redact-licence` replaces both with `[redacted]`. Use it for anything you publish. Every
 tool writes the pair through one function (`Station::log_line`), and tests run each tool and scan
 its output for the configured ID and name with redaction on. `Debug` output of the config never

@@ -2,7 +2,7 @@
 //! and the matrix goes on, but it ends `BENCH_FAILED: <n> run(s) failed` with exit 1.
 
 use crate::exec::{Host, Plan, Real};
-use crate::orch::{forward, lora, reverse, Cfg, Lora, Run};
+use crate::orch::{css, forward, reverse, Cfg, Css, Run};
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use std::fs::OpenOptions;
@@ -38,8 +38,8 @@ pub enum Step {
         rx_key: Option<Key>,
         args: Vec<String>,
     },
-    /// One picture over lora2015
-    Lora {
+    /// One picture over css2015
+    Css {
         name: String,
         mode: String,
         file: String,
@@ -52,7 +52,7 @@ pub enum Step {
 impl Step {
     pub fn name(&self) -> &str {
         match self {
-            Step::Fwd { name, .. } | Step::Rev { name, .. } | Step::Lora { name, .. } => name,
+            Step::Fwd { name, .. } | Step::Rev { name, .. } | Step::Css { name, .. } => name,
         }
     }
 }
@@ -106,8 +106,8 @@ pub enum Part {
     Fsk,
     /// Only the two extra FSK runs (no FEC, and with rind)
     FskExtra,
-    /// The lora2015 pictures
-    Lora,
+    /// The css2015 pictures
+    Css,
     All,
 }
 
@@ -142,7 +142,7 @@ pub fn plan_051(part: Part, reps: u32, fsk_secs: u32, pkey: &str) -> Vec<Step> {
             &["--fec-k", "8", "--key-file", pkey],
         ));
     }
-    if matches!(part, Part::Lora | Part::All) {
+    if matches!(part, Part::Css | Part::All) {
         for rep in 1..=reps {
             for prof in ["sf7-125", "sf7-250", "sf7-500", "sf8-500"] {
                 let dr = if prof == "sf8-500" { "dr4" } else { "dr3" };
@@ -155,9 +155,9 @@ pub fn plan_051(part: Part, reps: u32, fsk_secs: u32, pkey: &str) -> Vec<Step> {
                     for (mode, file, args) in [
                         ("chunk", jpg, vec![]),
                         ("ssdv", ssdv, vec![]),
-                        ("lorawan", jpg, s(&["--dr", dr])),
+                        ("framed", jpg, s(&["--dr", dr])),
                     ] {
-                        v.push(Step::Lora {
+                        v.push(Step::Css {
                             name: format!("{mode}-{prof}-{size}-r{rep}"),
                             mode: mode.into(),
                             file: file.into(),
@@ -229,17 +229,17 @@ fn run_step(h: &mut dyn Host, c: &Cfg, play: bool, k: &Keys, st: &Step) -> Resul
                 args,
             },
         ),
-        Step::Lora {
+        Step::Css {
             name,
             mode,
             file,
             profile,
             passes,
             args,
-        } => lora(
+        } => css(
             h,
             c,
-            &Lora {
+            &Css {
                 name,
                 mode,
                 file,
@@ -279,7 +279,7 @@ fn kind(st: &Step) -> &'static str {
     match st {
         Step::Fwd { .. } => "fsk fwd",
         Step::Rev { .. } => "fsk rev",
-        Step::Lora { .. } => "lora",
+        Step::Css { .. } => "css",
     }
 }
 
@@ -414,13 +414,13 @@ mod tests {
     fn stick_matrix_sizes() {
         assert_eq!(plan_051(Part::Fsk, 3, 120, "k").len(), 8);
         assert_eq!(plan_051(Part::FskExtra, 3, 120, "k").len(), 2);
-        assert_eq!(plan_051(Part::Lora, 3, 120, "k").len(), 72);
+        assert_eq!(plan_051(Part::Css, 3, 120, "k").len(), 72);
         assert_eq!(plan_051(Part::All, 3, 120, "k").len(), 80);
-        assert_eq!(plan_051(Part::Lora, 1, 120, "k").len(), 24);
-        let l = plan_051(Part::Lora, 1, 120, "k");
+        assert_eq!(plan_051(Part::Css, 1, 120, "k").len(), 24);
+        let l = plan_051(Part::Css, 1, 120, "k");
         assert_eq!(
             l[0],
-            Step::Lora {
+            Step::Css {
                 name: "chunk-sf7-125-small-r1".into(),
                 mode: "chunk".into(),
                 file: "f160x120-q20.jpg".into(),
@@ -430,9 +430,9 @@ mod tests {
             }
         );
         let last = l.last().unwrap();
-        assert_eq!(last.name(), "lorawan-sf8-500-large-r1");
+        assert_eq!(last.name(), "framed-sf8-500-large-r1");
         assert!(
-            matches!(last, Step::Lora { args, file, .. } if args == &s(&["--dr", "dr4"]) && file == "f320x240-q10.jpg")
+            matches!(last, Step::Css { args, file, .. } if args == &s(&["--dr", "dr4"]) && file == "f320x240-q10.jpg")
         );
         let a = plan_051(Part::All, 1, 120, "k");
         assert_eq!(a[0].name(), "f300-fec8-p5-1");

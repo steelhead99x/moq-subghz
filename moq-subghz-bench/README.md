@@ -17,7 +17,7 @@ $B bench --i-have-an-antenna --transmit                                       # 
 ```
 
 Every subcommand that goes over the air needs both `--i-have-an-antenna` and `--transmit`, the
-same two flags the senders need (the licence gate in `moq-subghz-send` and `lora2015-send` also
+same two flags the senders need (the licence gate in `moq-subghz-send` and `css2015-send` also
 wants a licence or permit, see [docs/LICENSING.md](../docs/LICENSING.md)). The bench never adds
 either one for you: it forwards them to the sender only when you pass them, as options of the
 subcommand or among the sender arguments after the profile, and `--dry-run` shows them only then.
@@ -33,17 +33,17 @@ replaces `PLAY=` when ffplay is not installed.
 
 | subcommand | direction | what |
 |---|---|---|
-| `run` | Pi -> CatWAN/laptop | clock check, receiver on the laptop, sender on the Pi |
-| `rev` | laptop -> CatWAN -> Pi | clock check, receiver on the Pi, sender on the laptop |
+| `run` | Pi -> RP2040-based device/laptop | clock check, receiver on the laptop, sender on the Pi |
+| `rev` | laptop -> RP2040-based device -> Pi | clock check, receiver on the Pi, sender on the laptop |
 | `clocklog` | both | Pi-minus-laptop offset every 5 s until `RUNS/clocklog.stop` |
 | `bench` | both | the 8-run rind off/on matrix (300k and 350k, 330 s each) |
-| `lora2015-run` | Pi -> stick | one picture run for `results/stick-0.5.1/`: logger here, `lora2015-send` on the Pi, then the exact loss from a replay |
-| `bench-051` | Pi -> stick | the whole `results/stick-0.5.1/` matrix (`--part fsk`, `fsk-extra`, `lora` or `all`) |
+| `css2015-run` | Pi -> stick | one picture run for `results/stick-0.5.1/`: logger here, `css2015-send` on the Pi, then the exact loss from a replay |
+| `bench-051` | Pi -> stick | the whole `results/stick-0.5.1/` matrix (`--part fsk`, `fsk-extra`, `css` or `all`) |
 | `demo-051` | Pi -> stick | the 6 minute guided demo of `results/stick-0.5.1/` |
 | `analyze` | none | builds the CSVs and charts of `results/stick-0.5.1/` from the runs (ffmpeg for the SSDV PSNR) |
 | `package-051` | none | copies the data worth keeping into `results/stick-0.5.1/`, without host paths |
-| `lora2015-table` | none | prints the calculated airtime table of `results/lora-2015/README.md` |
-| `lora2015-frames` | none | rebuilds the test pictures of `results/lora-2015/frames/` (ffmpeg, and `ssdv` for the SSDV files) |
+| `css2015-table` | none | prints the calculated airtime table of `results/css-2015/README.md` |
+| `css2015-frames` | none | rebuilds the test pictures of `results/css-2015/frames/` (ffmpeg, and `ssdv` for the SSDV files) |
 | `factory-bench`, `stick-cap`, `factory-send` | Pi -> stock stick | the factory-vs-factory picture test of `results/factory-firmware/`; `factory-send` runs on the Pi, so build this crate for it too |
 | `elf2uf2` | none | ELF to UF2 for the RP2040 |
 

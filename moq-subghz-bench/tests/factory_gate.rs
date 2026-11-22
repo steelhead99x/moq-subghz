@@ -46,7 +46,7 @@ fn refuses_the_stock_868_build() {
         "17",
     ]);
     assert!(
-        !ok && e.contains("868.1 MHz") && e.contains("dragino-bench.patch"),
+        !ok && e.contains("868.1 MHz") && e.contains("gps-hat-bench.patch"),
         "{e}"
     );
     assert!(!e.contains("chunks-never-read"), "{e}");
