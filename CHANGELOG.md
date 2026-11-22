@@ -39,7 +39,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * **Models.** HaLow retries, overhead, MTU and timings are bounded and saturate (a huge
   `--halow-retries` used to overflow or loop); `TxReport` gains `acked` next to `delivered`
   (breaking for code that builds a `TxReport`); LoRa bandwidth and SF6 are checked against what
-  the SX1276 supports; the Gilbert-Elliott chain starts in its stationary distribution, so seeded
+  the SX1276 supports (new `--lora-implicit` selects the implicit header SF6 needs); the Gilbert-Elliott chain starts in its stationary distribution, so seeded
   GE results differ from earlier runs (MODELED only). In-memory links are bounded.
 * **`R` lines have one parser.** `moq_subghz_wire::parse_r_line` is strict (every field, no extra
   token) and `lora2015` uses it, so the receiver and the logger accept the same lines. A `--paced`

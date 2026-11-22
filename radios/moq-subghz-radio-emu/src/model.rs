@@ -465,6 +465,29 @@ mod tests {
     }
 
     #[test]
+    fn lora_implicit_header_airtime() {
+        // ASSUMPTION: hand computation of the same datasheet formula with IH = 1 (20 fewer bits
+        // in the numerator); no published implicit-header reference value is cited.
+        // SF6, 125 kHz, CR4/5, 8 preamble symbols, CRC, 10 B:
+        // num = 80 - 24 + 28 + 16 - 20 = 80, den = 4 * 6 = 24, 4 blocks, 8 + 4 * 5 = 28 symbols,
+        // Tsym = 64 / 125000 = 0.512 ms, (8 + 4.25 + 28) * 0.512 ms = 20.608 ms.
+        let l = LoraCfg {
+            sf: 6,
+            bw_hz: 125_000,
+            explicit_header: false,
+            ..LoraCfg::default()
+        };
+        assert_eq!(l.airtime_us(10), 20_608);
+        // the implicit header is never longer than the explicit one
+        let e = LoraCfg {
+            explicit_header: true,
+            ..l
+        };
+        assert!(l.airtime_us(10) <= e.airtime_us(10));
+        assert!(EmuCfg::new(PhyKind::Lora(l)).validate().is_ok());
+    }
+
+    #[test]
     fn halow_clean_attempt_adds_up() {
         let o = expected_halow().transmit(1000);
         let h = HalowCfg::default();
