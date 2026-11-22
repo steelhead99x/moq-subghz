@@ -1,4 +1,4 @@
-//! `demo-051`: the 6 minute guided demo of the CatWAN stick, a port of `scripts/demo-051.sh`.
+//! `demo-051`: the 6 minute guided demo of the CatWAN stick.
 //! All over the air: a preflight of the stick and the Pi, 45 s of live FSK video, one small
 //! picture three 2015 ways at SF7/500, and the chunked picture at SF7/125.
 

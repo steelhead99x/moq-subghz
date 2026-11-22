@@ -1,5 +1,4 @@
-//! `run`, `rev` and `lora2015-run`: one over-the-air run each, ports of `scripts/run2.sh`,
-//! `scripts/rev.sh` and `scripts/lora2015-run.sh`. They start the project's own binaries and ssh,
+//! `run`, `rev` and `lora2015-run`: one over-the-air run each. They start the project's own binaries and ssh,
 //! then check every artifact: a run counts only when the sender, the receiver or logger and the
 //! log copy all succeeded and left their summaries. Any failure is `FAILED <run>: <why>`, exit 1.
 //!
@@ -16,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Where things are: the same settings `scripts/env.sh` held.
+/// Where things are: the ssh host, the binaries, the runs directory, the serial device.
 #[derive(Args, Clone, Debug)]
 pub struct Env {
     /// ssh host of the Pi
@@ -243,7 +242,7 @@ pub fn pi_send_script(pi_dir: &str, r: &Run, flags: &[String]) -> String {
     )
 }
 
-/// Pi to laptop: the receiver here, the sender on the Pi (`run2.sh`).
+/// Pi to laptop: the receiver here, the sender on the Pi.
 pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -345,7 +344,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     Ok(())
 }
 
-/// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here (`rev.sh`).
+/// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here.
 pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -489,7 +488,7 @@ fn after_digits(text: &str, key: &str, dot: bool) -> Option<String> {
     })
 }
 
-/// Logger here, sender on the Pi, then the exact loss from a replay (`lora2015-run.sh`).
+/// Logger here, sender on the Pi, then the exact loss from a replay.
 pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;

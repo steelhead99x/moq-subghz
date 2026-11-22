@@ -1,6 +1,6 @@
 //! `analyze`: turn the raw runs of the stick 0.5.1 bench into the tables and charts of
-//! `results/stick-0.5.1/`. A port of `scripts/analyze-051.py`; the output is byte-identical to the
-//! committed files. Everything computed from files is "measured"; columns ending `_calc` are the
+//! `results/stick-0.5.1/`. The committed files were written by a Python
+//! analyzer, and this reproduces them byte for byte. Everything computed from files is "measured"; columns ending `_calc` are the
 //! datasheet formula.
 
 use crate::cell::{field, mean, num, read_dict, rng, round_to, write_csv, Cell};

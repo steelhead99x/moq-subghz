@@ -1,6 +1,5 @@
 //! `package-051`: copy the data worth keeping from a bench-051 runs directory into
-//! `results/stick-0.5.1/`, with no logs that hold host paths. A port of
-//! `scripts/package-051.sh`. A run missing a file it should have is an error, not a gap.
+//! `results/stick-0.5.1/`, with no logs that hold host paths. A run missing a file it should have is an error, not a gap.
 
 use anyhow::{Context, Result};
 use flate2::{write::GzEncoder, Compression};

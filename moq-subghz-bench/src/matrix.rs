@@ -1,5 +1,4 @@
-//! `bench`, `bench-051` and `clocklog`: the matrices of runs and the clock logger, ports of
-//! `scripts/bench.sh`, `scripts/bench-051.sh` and `scripts/clocklog.sh`. A failed run is counted
+//! `bench`, `bench-051` and `clocklog`: the matrices of runs and the clock logger. A failed run is counted
 //! and the matrix goes on, but it ends `BENCH_FAILED: <n> run(s) failed` with exit 1.
 
 use crate::exec::{Host, Plan, Real};

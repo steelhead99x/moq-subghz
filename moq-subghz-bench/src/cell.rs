@@ -61,7 +61,7 @@ pub fn num(s: &str) -> Option<f64> {
     s.trim().parse().ok()
 }
 
-/// Python's `mean` helper of analyze-051.py: ignores missing values, rounds to 2 places.
+/// The `mean` of the analysis: ignores missing values, rounds to 2 places.
 pub fn mean(v: &[Option<f64>]) -> Option<f64> {
     let v: Vec<f64> = v.iter().flatten().copied().collect();
     (!v.is_empty()).then(|| round_to(v.iter().sum::<f64>() / v.len() as f64, 2))
