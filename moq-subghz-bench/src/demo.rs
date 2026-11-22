@@ -1,4 +1,4 @@
-//! `demo-051`: the 6 minute guided demo of the CatWAN stick, a port of `scripts/demo-051.sh`.
+//! `demo-051`: the 6 minute guided demo of the CatWAN stick.
 //! All over the air: a preflight of the stick and the Pi, 45 s of live FSK video, one small
 //! picture three 2015 ways at SF7/500, and the chunked picture at SF7/125.
 
@@ -111,7 +111,7 @@ pub fn run(h: &mut dyn Host, c: &Cfg, out: &Path, play: bool) -> Result<()> {
         println!("{}", banner(&ask(&port)?)?);
     }
     let remote = format!("test -x ~/{d}/moq-subghz-send && test -x ~/lora2015/lora2015-send && echo pi: senders present", d = crate::factory::shq(&c.pi_dir));
-    ok(h, Plan::new("ssh", [c.pi.clone(), remote]))?;
+    ok(h, c.ssh(remote))?;
     say("2. live FSK video, 45 s, FEC k=8");
     let args = ["--fec-k".to_string(), "8".into()];
     forward(

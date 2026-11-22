@@ -12,7 +12,11 @@ use anyhow::{bail, Context, Result};
 use flate2::{write::GzEncoder, Compression};
 use moq_subghz_licence::{GateArgs, Station, REDACTED};
 use std::fs;
-use std::io::Write;
+
+/// Largest log `package-051` compresses (1 GiB).
+const MAX_LOG: u64 = 1 << 30;
+/// Bytes of one block carried into the next scan: longer than the licence name and ID line.
+const OVERLAP: usize = 1024;
 use std::path::{Path, PathBuf};
 
 fn dirs(root: &Path, keep: impl Fn(&str) -> bool) -> Result<Vec<String>> {
@@ -60,6 +64,13 @@ impl Guard {
     /// Why `bytes`, the content of `file`, may not be published; `Ok` when it holds neither the
     /// licence ID nor the name and no unredacted licence line. Never carries the values.
     pub fn check(&self, file: &Path, bytes: &[u8]) -> Result<()> {
+        self.check_window(file, bytes, true)
+    }
+
+    /// [`Guard::check`] for one window of a longer file. A licence line cut off by the end of a
+    /// window is judged when the next window (which repeats the tail) holds all of it; `last`
+    /// is true for the final window.
+    fn check_window(&self, file: &Path, bytes: &[u8], last: bool) -> Result<()> {
         let text = String::from_utf8_lossy(bytes);
         if self.station.licence().is_some_and(|l| l.appears_in(&text)) {
             bail!(
@@ -68,10 +79,10 @@ impl Guard {
                 file.display()
             );
         }
-        if text
-            .match_indices(ID_KEY)
-            .any(|(i, k)| !text[i + k.len()..].starts_with(REDACTED))
-        {
+        if text.match_indices(ID_KEY).any(|(i, k)| {
+            let rest = &text[i + k.len()..];
+            (last || rest.len() >= REDACTED.len()) && !rest.starts_with(REDACTED)
+        }) {
             bail!(
                 "refusing to package: {} has a licence line that is not redacted (values not printed)",
                 file.display()
@@ -99,9 +110,39 @@ fn cp_bin(from: &Path, to: &Path) -> Result<()> {
 }
 
 fn gzip(g: &Guard, from: &Path, to: &Path) -> Result<()> {
-    let data = g.read(from)?;
+    use std::io::{Read, Write};
+    let mut f = fs::File::open(from).with_context(|| format!("read {}", from.display()))?;
     let mut e = GzEncoder::new(fs::File::create(to)?, Compression::best());
-    e.write_all(&data)?;
+    // Streamed, so a big log costs no memory, but not without end. Each block is scanned (with
+    // the tail of the one before, so a value cannot hide across a block boundary) before it is
+    // compressed; on a hit the half-written output is removed.
+    let (mut buf, mut carry, mut total) = (vec![0u8; 1 << 20], Vec::<u8>::new(), 0u64);
+    let fail = |e: GzEncoder<fs::File>, err: anyhow::Error| {
+        drop(e);
+        let _ = fs::remove_file(to);
+        err
+    };
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > MAX_LOG {
+            let err = anyhow::anyhow!("{} is larger than {MAX_LOG} bytes", from.display());
+            return Err(fail(e, err));
+        }
+        let mut win = std::mem::take(&mut carry);
+        win.extend_from_slice(&buf[..n]);
+        if let Err(err) = g.check_window(from, &win, false) {
+            return Err(fail(e, err));
+        }
+        carry = win[win.len().saturating_sub(OVERLAP)..].to_vec();
+        e.write_all(&buf[..n])?;
+    }
+    if let Err(err) = g.check_window(from, &carry, true) {
+        return Err(fail(e, err));
+    }
     e.finish()?;
     Ok(())
 }
@@ -133,8 +174,21 @@ pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         if fs::metadata(&summary).map_or(true, |m| m.len() == 0) {
             continue;
         }
-        // A run whose sender never got a frame out has nothing to keep.
-        if fs::read_to_string(&summary)?.contains("\"radio_frames_ok\":0,") {
+        // A run whose sender never got a frame out has nothing to keep. One that sent frames and
+        // received none (a total loss) is a result and is kept.
+        let parse = |p: &Path| -> Result<serde_json::Value> {
+            Ok(
+                match crate::cell::read_text_opt(p, crate::cell::MAX_TEXT)? {
+                    Some(t) => {
+                        serde_json::from_str(&t).with_context(|| format!("{}", p.display()))?
+                    }
+                    None => serde_json::Value::Object(Default::default()),
+                },
+            )
+        };
+        let kind =
+            crate::analyze::run_kind(&parse(&summary)?, &parse(&d.join("send_summary.json"))?);
+        if kind == crate::analyze::RunKind::NeverStarted {
             continue;
         }
         let o = fsk.join(&n);
@@ -162,7 +216,7 @@ pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         cp_pictures(&d.join("exact"), &o)?;
         gzip(g, &d.join("raw.log"), &o.join("raw.log.gz"))?;
         cp(g, &runs.join(format!("{n}.tx.csv")), &o.join("tx.csv"))?;
-        let send = fs::read_to_string(runs.join(format!("{n}.send")))
+        let send = crate::cell::read_text(&runs.join(format!("{n}.send")), crate::cell::MAX_TEXT)
             .with_context(|| format!("read {n}.send"))?;
         let line: String = send
             .lines()
@@ -338,6 +392,25 @@ mod tests {
     }
 
     #[test]
+    fn a_value_straddling_a_block_boundary_of_a_big_log_is_still_found() {
+        let k = Scratch::new("pk-lic4");
+        let g = licensed(&k.0);
+        let d = Scratch::new("pk-big");
+        let mut data = vec![b'.'; (1 << 20) - 2];
+        data.extend_from_slice(fill("@ID@").as_bytes()); // crosses the 1 MiB block edge
+        data.extend(vec![b'.'; 5000]);
+        let (from, to) = (d.0.join("raw.log"), d.0.join("raw.log.gz"));
+        fs::write(&from, &data).unwrap();
+        let e = gzip(&g, &from, &to).unwrap_err().to_string();
+        assert!(e.contains("refusing to package"), "{e}");
+        assert!(!to.exists(), "the half-written output is removed");
+        // the same log without the value compresses
+        fs::write(&from, vec![b'.'; (1 << 20) + 10]).unwrap();
+        gzip(&g, &from, &to).unwrap();
+        assert!(to.exists());
+    }
+
+    #[test]
     fn clean_files_pass_a_licensed_guard() {
         let k = Scratch::new("pk-lic3");
         let (r, d, o) = (
@@ -420,6 +493,36 @@ mod tests {
             fs::read_to_string(o.0.join("demo/fsk-live-summary.json")).unwrap(),
             "fsk-live/summary.json"
         );
+    }
+
+    #[test]
+    fn a_total_loss_run_is_kept_and_a_run_that_never_started_is_not() {
+        let (r, d, o) = (
+            Scratch::new("pk3-r"),
+            Scratch::new("pk3-d"),
+            Scratch::new("pk3-o"),
+        );
+        stage(&r.0, &d.0);
+        put(
+            r.0.join("f300-lost/summary.json"),
+            "{\"radio_frames_ok\":0,\"x\":1}",
+        );
+        put(
+            r.0.join("f300-lost/send_summary.json"),
+            "{\"frames_tx\":500}",
+        );
+        for f in ["objects.jsonl", "decoded.jsonl", "send.jsonl", "serial.log"] {
+            put(r.0.join("f300-lost").join(f), f);
+        }
+        put(
+            r.0.join("f300-zero/summary.json"),
+            "{\"radio_frames_ok\":0,\"x\":1}",
+        );
+        put(r.0.join("f300-zero/send_summary.json"), "{\"frames_tx\":0}");
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        assert!(o.0.join("fsk/f300-lost/summary.json").exists());
+        assert!(o.0.join("fsk/f300-lost/send_summary.json").exists());
+        assert!(!o.0.join("fsk/f300-zero").exists() && !o.0.join("fsk/f300-dead").exists());
     }
 
     #[test]

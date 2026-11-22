@@ -251,7 +251,7 @@ pub fn last_line(text: &str) -> &str {
 
 /// Read a file the run was meant to leave behind, naming it when it is not there.
 pub fn read(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
+    crate::cell::read_text(path, crate::cell::MAX_TEXT)
 }
 
 #[cfg(test)]

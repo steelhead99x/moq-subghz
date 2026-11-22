@@ -12,5 +12,5 @@ releases one image for all of them.
 
 ## Waiting
 
-- Maintainer: flash the v6 image, confirm `I` reports it, and re-run `scripts/bench.sh`; done when
+- Maintainer: flash the v6 image, confirm `I` reports it, and re-run `moq-subghz-bench bench`; done when
   `results/video` holds the new runs.

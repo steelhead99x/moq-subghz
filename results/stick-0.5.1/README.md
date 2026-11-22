@@ -133,7 +133,7 @@ so the FSK path is about 300 times the data rate (calculated from the two measur
 
 ## Part 3: FSK live video, 300 kbit/s (measured)
 
-`scripts/run2.sh` as in [results/video](../video/README.md), 120 s per run: 320x240, 15 fps, GOP 15, x264 at 180 kbit/s,
+`moq-subghz-bench run` as in [results/video](../video/README.md), 120 s per run: 320x240, 15 fps, GOP 15, x264 at 180 kbit/s,
 96 B minimum frame, profile `300000:100000:6`, with the clock check before and after. Means over the runs:
 
 | runs | setting | radio frame loss (%) | objects lost (FEC could not repair) | video frame loss (%) | video delivered (kbit/s) | radio goodput (kbit/s) | obj latency p50 / p95 (ms) | glass to glass p50 / p95 (ms) | stalls over 250 ms | RSSI (dBm) |
@@ -179,21 +179,22 @@ cargo build --release                                  # host tools
 cargo build --release --target armv7-unknown-linux-musleabihf -p moq-subghz-send -p moq-subghz-recv -p moq-subghz-lora2015
 scp target/armv7-unknown-linux-musleabihf/release/{moq-subghz-send,moq-subghz-recv} PI:moq-subghz/
 scp target/armv7-unknown-linux-musleabihf/release/lora2015-send PI:lora2015/ && scp -r results/lora-2015/frames PI:lora2015/
-export PORT=/dev/ttyACM0 PI=pi PLAY=       # PLAY= when ffplay is not installed; the stick must report catwan-fw 0.5.1
+export PORT=/dev/ttyACM0 PI=pi             # the stick must report catwan-fw 0.5.1; add --no-play when ffplay is not installed
 export PATH="$PATH:/path/to/ssdv"          # optional: the ssdv tool, for the SSDV pictures
-scripts/demo-051.sh                         # about 6 minutes, writes to runs/demo
+B=target/release/moq-subghz-bench
+$B demo-051 --i-have-an-antenna --transmit             # about 6 minutes, writes to runs/demo
 ```
 
-The full benchmark (about 65 minutes): `scripts/bench-051.sh`. Then `scripts/package-051.sh RUNS DEMO_DIR results/stick-0.5.1` and
-`python3 scripts/analyze-051.py RUNS results/stick-0.5.1` rebuild this folder's CSVs and charts. `PART=lora REPS=1` runs one repeat of the picture sweep (about 15 minutes).
+The full benchmark (about 65 minutes): `moq-subghz-bench bench-051 --i-have-an-antenna --transmit`. Then `moq-subghz-bench package-051 RUNS DEMO_DIR results/stick-0.5.1` and
+`moq-subghz-bench analyze RUNS results/stick-0.5.1` rebuild this folder's CSVs and charts. `--part lora --reps 1` runs one repeat of the picture sweep (about 15 minutes).
 
-| script | what |
+| subcommand | what |
 |---|---|
-| `scripts/lora2015-run.sh` | one picture run: logger here, sender on the Pi, then the exact loss from a replay |
-| `scripts/bench-051.sh` | the whole matrix (FSK runs, then 3 repeats of the 24 picture runs) |
-| `scripts/demo-051.sh` | the short demo |
-| `scripts/analyze-051.py` | builds the CSVs and charts from the runs (stdlib python, plus ffmpeg for the SSDV PSNR) |
-| `scripts/package-051.sh` | copies the data worth keeping into this folder, without host paths |
+| `lora2015-run` | one picture run: logger here, sender on the Pi, then the exact loss from a replay |
+| `bench-051` | the whole matrix (FSK runs, then 3 repeats of the 24 picture runs) |
+| `demo-051` | the short demo |
+| `analyze` | builds the CSVs and charts from the runs (ffmpeg for the SSDV PSNR) |
+| `package-051` | copies the data worth keeping into this folder, without host paths |
 
 To read a run again without the radio: `gunzip -k lora/RUN/raw.log.gz`, then
 `lora2015-log --replay lora/RUN/raw.log --mode MODE --profile PROFILE --sent-frames N --out OUT` (N is in `lora/RUN/send.txt`).
@@ -208,7 +209,7 @@ To read a run again without the radio: `gunzip -k lora/RUN/raw.log.gz`, then
 | `fsk.csv`, `fsk/` | the 8 live video runs, and their logs |
 | `fsk-v5-ab.csv`, `fsk-v5-ab/` | the 3 runs on the previous firmware |
 | `lora/` | per run: `images.csv`, `rx.csv` (every frame: time, RSSI, SNR, chunk, status), `tx.csv` (the Pi's per frame log), `raw.log.gz`, the rebuilt picture |
-| `demo/` | one run of `demo-051.sh`: a 45 s clip, a still, and the pictures |
+| `demo/` | one run of `demo-051`: a 45 s clip, a still, and the pictures |
 | `gallery/` | contact sheets of the rebuilt pictures |
 
 ## Limits

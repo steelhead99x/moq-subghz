@@ -1,5 +1,4 @@
-//! `lora2015-table` and `lora2015-frames`, ports of `scripts/lora2015-table.sh` and
-//! `scripts/lora2015-frames.sh`. Neither touches a radio.
+//! `lora2015-table` and `lora2015-frames`. Neither touches a radio.
 
 use crate::exec::{Host, Plan};
 use anyhow::{bail, ensure, Context, Result};

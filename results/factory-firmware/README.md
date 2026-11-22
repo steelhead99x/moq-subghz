@@ -47,13 +47,13 @@ prints text. So, like a 2015 hobbyist with a shell loop:
 * The JPEG is cut into 120 byte pieces. Each piece goes out as a text line
   `A:<number>/<total>:<hex>`, 250 characters at most, so nothing binary crosses the stock
   serial print.
-* A shell loop starts the stock app once per piece (`timeout 1.3 ./dragino_lora_app sender "<line>"`).
+* A loop on the Pi starts the stock app once per piece (`timeout 1.3 ./dragino_lora_app sender "<line>"`).
   The app resets the radio, sends, and the timeout ends it after the packet has left the air.
   That is about 1.34 s per packet, mostly the app's own start-up and reset waits
-  ([`tools/factory-send.sh`](tools/factory-send.sh)).
+  (`moq-subghz-bench factory-send`).
 * The stick prints `Received packet '<text>' with RSSI <dBm>` over USB serial. A logger on the
-  host saves every byte it prints ([`tools/stickcap.py`](tools/stickcap.py)) and the pieces are
-  put back together in order ([`tools/factory_bench.py`](tools/factory_bench.py)).
+  host saves every byte it prints (`moq-subghz-bench stick-cap`) and the pieces are
+  put back together in order (`moq-subghz-bench factory-bench`).
 * After a pass, only the missing pieces are sent again, up to 4 passes, which is the usual
   2015 answer to loss. There is no acknowledgement over the air: the host decides what is missing.
 
@@ -115,10 +115,10 @@ for this project's own sender and logger, not these factory programs, and were n
 ## Run it again
 
 1. Stick on the stock image (`firmware/vendor/electronic-cats-catwan-rp2040/`), plugged into the host. Pi with the HAT, antennas on both.
-2. On the Pi: `firmware/vendor/dragino-lora-gps-hat/fetch-and-build.sh`, then copy `tools/factory-send.sh` to
+2. On the Pi: `firmware/vendor/dragino-lora-gps-hat/fetch-and-build.sh`, then build `moq-subghz-bench` for the Pi (`cargo build --release -p moq-subghz-bench --target armv7-unknown-linux-musleabihf`), copy it to
    `~/factory-bench/` and make the built app available at `~/factory-bench/dragino/dragino_lora_app`.
-3. On the host (repo root, `ssh pi` reaches the Pi): `python3 results/factory-firmware/tools/factory_bench.py --label try1 --jpeg results/lora-2015/frames/f160x120-q20.jpg --out results/factory-firmware/data`.
-   Add `--limit 20 --passes 1` for the 30 s smoke test. Edit the default `--dev` in `stickcap.py` if the stick is not `/dev/ttyACM0`.
+3. On the host (repo root, `ssh pi` reaches the Pi): `target/release/moq-subghz-bench factory-bench --i-have-an-antenna --dev /dev/ttyACM0 --label try1 --jpeg results/lora-2015/frames/f160x120-q20.jpg --out results/factory-firmware/data`.
+   Add `--limit 20 --passes 1` for the 30 s smoke test. `--dev` is the stick's serial port; there is no default. `--dry-run` prints the commands. The published runs were 3 of each picture (`--passes 4`), run one after another.
 
 The Rust port does the same and is gated: `moq-subghz-bench factory-bench --label try1 --jpeg ... --dev /dev/ttyACM0 --i-have-an-antenna --transmit --freq-mhz 915.0 --power-dbm 5`.
 It refuses the unpatched stock build (868.1 MHz, +17 dBm); see [docs/LICENSING.md](../../docs/LICENSING.md).

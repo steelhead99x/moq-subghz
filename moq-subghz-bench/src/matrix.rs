@@ -1,5 +1,4 @@
-//! `bench`, `bench-051` and `clocklog`: the matrices of runs and the clock logger, ports of
-//! `scripts/bench.sh`, `scripts/bench-051.sh` and `scripts/clocklog.sh`. A failed run is counted
+//! `bench`, `bench-051` and `clocklog`: the matrices of runs and the clock logger. A failed run is counted
 //! and the matrix goes on, but it ends `BENCH_FAILED: <n> run(s) failed` with exit 1.
 
 use crate::exec::{Host, Plan, Real};
@@ -353,6 +352,18 @@ pub fn with_clock_log<T>(c: &Cfg, dry: bool, body: impl FnOnce() -> T) -> T {
     out
 }
 
+/// `clocklog --dry-run`: print the one command the logger repeats, run nothing, touch no file.
+pub fn clocklog_dry(h: &mut dyn Host, c: &Cfg) -> Result<()> {
+    let p = Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi]).err("/dev/null");
+    println!(
+        "(every 5 s until {} exists, appending to {})",
+        c.runs.join("clocklog.stop").display(),
+        c.runs.join("clock_log.jsonl").display()
+    );
+    h.run(&p)?;
+    Ok(())
+}
+
 /// `clocklog` on its own: until `<runs>/clocklog.stop` exists.
 pub fn clocklog_until_file(c: &Cfg) -> Result<()> {
     let stop = c.runs.join("clocklog.stop");
@@ -503,5 +514,27 @@ mod tests {
         let s = stamp_now();
         assert_eq!(s.len(), 19);
         assert_eq!((&s[4..5], &s[10..11], &s[13..14]), ("-", " ", ":"));
+    }
+
+    #[test]
+    fn clocklog_dry_run_prints_one_plan_and_touches_nothing() {
+        let d = Scratch::new("clkdry");
+        let runs = d.0.join("not-made");
+        let c = crate::orch::Cfg {
+            pi: "pi".into(),
+            pi_dir: "d".into(),
+            bin: "bin".into(),
+            runs: runs.clone(),
+            port: None,
+            frames: "f".into(),
+            antenna: false,
+            transmit: false,
+            lic: Default::default(),
+        };
+        let mut f = Fake::default();
+        clocklog_dry(&mut f, &c).unwrap();
+        assert_eq!(f.log.len(), 1);
+        assert!(f.log[0].contains("--clock-check pi"), "{}", f.log[0]);
+        assert!(!runs.exists(), "no directory made");
     }
 }
