@@ -403,6 +403,7 @@ fn real_main() -> Result<()> {
                 &chunks,
                 &app_dir,
                 Duration::from_millis(timeout_ms),
+                factory::cancel_flag(),
                 &mut std::io::stdout().lock(),
             )
         }

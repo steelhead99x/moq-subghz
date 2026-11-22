@@ -642,15 +642,25 @@ pub fn run(o: &Opts) -> Result<()> {
     let pkt_len = chunks.iter().map(String::len).max().unwrap_or(0);
     let at = airtime(pkt_len, 7, 125e3, 1, 1, 0, 8.0);
     let cp = cap_plan(o, &exe);
-    let mut cap = std::process::Command::new(&cp.prog)
-        .args(&cp.args)
-        .spawn()
-        .with_context(|| format!("start {}", cp.shell()))?;
-    let res = bench(o, &d, &jpeg, &chunks, pkt_len, at, &mut cap);
-    // SAFETY: signalling our own child.
-    unsafe { libc::kill(cap.id() as i32, libc::SIGTERM) };
-    let _ = cap.wait();
-    res
+    let mut cap = StopOnDrop(
+        std::process::Command::new(&cp.prog)
+            .args(&cp.args)
+            .spawn()
+            .with_context(|| format!("start {}", cp.shell()))?,
+    );
+    bench(o, &d, &jpeg, &chunks, pkt_len, at, &mut cap.0)
+}
+
+/// The stick capture, ended and reaped when this drops (any return, or a panic), so the serial
+/// device is free for a retry.
+struct StopOnDrop(std::process::Child);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        // SAFETY: signalling our own child.
+        unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+        let _ = self.0.wait();
+    }
 }
 
 fn bench(
@@ -757,6 +767,7 @@ pub fn send_chunks(
     chunks: &Path,
     app_dir: &Path,
     app_timeout: Duration,
+    cancel: &std::sync::atomic::AtomicBool,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
     use std::io::Read;
@@ -779,10 +790,11 @@ pub fn send_chunks(
             .stderr(Stdio::piped())
             .process_group(0)
             .spawn()
+            .map(TxGroup::new)
             .with_context(|| format!("start ./dragino_lora_app in {}", app_dir.display()))?;
         // Read stderr as it comes into a shared tail, so a chatty app never blocks on a full pipe
         // and a drain that outlasts the deadline still reports what it read.
-        let mut err = child.stderr.take().context("no stderr pipe")?;
+        let mut err = child.0.stderr.take().context("no stderr pipe")?;
         let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let shared = tail.clone();
@@ -800,12 +812,15 @@ pub fn send_chunks(
         // The same cut-off as `timeout 1.3`.
         let t0 = Instant::now();
         let early = loop {
-            if let Some(st) = child.try_wait()? {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                // `child` drops here: the whole group is ended and reaped.
+                bail!("cancelled by a signal: the stock app's process group was ended");
+            }
+            if let Some(st) = child.0.try_wait()? {
                 break Some(st);
             }
             if t0.elapsed() >= app_timeout {
-                child.kill()?;
-                child.wait()?;
+                child.end_now();
                 break None;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -815,8 +830,7 @@ pub fn send_chunks(
         let drained = done_rx
             .recv_timeout(app_timeout.saturating_sub(t0.elapsed()))
             .is_ok();
-        // SAFETY: signalling the process group we made for this child.
-        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+        child.end_now();
         if !drained {
             let _ = done_rx.recv_timeout(Duration::from_millis(50));
         }
@@ -838,6 +852,61 @@ pub fn send_chunks(
         writeln!(out, "{s:.9} {:.9} {id}{note}", epoch())?;
     }
     Ok(())
+}
+
+/// The stock app and everything it started (its own process group). Dropping it, on any return or
+/// a panic, ends the group with TERM, then KILL after a short grace, and reaps the app.
+struct TxGroup(std::process::Child);
+
+/// How long the group gets to leave on TERM before it is killed.
+const TX_GRACE: Duration = Duration::from_millis(300);
+
+impl TxGroup {
+    fn new(c: std::process::Child) -> TxGroup {
+        TxGroup(c)
+    }
+
+    fn signal(&self, sig: i32) {
+        // SAFETY: signalling the process group made for this child (its pid is the group id).
+        unsafe { libc::kill(-(self.0.id() as i32), sig) };
+    }
+
+    /// KILL the whole group now and reap the app.
+    fn end_now(&mut self) {
+        self.signal(libc::SIGKILL);
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for TxGroup {
+    fn drop(&mut self) {
+        self.signal(libc::SIGTERM);
+        let t = Instant::now();
+        while t.elapsed() < TX_GRACE && matches!(self.0.try_wait(), Ok(None)) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.end_now();
+    }
+}
+
+static CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A flag that SIGINT, SIGTERM and SIGHUP set, for the worker to stop and clean up on.
+pub fn cancel_flag() -> &'static std::sync::atomic::AtomicBool {
+    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: the handler only stores to an atomic; the sigaction struct is zeroed then filled.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+        }
+    }
+    &CANCEL
 }
 
 /// Bytes of the stock app's stderr kept for a failure message.
@@ -940,11 +1009,34 @@ mod tests {
         (d, list)
     }
 
-    fn send(tag: &str, body: &str, timeout_ms: u64) -> (Result<()>, String) {
-        // One at a time: a fork in a sibling test while a script is open for writing makes
-        // exec fail with "text file busy".
+    /// One at a time: a fork in a sibling test while a script is open for writing makes exec fail
+    /// with "text file busy".
+    fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
         static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        ONE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The pid in `file` (written by a stand-in app), once it is there.
+    fn pid_of(file: &Path) -> i32 {
+        for _ in 0..200 {
+            if let Some(p) = fs::read_to_string(file)
+                .ok()
+                .and_then(|t| t.trim().parse().ok())
+            {
+                return p;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("no pid in {}", file.display());
+    }
+
+    /// True while `pid` is a process that can still run (a zombie awaiting its reaper is not).
+    fn runs(pid: i32) -> bool {
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z"))
+    }
+
+    fn send(tag: &str, body: &str, timeout_ms: u64) -> (Result<()>, String, Duration) {
+        let _one = one_at_a_time();
         let (d, list) = fake_app(tag, body);
         let st = LicenceOpts::default().gate_args(true).station().unwrap();
         let permit = gate(
@@ -955,20 +1047,23 @@ mod tests {
             },
         )
         .unwrap();
+        let t = Instant::now(); // after the lock: waiting for a sibling is not the worker's time
         let mut out = Vec::new();
+        let no = std::sync::atomic::AtomicBool::new(false);
         let r = send_chunks(
             &permit,
             &list,
             &d.0,
             Duration::from_millis(timeout_ms),
+            &no,
             &mut out,
         );
-        (r, String::from_utf8(out).unwrap())
+        (r, String::from_utf8(out).unwrap(), t.elapsed())
     }
 
     #[test]
     fn an_app_cut_off_by_the_timeout_is_the_normal_path() {
-        let (r, out) = send("fs-timeout", "exec sleep 5", 150);
+        let (r, out, _) = send("fs-timeout", "exec sleep 5", 150);
         r.unwrap();
         let rows: Vec<&str> = out.lines().collect();
         assert_eq!(rows.len(), 2, "{out}");
@@ -980,7 +1075,7 @@ mod tests {
 
     #[test]
     fn an_app_that_exits_zero_early_is_marked() {
-        let (r, out) = send("fs-zero", "exit 0", 3000);
+        let (r, out, _) = send("fs-zero", "exit 0", 3000);
         r.unwrap();
         assert!(out.lines().all(|l| l.ends_with(" early-exit")), "{out}");
         assert_eq!(out.lines().count(), 2);
@@ -988,7 +1083,7 @@ mod tests {
 
     #[test]
     fn an_app_that_exits_nonzero_early_fails_the_run_with_no_row() {
-        let (r, out) = send("fs-fail", "echo radio not found >&2; exit 1", 3000);
+        let (r, out, _) = send("fs-fail", "echo radio not found >&2; exit 1", 3000);
         let e = r.unwrap_err().to_string();
         assert!(e.starts_with("FAILED A:000"), "{e}");
         assert!(
@@ -1003,16 +1098,69 @@ mod tests {
 
     #[test]
     fn a_grandchild_holding_stderr_does_not_delay_the_failure_report() {
-        let t = Instant::now();
-        let (r, out) = send("fs-grand", "sleep 20 & echo gone >&2; exit 1", 300);
+        let (r, out, took) = send("fs-grand", "sleep 20 & echo gone >&2; exit 1", 300);
         let e = r.unwrap_err().to_string();
         assert!(e.starts_with("FAILED A:000") && e.contains("gone"), "{e}");
         assert_eq!(out, "");
-        assert!(
-            t.elapsed() < Duration::from_millis(900),
-            "{:?}",
-            t.elapsed()
+        assert!(took < Duration::from_millis(900), "{took:?}");
+    }
+
+    #[test]
+    fn a_cancelled_worker_ends_and_reaps_the_whole_group_even_if_it_ignores_term() {
+        let _one = one_at_a_time();
+        let (d, list) = fake_app(
+            "fs-cancel",
+            "trap '' TERM; sleep 60 & echo $! > gpid; echo $$ > pid; while :; do sleep 1; done",
         );
+        let st = LicenceOpts::default().gate_args(true).station().unwrap();
+        let permit = gate(
+            &st,
+            Declared {
+                freq_mhz: 915.0,
+                power_dbm: 5,
+            },
+        )
+        .unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let t = Instant::now();
+        let mut out = Vec::new();
+        let r = std::thread::scope(|sc| {
+            sc.spawn(|| {
+                pid_of(&d.0.join("gpid"));
+                pid_of(&d.0.join("pid"));
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+            send_chunks(
+                &permit,
+                &list,
+                &d.0,
+                Duration::from_secs(60),
+                &cancel,
+                &mut out,
+            )
+        });
+        assert!(r.unwrap_err().to_string().contains("cancelled"));
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        let (app, grandchild) = (pid_of(&d.0.join("pid")), pid_of(&d.0.join("gpid")));
+        // the app was reaped (no zombie: its /proc entry is gone) and so is what it started
+        assert!(!Path::new(&format!("/proc/{app}")).exists());
+        for _ in 0..200 {
+            if !runs(grandchild) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!runs(grandchild));
+    }
+
+    #[test]
+    fn sigterm_sets_the_cancel_flag() {
+        let f = cancel_flag();
+        assert!(!f.load(std::sync::atomic::Ordering::Relaxed));
+        // SAFETY: raising a signal whose handler we installed, which only sets the flag.
+        unsafe { libc::raise(libc::SIGTERM) };
+        assert!(f.load(std::sync::atomic::Ordering::Relaxed));
+        f.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[test]

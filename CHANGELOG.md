@@ -17,6 +17,11 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * `reverse` checks the serial port and run directories before any remote command, and kills the
   receiver's ssh and removes its scratch directory on every early exit.
 * `factory-send` bounds its stderr drain by the timeout and ends the app's process group; `factory-bench` reserves its local run directory exclusively; the reverse cleanup confirms on the Pi that the receiver stopped (pidfile, TERM then KILL) before removing the scratch directory, and keeps it with a warning if it cannot.
+* `factory-send` ends the stock app's whole process group (TERM, then KILL, then reap) on Ctrl-C,
+  SIGTERM, SIGHUP, any error return or a panic. The reverse runner keeps its cleanup armed until
+  the Pi confirms the receiver stopped (a dropped ssh is checked before any copy), and an unknown
+  pid state keeps the scratch directory with a warning. `forward` and `lora` kill and reap their
+  capture process on every early exit.
 * `factory-send` fails the run when the stock app exits non-zero before its timeout (no timing row)
   and marks a zero exit before it.
 

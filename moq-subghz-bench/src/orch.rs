@@ -399,11 +399,17 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
-    let (off, _) = clock(h, c)?;
-    if !h.dry() {
+    let mut g = Cleanup {
+        h,
+        c,
+        scratch: None,
+        rx: None,
+    };
+    let (off, _) = clock(&mut *g.h, c)?;
+    if !g.h.dry() {
         write(&c.run_file(n, ".clock_start"), &format!("{off}\n"))?;
     }
-    let tmp = pi_scratch(h, c)?;
+    let tmp = pi_scratch(&mut *g.h, c)?;
     let mut a = vec![
         "--port".to_string(),
         c.port()?,
@@ -427,25 +433,27 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let rxw = words(r.rx);
     a.extend(c.lic_flags(Side::Local, &rxw));
     a.extend(rxw);
-    let rx = h.start(
+    let rx = g.h.start(
         &Plan::new(c.bin("moq-subghz-recv"), a)
             .out(c.run_file(n, ".out"))
             .err_to_out(),
     )?;
-    h.sleep(Duration::from_secs(3));
-    let send_st = h
-        .run(
+    g.rx = Some(rx);
+    g.h.sleep(Duration::from_secs(3));
+    let send_st =
+        g.h.run(
             &c.ssh(pi_send_script(&c.pi_dir, &tmp, r, &c.pi_send_flags(r.args)))
                 .out(c.run_file(n, ".send")),
         )?
         .code;
-    let recv_st = h.wait(rx)?;
-    if !h.dry() {
+    g.rx = None;
+    let recv_st = g.h.wait(rx)?;
+    if !g.h.dry() {
         fs::create_dir_all(c.runs.join(n))?;
     }
     let jsonl = format!("{tmp}/send.jsonl");
-    let log_st = h
-        .run(
+    let log_st =
+        g.h.run(
             &c.ssh(format!(
                 "cat {j}; st=$?; rm -rf {t}; exit $st",
                 j = shq(&jsonl),
@@ -454,8 +462,8 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
             .out(c.runs.join(n).join("send.jsonl")),
         )?
         .code;
-    if h.dry() {
-        h.run(
+    if g.h.dry() {
+        g.h.run(
             &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
                 .out(c.run_file(n, ".clock_end")),
         )?;
@@ -465,7 +473,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         &c.run_file(n, ".send"),
         &c.runs.join(n).join("send_summary.json"),
     )?;
-    h.run(
+    g.h.run(
         &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
             .out(c.run_file(n, ".clock_end")),
     )?;
@@ -518,43 +526,56 @@ impl Drop for Cleanup<'_> {
             self.h.kill(id);
         }
         if let Some(dir) = self.scratch.take() {
-            if let Some(warning) = stop_receiver_and_remove(self.h, self.c, &dir) {
-                eprintln!("{warning}");
+            match stop_receiver(self.h, self.c, &dir) {
+                Some(warning) => eprintln!("{warning}"),
+                None => {
+                    let _ = self.h.run(&self.c.ssh(format!("rm -rf {}", shq(&dir))));
+                }
             }
         }
     }
 }
 
-/// The remote command that stops the receiver this run started and then removes `dir`: it reads
-/// the pid the run itself wrote to `dir/rx.pid`, accepts it only if it is numeric and its
-/// `/proc` command line is the receiver, sends TERM and waits up to 10 s, then KILL, checks with
-/// `kill -0`, and removes the directory only if the receiver is gone (else exit 3, directory kept).
+/// The remote command that confirms the receiver this run started is no longer running. It reads
+/// the pid the run itself wrote to `dir/rx.pid` (waiting up to 3 s for a receiver that has not
+/// written it yet), and exits 4 (uncertain) if that file is missing, unreadable or not a number.
+/// A pid with no process, or one whose `/proc` command line is not the receiver, counts as
+/// stopped and nothing is signalled. A live receiver gets TERM and up to 10 s, then KILL, and is
+/// confirmed gone with `kill -0` (a zombie is gone); exit 3 if it is still there. Exit 0 means
+/// stopped. It removes nothing: the caller removes the directory only after a 0.
 pub fn stop_script(dir: &str) -> String {
-    let d = shq(dir);
-    format!(
-        "d={d}; p=$(cat \"$d/rx.pid\" 2>/dev/null); case $p in ''|*[!0-9]*) p=;; esac; \
-if [ -n \"$p\" ] && tr '\\0' ' ' < \"/proc/$p/cmdline\" 2>/dev/null | grep -q moq-subghz-recv; then \
-kill -TERM \"$p\" 2>/dev/null; i=0; while kill -0 \"$p\" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done; \
-if kill -0 \"$p\" 2>/dev/null; then kill -KILL \"$p\" 2>/dev/null; sleep 1; fi; \
-if kill -0 \"$p\" 2>/dev/null; then echo \"receiver $p is still running\" >&2; exit 3; fi; fi; \
-rm -rf \"$d\""
-    )
+    r#"d=@DIR@
+alive() { kill -0 "$1" 2>/dev/null && ! grep -q ') Z' "/proc/$1/stat" 2>/dev/null; }
+i=0; while [ ! -s "$d/rx.pid" ] && [ $i -lt 15 ]; do sleep 0.2; i=$((i+1)); done
+if [ ! -e "$d/rx.pid" ]; then echo "uncertain: $d/rx.pid does not exist" >&2; exit 4; fi
+if ! p=$(cat "$d/rx.pid" 2>/dev/null); then echo "uncertain: $d/rx.pid is unreadable" >&2; exit 4; fi
+case $p in ''|*[!0-9]*) echo "uncertain: $d/rx.pid does not hold a pid" >&2; exit 4;; esac
+if [ -e "/proc/$p" ]; then
+if ! c=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null); then echo "uncertain: cannot read /proc/$p/cmdline" >&2; exit 4; fi
+case $c in *moq-subghz-recv*)
+kill -TERM "$p" 2>/dev/null; i=0; while alive "$p" && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
+if alive "$p"; then kill -KILL "$p" 2>/dev/null; sleep 1; fi
+if alive "$p"; then echo "receiver $p is still running" >&2; exit 3; fi;;
+esac
+fi
+exit 0"#
+        .replace("@DIR@", &shq(dir))
 }
 
-/// Run [`stop_script`] on the Pi. When it cannot confirm the receiver stopped (or cannot run), the
-/// directory is kept and the returned text is the loud warning naming it.
-fn stop_receiver_and_remove(h: &mut dyn Host, c: &Cfg, dir: &str) -> Option<String> {
-    match h.run(&c.ssh(stop_script(dir))) {
-        Ok(d) if d.code == 0 => None,
-        r => Some(format!(
-            "WARNING: could not confirm the receiver on {} stopped ({}); its scratch directory {dir} was KEPT. Check the process and remove the directory by hand.",
-            c.pi,
-            match r {
-                Ok(d) => format!("exit {}", d.code),
-                Err(e) => format!("{e:#}"),
-            }
-        )),
-    }
+/// Run [`stop_script`] on the Pi. `None` means the receiver is confirmed stopped. Otherwise the
+/// text is the loud warning naming the scratch directory, which the caller then keeps.
+fn stop_receiver(h: &mut dyn Host, c: &Cfg, dir: &str) -> Option<String> {
+    let why = match h.run(&c.ssh(stop_script(dir))) {
+        Ok(d) if d.code == 0 => return None,
+        Ok(d) if d.code == 3 => "the receiver is still running".to_string(),
+        Ok(d) if d.code == 4 => "its pid file is missing, unreadable or not a pid".to_string(),
+        Ok(d) => format!("the check exited {}", d.code),
+        Err(e) => format!("{e:#}"),
+    };
+    Some(format!(
+        "WARNING: could not confirm the receiver on {} stopped ({why}); its scratch directory {dir} was KEPT. Check the process and remove the directory by hand.",
+        c.pi
+    ))
 }
 
 /// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here.
@@ -623,8 +644,17 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let send_st = g.h.run(&send)?.code;
     g.rx = None;
     let recv_st = g.h.wait(rx)?; // ssh exits with the remote receiver's status
-                                 // scp's glob is expanded on the Pi; the Pi's copy is removed only after a good copy, and a
-                                 // failed copy keeps it, so from here the guard leaves the directory alone.
+    if recv_st != 0 {
+        // A dropped ssh also lands here, with the receiver possibly still running: confirm it
+        // stopped on the Pi before anything is copied or removed.
+        if let Some(warning) = stop_receiver(&mut *g.h, c, &scratch) {
+            g.scratch = None; // kept, and already warned about
+            eprintln!("{warning}");
+            bail!("FAILED {n}: the receiver's exit was not confirmed (ssh exited {recv_st}); nothing was copied or removed");
+        }
+    }
+    // The receiver is confirmed gone. scp's glob is expanded on the Pi; the Pi's copy is removed
+    // only after a good copy, and a failed copy keeps it, so from here the guard leaves it alone.
     g.scratch = None;
     let mut copy_st =
         g.h.run(&scp_plan(
@@ -796,6 +826,12 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
+    let mut g = Cleanup {
+        h,
+        c,
+        scratch: None,
+        rx: None,
+    };
     valid_name(r.file).context("picture file name")?;
     let frame = c.frames.join(r.file);
     let radio = radio_overrides(r.args)?;
@@ -825,7 +861,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         .chain(r.args.iter().cloned()),
     )
     .local();
-    let d = h.run(&dry)?;
+    let d = g.h.run(&dry)?;
     ensure!(d.code == 0, "{} exited with {}", dry.shell(), d.code);
     let pass_s: f64 = after_digits(&d.stdout, "pass_s=", true)
         .and_then(|s| s.parse().ok())
@@ -843,7 +879,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         vec![]
     };
     let rdir = c.runs.join(n);
-    if !h.dry() {
+    if !g.h.dry() {
         fs::create_dir_all(&rdir)?;
     }
     let mut a: Vec<String> = [
@@ -861,13 +897,14 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     a.extend(radio.iter().cloned());
     a.extend(reference.iter().cloned());
     a.extend(c.lic_flags(Side::Local, &[]));
-    let lg = h.start(
+    let lg = g.h.start(
         &Plan::new(c.bin("lora2015-log"), a)
             .out(c.run_file(n, ".log.out"))
             .err_to_out(),
     )?;
-    h.sleep(Duration::from_secs(3));
-    let scratch = pi_scratch(h, c)?;
+    g.rx = Some(lg);
+    g.h.sleep(Duration::from_secs(3));
+    let scratch = pi_scratch(&mut *g.h, c)?;
     let so = shq(&format!("{scratch}/send.out"));
     let args: String = c
         .pi_send_flags(r.args)
@@ -883,15 +920,16 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         r.passes,
         shq(&format!("{scratch}/tx.csv")),
     );
-    let send_st = h.run(&c.ssh(script).out(c.run_file(n, ".send")))?.code;
-    let log_st = h.wait(lg)?;
-    let tx_st = h
-        .run(&scp_plan(
+    let send_st = g.h.run(&c.ssh(script).out(c.run_file(n, ".send")))?.code;
+    g.rx = None;
+    let log_st = g.h.wait(lg)?;
+    let tx_st =
+        g.h.run(&scp_plan(
             format!("{}:{scratch}/tx.csv", scp_host(&c.pi)),
             c.run_file(n, ".tx.csv").display().to_string(),
         ))?
         .code;
-    h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?;
+    g.h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?;
     let sent = after_digits(
         &fs::read_to_string(c.run_file(n, ".send")).unwrap_or_default(),
         "sent frames=",
@@ -915,17 +953,17 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         a.extend(radio.iter().cloned());
         a.extend(reference);
         a.extend(c.lic_flags(Side::Local, &[]));
-        exact_st = h
-            .run(
+        exact_st =
+            g.h.run(
                 &Plan::new(c.bin("lora2015-log"), a)
                     .out(c.run_file(n, ".exact.out"))
                     .err_to_out(),
             )?
             .code;
-    } else if h.dry() {
+    } else if g.h.dry() {
         return Ok(());
     }
-    if h.dry() {
+    if g.h.dry() {
         return Ok(());
     }
     let fail = |why: String| -> Result<()> { bail!("FAILED {n}: {why}") };
@@ -1367,23 +1405,13 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("could not start"), "{e}");
-        let kill = f.log.iter().position(|l| l == "kill job 0").unwrap();
-        let stop = f.log.iter().position(|l| l.contains("kill -TERM")).unwrap();
-        assert!(kill < stop, "{:?}", f.log);
-        // on the Pi: TERM, wait and confirm with kill -0, KILL, confirm again, and only then rm
-        let sc = stop_script("/tmp/moq-bench.T");
-        let at = |k: &str| sc.find(k).unwrap_or_else(|| panic!("{k}"));
-        assert!(at("kill -TERM") < at("kill -0") && at("kill -0") < at("kill -KILL"));
-        assert!(at("kill -KILL") < at("exit 3") && at("exit 3") < at("rm -rf"));
-        assert!(
-            sc.contains("*[!0-9]*")
-                && sc.contains("/proc/$p/cmdline")
-                && sc.contains("moq-subghz-recv")
-        );
-        assert!(
-            f.log[stop].contains("d=/tmp/moq-bench.T;") && f.log[stop].contains("$d/rx.pid"),
-            "{}",
-            f.log[stop]
+        let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
+        // the local ssh is killed, the Pi confirms the receiver stopped, and only then the rm
+        let (kill, stop, rm) = (at("kill job 0"), at("kill -TERM"), at("rm -rf /tmp"));
+        assert!(kill < stop && stop < rm, "{:?}", f.log);
+        assert_eq!(
+            f.log[rm],
+            "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'"
         );
         assert_eq!(f.log.iter().filter(|l| l.contains("rm -rf")).count(), 1);
         assert!(f
@@ -1395,23 +1423,183 @@ mod tests {
     #[test]
     fn an_unconfirmed_stop_keeps_the_directory_and_warns_naming_it() {
         let d = Scratch::new("revkeep");
-        let mut f = Fake::default();
-        f.rule("kill -TERM", 3, "", vec![]);
-        let w = stop_receiver_and_remove(&mut f, &cfg(&d.0), "/tmp/moq-bench.T").unwrap();
-        assert!(
-            w.contains("WARNING") && w.contains("/tmp/moq-bench.T") && w.contains("KEPT"),
-            "{w}"
-        );
-        // the one command the guard runs removes only after its own check passes
-        assert_eq!(f.log.len(), 1);
+        for (code, why) in [(3, "still running"), (4, "pid file")] {
+            let mut f = Fake::default();
+            f.rule("kill -TERM", code, "", vec![]);
+            let w = stop_receiver(&mut f, &cfg(&d.0), "/tmp/moq-bench.T").unwrap();
+            assert!(
+                w.contains("WARNING") && w.contains("/tmp/moq-bench.T"),
+                "{w}"
+            );
+            assert!(w.contains("KEPT") && w.contains(why), "{w}");
+        }
         let mut ok = Fake::default();
-        assert!(stop_receiver_and_remove(&mut ok, &cfg(&d.0), "/tmp/moq-bench.T").is_none());
-        // and a full run that fails after the receiver started reaches the same path
+        assert!(stop_receiver(&mut ok, &cfg(&d.0), "/tmp/moq-bench.T").is_none());
+        // a full run whose stop cannot be confirmed never removes the directory
         let mut f = Fake::default();
         f.rule("--clock-check", 0, CLOCK, vec![]);
         f.rule("kill -TERM", 3, "", vec![]);
         f.cannot_start.push("moq-subghz-send --catwan");
         assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
+        assert!(!f.log.iter().any(|l| l.contains("rm -rf")), "{:?}", f.log);
+    }
+
+    #[test]
+    fn a_dropped_ssh_is_confirmed_stopped_before_anything_is_copied_or_removed() {
+        let d = Scratch::new("revdrop");
+        let rules = |f: &mut Fake, stop: i32| {
+            f.rule("--clock-check", 0, CLOCK, vec![]);
+            f.rule("kill -TERM", stop, "", vec![]);
+            // the ssh that carries the receiver drops: exit 255; the copy would succeed
+            f.rule("moq-subghz-recv --radio", 255, "", vec![]);
+            f.rule(
+                "moq-subghz-send --catwan",
+                0,
+                "{\"role\":\"send\"}\n",
+                vec![(d.0.join("t.send.jsonl"), "x\n")],
+            );
+            f.rule(
+                "scp -q",
+                0,
+                "",
+                vec![(d.0.join("t/summary.json"), "{\"role\":\"recv\"}")],
+            );
+        };
+        // stop confirmed: the stop runs first, then the copy, then the removal; the run still fails
+        let mut f = Fake::default();
+        rules(&mut f, 0);
+        assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
+        let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
+        assert!(
+            at("kill -TERM") < at("scp -q") && at("scp -q") < at("rm -rf"),
+            "{:?}",
+            f.log
+        );
+        // stop not confirmed: no copy and no removal
+        let mut f = Fake::default();
+        rules(&mut f, 3);
+        let e = reverse(&mut f, &cfg(&d.0), &run("t", &[]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not confirmed"), "{e}");
+        assert!(f.log.iter().any(|l| l.contains("kill -TERM")));
+        assert!(!f
+            .log
+            .iter()
+            .any(|l| l.starts_with("scp") || l.contains("rm -rf")));
+    }
+
+    /// Run the stop script on a pid file with `content` (or none) in a fresh directory.
+    fn stop_on(tag: &str, content: Option<&str>) -> (i32, Scratch) {
+        let d = Scratch::new(tag);
+        if let Some(c) = content {
+            fs::write(d.0.join("rx.pid"), c).unwrap();
+        }
+        let st = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(stop_script(&d.0.display().to_string()))
+            .status()
+            .unwrap();
+        (st.code().unwrap(), d)
+    }
+
+    fn orphan(cmd: &str) -> i32 {
+        // started through a shell that exits, so init owns it and reaps it, as on the Pi
+        let o = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{cmd} >/dev/null 2>&1 </dev/null & echo $!"))
+            .stdout(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        String::from_utf8(o.stdout).unwrap().trim().parse().unwrap()
+    }
+
+    fn alive(pid: i32) -> bool {
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z"))
+    }
+
+    #[test]
+    fn the_stop_script_treats_missing_process_information_as_uncertain() {
+        assert_eq!(
+            stop_on("stop-none", None).0,
+            4,
+            "no pid file (after its 3 s wait)"
+        );
+        assert_eq!(stop_on("stop-nan", Some("12ab\n")).0, 4);
+        assert_eq!(stop_on("stop-empty", Some("")).0, 4);
+        assert_eq!(stop_on("stop-neg", Some("-1")).0, 4);
+        if unsafe { libc::geteuid() } != 0 {
+            let d = Scratch::new("stop-unreadable");
+            let f = d.0.join("rx.pid");
+            fs::write(&f, "1234").unwrap();
+            fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+            let st = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(stop_script(&d.0.display().to_string()))
+                .status()
+                .unwrap();
+            assert_eq!(st.code(), Some(4));
+        }
+    }
+
+    #[test]
+    fn the_stop_script_kills_only_the_receiver_and_never_an_unrelated_pid() {
+        // an unrelated process: counts as stopped (the receiver is gone) and is NOT signalled
+        let other = orphan("sleep 60");
+        let (code, _d) = stop_on("stop-other", Some(&other.to_string()));
+        assert_eq!(code, 0);
+        assert!(alive(other), "an unrelated process was killed");
+        // SAFETY: ending the sleep we started.
+        unsafe { libc::kill(other, libc::SIGKILL) };
+        // an absent pid
+        let gone = orphan("true");
+        for _ in 0..100 {
+            if !Path::new(&format!("/proc/{gone}")).exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(stop_on("stop-gone", Some(&gone.to_string())).0, 0);
+        // a stand-in receiver (its command line names moq-subghz-recv): stopped
+        let d = Scratch::new("stop-recv");
+        let bin = d.0.join("moq-subghz-recv");
+        fs::write(&bin, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+        fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let rx = orphan(&bin.display().to_string());
+        fs::write(d.0.join("rx.pid"), rx.to_string()).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(alive(rx));
+        let st = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(stop_script(&d.0.display().to_string()))
+            .status()
+            .unwrap();
+        assert_eq!(st.code(), Some(0));
+        assert!(!alive(rx), "the receiver was left running");
+    }
+
+    #[test]
+    fn forward_and_lora_kill_and_reap_the_capture_when_a_later_step_fails() {
+        let d = Scratch::new("capfail");
+        // forward: the Pi sender cannot be started after the receiver here began
+        let mut f = Fake::default();
+        good_forward(&mut f, &d.0);
+        f.cannot_start.push("moq-subghz-send --profile");
+        assert!(forward(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
+        assert!(f.log.iter().any(|l| l == "kill job 0"), "{:?}", f.log);
+        // lora: the Pi scratch directory cannot be made after the logger began
+        let mut f = lora_job(&d.0);
+        f.cannot_start.push("mktemp");
+        let l = Lora {
+            name: "t",
+            mode: "chunk",
+            file: "f.jpg",
+            profile: "sf7-125",
+            passes: 1,
+            args: &[],
+        };
+        assert!(lora(&mut f, &cfg(&d.0), &l).is_err());
+        assert!(f.log.iter().any(|l| l == "kill job 0"), "{:?}", f.log);
     }
 
     #[test]

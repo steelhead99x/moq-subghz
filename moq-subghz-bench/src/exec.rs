@@ -140,6 +140,16 @@ pub struct Real {
     jobs: Vec<Option<Child>>,
 }
 
+impl Drop for Real {
+    /// A job still running when the host goes away (an early return or a panic) is killed and
+    /// reaped, so a capture never keeps its serial port.
+    fn drop(&mut self) {
+        for id in 0..self.jobs.len() {
+            self.kill(id);
+        }
+    }
+}
+
 impl Host for Real {
     fn run(&mut self, p: &Plan) -> Result<Done> {
         let mut c = p.command()?;
