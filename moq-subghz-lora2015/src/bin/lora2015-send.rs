@@ -184,25 +184,15 @@ fn transmit<'a>(
     plan: &dyn Fn(u16) -> Plan<'a>,
     frames_per_pass: usize,
 ) -> Result<()> {
-    use moq_subghz_pi::{open_hat_raw, sx_err};
-    use sx1276::PaOutput;
+    use moq_subghz_link::Link;
+    use moq_subghz_radio_sx1276::Sx1276LoraTx;
     if !a.i_have_an_antenna {
         bail!("pass --i-have-an-antenna to transmit");
     }
     let cfg = p.lora().map_err(anyhow::Error::msg)?;
-    let mut r = open_hat_raw(a.spi_hz)?;
-    r.init(p.freq_hz, &cfg).map_err(sx_err)?;
-    r.set_tx_power(PaOutput::PaBoost, a.power).map_err(sx_err)?;
-    if r.frequency().map_err(sx_err)?.abs_diff(p.freq_hz) > 1000 {
-        bail!("frequency readback mismatch");
-    }
-    let [mc1, mc2, mc3] = [
-        sx1276::Register::ModemConfig1,
-        sx1276::Register::ModemConfig2,
-        sx1276::Register::ModemConfig3,
-    ]
-    .map(|reg| r.read_register(reg).map_err(sx_err));
-    if !profile::modem_readback_ok(mc1?, mc2?, mc3?, &cfg) {
+    let mut r = Sx1276LoraTx::open(a.spi_hz, p.freq_hz, &cfg, a.power)?;
+    let [mc1, mc2, mc3] = r.modem_config()?;
+    if !profile::modem_readback_ok(mc1, mc2, mc3, &cfg) {
         bail!("LoRa modem readback differs from what was written");
     }
     let mut log = match &a.tx_log {
@@ -230,8 +220,7 @@ fn transmit<'a>(
             }
             let toa = p.toa_us(f.len()).map_err(anyhow::Error::msg)?;
             let t0 = start.elapsed();
-            r.transmit(f, toa.saturating_mul(3).saturating_add(200_000))
-                .map_err(sx_err)?;
+            r.send(f)?;
             let tx = start.elapsed() - t0;
             sent += 1;
             bytes += f.len() as u64;
@@ -252,7 +241,7 @@ fn transmit<'a>(
         }
         fcnt = fcnt.wrapping_add(frames_per_pass as u16);
     }
-    r.sleep().map_err(sx_err)?;
+    r.idle()?;
     if let Some(mut w) = log {
         w.flush()?;
     }
