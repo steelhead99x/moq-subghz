@@ -9,14 +9,21 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# Least privilege: nothing here writes to the repository or needs a secret.
+permissions:
+  contents: read
+
 jobs:
   host:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
+        with:
+          toolchain: 1.90.0
           components: rustfmt, clippy
       - name: no committed Python bytecode
         run: |
@@ -27,37 +34,65 @@ jobs:
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: test
-        run: cargo test --all-targets
+        run: cargo test --all-targets --locked
+      - name: doc tests (--all-targets skips them)
+        run: cargo test --doc --locked
       - name: build
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: wire without sealing (no rind, no libc)
-        run: cargo test -p moq-subghz-wire --no-default-features
+        run: cargo test -p moq-subghz-wire --no-default-features --locked
+
+  # Newer stable than the pin, to see new lints early. Not a merge gate (continue-on-error).
+  clippy-stable:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      # Overrides rust-toolchain.toml.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
+        with:
+          toolchain: stable
+          components: clippy
+      - run: cargo clippy --all-targets --locked -- -D warnings
 
   sx1276:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
+        with:
+          toolchain: 1.90.0
           components: rustfmt, clippy
       - name: driver fmt, clippy, test
         working-directory: vendor/sx1276
         run: |
           cargo fmt --all --check
-          cargo clippy --all-targets -- -D warnings
-          cargo test --all-targets
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --all-targets --locked
+          cargo test --doc --locked
 
   moq-publish:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # moq.dev's crates need a newer Rust than the radio workspace's 1.90.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          persist-credentials: false
+      # moq.dev's crates need a newer Rust than the radio workspace's 1.90; the pin matches
+      # moq-subghz-publish/rust-toolchain.toml, so a new stable lint cannot break the gate unannounced.
+      - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
+        with:
+          toolchain: 1.100.0
           components: rustfmt, clippy
       - name: fmt, clippy, test (publishes through an in-process MoQ relay)
         working-directory: moq-subghz-publish
@@ -65,29 +100,36 @@ jobs:
           cargo fmt --all --check
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --all-targets --locked
+          cargo test --doc --locked
 
   armv7:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
+        with:
+          toolchain: 1.90.0
           targets: armv7-unknown-linux-musleabihf,armv7-unknown-linux-gnueabihf
       - name: musl (Pi binaries, rust-lld)
-        run: cargo build --release -p moq-subghz-send -p moq-subghz-recv -p moq-subghz-lora2015 --target armv7-unknown-linux-musleabihf
+        run: cargo build --release -p moq-subghz-send -p moq-subghz-recv -p moq-subghz-lora2015 --target armv7-unknown-linux-musleabihf --locked
       - name: install armhf cross gcc
         run: sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf
       - name: gnueabihf
-        run: cargo build --release -p moq-subghz-send -p moq-subghz-recv -p moq-subghz-lora2015 --target armv7-unknown-linux-gnueabihf
+        run: cargo build --release -p moq-subghz-send -p moq-subghz-recv -p moq-subghz-lora2015 --target armv7-unknown-linux-gnueabihf --locked
 
   firmware:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
+        with:
+          toolchain: 1.90.0
           components: rustfmt, clippy
           targets: thumbv6m-none-eabi
       - name: shipped UF2 matches SHA256SUMS
@@ -97,5 +139,5 @@ jobs:
         working-directory: firmware/catwan-fw
         run: |
           cargo fmt --all --check
-          cargo clippy --release --target thumbv6m-none-eabi -- -D warnings
-          cargo build --release --target thumbv6m-none-eabi
+          cargo clippy --release --locked --target thumbv6m-none-eabi -- -D warnings
+          cargo build --release --locked --target thumbv6m-none-eabi

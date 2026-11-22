@@ -5,6 +5,16 @@
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### CI and hygiene
+
+* The leak guard fails closed (no git, an unreadable tracked file or a private licence file that
+  does not load fails the test), scans bytes with no size or UTF-8 limit, reads `.gz` reports,
+  matches names in JSON and in any case, and checks callsign shapes in any single letter case.
+* `rust-toolchain.toml` pins 1.90.0 (CI) and `moq-subghz-publish` pins 1.100.0. Clippy is clean on
+  current stable too (`as_chunks` in `moq-subghz-wire`), and a non-blocking `clippy-stable` job keeps it so.
+* CI: `--locked` throughout, doc tests, least-privilege `permissions:`, actions pinned by commit.
+* `docs/DEPENDENCIES.md` records why `rind` is a git dependency pinned by rev.
+
 ### Docs
 
 * README rewritten around a per-link and per-hardware status table (Measured, Modeled, Planned, Not started).
