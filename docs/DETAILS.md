@@ -3,13 +3,13 @@
 The long version of the [README](../README.md): how it works, the measured results, what is on the
 air, the repo map, limits and radio rules. Everything here used to live in the README.
 
-**Live H.264 over a LoRa radio chip, from a 2015 Raspberry Pi 2. 320x240, 15 fps, ~135 ms glass-to-glass.**
+**Live H.264 over a chirp spread spectrum (CSS) mode radio chip, from a 2015 ARM single-board computer. 320x240, 15 fps, ~135 ms glass-to-glass.**
 
 ![A frame received over the radio link, encrypted](../media/frame-f350-rind-45s-3x.png)
 
 ▶ [60 seconds of received video](../media/moq-subghz-f350-rind-60s.mp4) (exactly what came out of the receiver, not re-encoded).
 
-The Semtech SX1276 is the chip inside most LoRa gadgets. LoRa itself is slow (tens of kbit/s),
+The Semtech SX1276 is the chip inside most CSS mode gadgets. CSS mode itself is slow (tens of kbit/s),
 but the same chip has a plain FSK mode that does 300 kbit/s. That's enough for a small, low-bitrate
 H.264 stream, so this project sends one. Everything between ffmpeg and the antenna is Rust.
 
@@ -28,8 +28,8 @@ next IDR. Instead of a smear you get a short freeze, at most the rest of the sec
 15 fps). The decoder only ever sees clean reference chains.
 
 ```
- Pi 2                                                                        laptop
- testsrc2 ─▶ burn clock    ─▶ x264      ─▶ split AUs ─▶ 255-byte  ─▶ ))) 915 MHz FSK ))) ─▶ CatWAN USB ─▶ reassemble ─▶ drop broken ─▶ ffplay
+ board 2                                                                        laptop
+ testsrc2 ─▶ burn clock    ─▶ x264      ─▶ split AUs ─▶ 255-byte  ─▶ ))) 915 MHz FSK ))) ─▶ RP2040-based device USB ─▶ reassemble ─▶ drop broken ─▶ ffplay
              + barcode        180 kbit/s    into         radio                               stick         + FEC repair   GOPs
              into pixels      GOP 15        objects      frames                                                           ─▶ ffmpeg reads the
                                                                                                                              barcode = latency
@@ -42,7 +42,7 @@ and decode are all included.
 
 ## Results
 
-Pi 2 to laptop, 330 s per run, test pattern, 180 kbit/s x264 `ultrafast`/`zerolatency`, GOP 15,
+board 2 to laptop, 330 s per run, test pattern, 180 kbit/s x264 `ultrafast`/`zerolatency`, GOP 15,
 antennas about 1 m apart.
 
 | radio rate | encrypted | H.264 delivered | frames shown | glass-to-glass p50 / p95 |
@@ -57,10 +57,10 @@ antennas about 1 m apart.
 * **Missing frames are freezes, not smears.** About 1 in 20 frames wasn't shown. Each loss
   costs the rest of its GOP, which shows up as about 20 stalls (freezes over 250 ms) per 5.5 minutes.
 * **Encryption is basically free.** ChaCha20-Poly1305 per frame adds 20 bytes (28 on the first frame
-  of each GOP) and ~95 µs on the Pi 2.
+  of each GOP) and ~95 µs on the board 2.
 * **Loss changes a lot from run to run.** An earlier pass with the same settings lost no frames at all.
-* **The reverse direction (laptop to Pi) works but loses more**, 8 to 15% of frames. The Pi's
-  radio board can't tell it when data has arrived, so the Pi has to keep checking for incoming
+* **The reverse direction (laptop to board) works but loses more**, 8 to 15% of frames. The board's
+  radio board can't tell it when data has arrived, so the board has to keep checking for incoming
   data, which uses a whole CPU core and still misses some.
 
 All eight runs with every column (loss, CPU, overhead, both directions) are in
@@ -108,15 +108,15 @@ shows the test pattern with its clock and barcode. `/tmp/run/rec.h264` is the re
 `/tmp/run/summary.json` has the counters. The latency figures in that summary are meaningless here,
 because the playback happens after the recording.
 
-With real radios: **[HOWTO.md](../HOWTO.md)** walks through parts, Pi setup, flashing the USB
+With real radios: **[HOWTO.md](../HOWTO.md)** walks through parts, board setup, flashing the USB
 stick and your first live picture.
 
 ## Hardware
 
-Other links and boards (HaLow, 2.4 GHz, 5.8 GHz, ESP32 and more) are in [LINKS.md](LINKS.md) and [HARDWARE.md](HARDWARE.md); only what is listed below has been measured.
+Other links and boards (802.11ah sub-GHz Wi-Fi, 2.4 GHz, 5.8 GHz, ESP32 and more) are in [LINKS.md](LINKS.md) and [HARDWARE.md](HARDWARE.md); only what is listed below has been measured.
 
-* Raspberry Pi 2 + Dragino LoRa/GPS HAT (915 MHz): the sender
-* Electronic Cats CatWAN USB Stick RP2040 (915 MHz): the receiver, plugs into a laptop
+* ARM single-board computer + SX1276 GPS HAT (915 MHz): the sender
+* RP2040-based device (915 MHz): the receiver, plugs into a laptop
 * Two 915 MHz antennas
 
 Parts list and pinouts are in the [HOWTO](../HOWTO.md#1-hardware).
@@ -136,12 +136,12 @@ Details in the [HOWTO](../HOWTO.md#9-radio-rules).
 | `moq-subghz-send` | sender: ffmpeg capture + x264, barcode, objects, radio TX |
 | `moq-subghz-recv` | receiver: radio RX, reassembly, GOP gate, ffplay, recording, latency |
 | `moq-subghz-wire` | the format: framing, FEC, Annex-B splitter, barcode, encryption |
-| `moq-subghz-pi` | the Pi's radio HAT glue (SPI + GPIO), used by the SX1276 backends |
+| `moq-subghz-pi` | the board's radio HAT glue (SPI + GPIO), used by the SX1276 backends |
 | `moq-subghz-link` | the `Link` trait every radio implements (send, recv, caps), and an in-memory loopback pair |
-| `radios/moq-subghz-radio-sx1276` | the SX1276 backends of `Link`: FSK and LoRa on the Pi HAT, the CatWAN stick's `Q` writer, the `R`-line loopback file |
+| `radios/moq-subghz-radio-sx1276` | the SX1276 backends of `Link`: FSK and CSS mode on the board HAT, the RP2040-based device's `Q` writer, the `R`-line loopback file |
 | `moq-subghz-report` | turns run logs into the results table |
-| `moq-subghz-lora2015` | the 2015-style LoRa image test: `lora2015-send` on the Pi, `lora2015-log` on the host ([results/lora-2015](../results/lora-2015/README.md)) |
-| `firmware/catwan-fw` | Rust firmware for the USB stick, plus a prebuilt `.uf2` |
+| `moq-subghz-css2015` | the 2015-style CSS mode image test: `css2015-send` on the board, `css2015-log` on the host ([results/css-2015](../results/css-2015/README.md)) |
+| `firmware/rp2040-sx1276-fw` | Rust firmware for the USB stick, plus a prebuilt `.uf2` |
 | `vendor/sx1276` | `no_std` SX1276 radio driver |
 | `moq-subghz-bench` | the bench harness that produced the results, and the analysis of them ([moq-subghz-bench](../moq-subghz-bench/README.md)); `scripts/loss_sweep.py` is the no-radio loss sweep |
 | `results/video/` | raw logs from every run |

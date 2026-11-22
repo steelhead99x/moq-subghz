@@ -1,11 +1,11 @@
-//! `factory-bench`: the factory-vs-factory picture test of `results/factory-firmware/`. The Pi
-//! runs the stock Dragino app, once per text chunk of a JPEG, and the stock Electronic Cats
+//! `factory-bench`: the factory-vs-factory picture test of `results/factory-firmware/`. The board
+//! runs the stock the HAT maker app, once per text chunk of a JPEG, and the stock the board maker
 //! receiver on the stick prints what it hears.  The stick capture is the `stick-cap` subcommand.
 //!
 //! This transmits, so it needs `--i-have-an-antenna`, `--transmit`, the serial port of the stick
 //! as `--dev`, and the licence gate's permit for the carrier and power the stock app is built for.
 //! The stock app cannot be queried, so the user declares them (`--freq-mhz`, `--power-dbm`) and
-//! the gate checks the declaration: the stock Dragino build (868.1 MHz, up to +17 dBm) is
+//! the gate checks the declaration: the stock the HAT maker build (868.1 MHz, up to +17 dBm) is
 //! refused, the project's patched build (915.0 MHz, +5 dBm) is not. The gate runs before
 //! anything else: before a file is read, a serial port opened, or ssh started.
 
@@ -88,7 +88,7 @@ pub fn make_chunks(jpeg: &[u8], id: char, size: usize) -> Vec<String> {
         .collect()
 }
 
-/// LoRa airtime of a packet of `pl` bytes, in seconds (SX1276 datasheet formula, explicit header off).
+/// CSS mode airtime of a packet of `pl` bytes, in seconds (SX1276 datasheet formula, explicit header off).
 pub fn airtime(pl: usize, sf: u32, bw: f64, cr: u32, crc: u32, h: u32, pre: f64) -> f64 {
     let ts = 2f64.powi(sf as i32) / bw;
     let num = 8.0 * pl as f64 - 4.0 * sf as f64 + 28.0 + 16.0 * crc as f64 - 20.0 * h as f64;
@@ -371,29 +371,29 @@ pub struct Opts {
     pub limit: usize,
     #[arg(long, default_value = "results/factory-firmware/data")]
     pub out: PathBuf,
-    /// ssh host of the Pi
+    /// ssh host of the board
     #[arg(long, default_value = "pi")]
     pub pi: String,
     /// Serial device of the stick (the receiver sketch prints at 9600 baud). No default: it is opened.
     #[arg(long)]
     pub dev: PathBuf,
-    /// This binary on the Pi, built for it (`factory-send` runs there)
+    /// This binary on the board, built for it (`factory-send` runs there)
     #[arg(long, default_value = "factory-bench/moq-subghz-bench")]
     pub pi_tool: String,
-    /// Directory of the stock `dragino_lora_app` on the Pi
-    #[arg(long, default_value = "factory-bench/dragino")]
+    /// Directory of the stock `hat_app` on the board
+    #[arg(long, default_value = "factory-bench/gps-hat")]
     pub pi_app_dir: String,
     /// Required: the antennas are on both radios
     #[arg(long)]
     pub i_have_an_antenna: bool,
-    /// Required to transmit (the licence gate). Forwarded to the Pi's `factory-send`
+    /// Required to transmit (the licence gate). Forwarded to the board's `factory-send`
     #[arg(long)]
     pub transmit: bool,
-    /// The carrier the stock app on the Pi is built for, in MHz. No default: the app cannot be
+    /// The carrier the stock app on the board is built for, in MHz. No default: the app cannot be
     /// queried, so you declare it and the gate checks it (the stock build's 868.1 is refused)
     #[arg(long)]
     pub freq_mhz: f64,
-    /// The power the stock app on the Pi is built for, in dBm (the project allows 2 to 5)
+    /// The power the stock app on the board is built for, in dBm (the project allows 2 to 5)
     #[arg(long)]
     pub power_dbm: i8,
     #[command(flatten)]
@@ -410,14 +410,14 @@ pub struct Declared {
     pub power_dbm: i8,
 }
 
-/// The stock app's LoRa bandwidth (125 kHz), the width of the span the gate checks.
+/// The stock app's CSS mode bandwidth (125 kHz), the width of the span the gate checks.
 const APP_WIDTH_HZ: u64 = 125_000;
 
-/// Why the stock Dragino build cannot be benched through this tool, and the way that can.
-const STOCK_868: &str = "the stock Dragino app transmits 868.1 MHz at up to +17 dBm, which is outside the \
+/// Why the stock the HAT maker build cannot be benched through this tool, and the way that can.
+const STOCK_868: &str = "the stock the HAT maker app transmits 868.1 MHz at up to +17 dBm, which is outside the \
 project's US ISM rules, and the gate has no 868 MHz profile to check it against (the EU region is not \
-enabled; region \"other\" is blocked). To bench legitimately, apply firmware/vendor/dragino-lora-gps-hat/dragino-bench.patch \
-(915.0 MHz, +5 dBm), rebuild the app on the Pi and declare --freq-mhz 915.0 --power-dbm 5";
+enabled; region \"other\" is blocked). To bench legitimately, apply firmware/vendor/sx1276-gps-hat/gps-hat-bench.patch \
+(915.0 MHz, +5 dBm), rebuild the app on the board and declare --freq-mhz 915.0 --power-dbm 5";
 
 /// The licence gate for the stock app on the declared carrier and power. The result is the proof
 /// that [`send_chunks`] needs, so nothing is keyed without it. Refuses outside 902-928 MHz (not
@@ -440,7 +440,7 @@ pub fn gate(station: &Station, d: Declared) -> Result<TxPermit> {
             e => anyhow::anyhow!("refusing to transmit: {e}"),
         })?;
     // The project's own rule on top of the gate's table (which also lists 2.4 and 5.8 GHz): the
-    // stock app is a sub-GHz LoRa build, and this repo operates inside 902-928 MHz only.
+    // stock app is a sub-GHz CSS mode build, and this repo operates inside 902-928 MHz only.
     if !(902.0..=928.0).contains(&d.freq_mhz) {
         bail!(
             "refusing to transmit: --freq-mhz {} is outside the project's 902-928 MHz. {STOCK_868}",
@@ -472,7 +472,7 @@ pub fn cap_plan(o: &Opts, exe: &str) -> Plan {
 }
 
 /// The remote scratch directory of one run: private (`mktemp -d`, mode 0700) and its own, so two
-/// runs on one Pi never share a chunk file.
+/// runs on one board never share a chunk file.
 pub fn scratch_plan(o: &Opts) -> Plan {
     crate::orch::ssh_plan(&o.pi, "mktemp -d /tmp/moq-bench.XXXXXXXXXX".to_string())
 }
@@ -508,7 +508,7 @@ struct RemoteDir<'a> {
 
 impl RemoteDir<'_> {
     fn make(o: &Opts) -> Result<RemoteDir<'_>> {
-        let made = capture(&scratch_plan(o)).context("make the scratch directory on the Pi")?;
+        let made = capture(&scratch_plan(o)).context("make the scratch directory on the board")?;
         let path = made.trim().to_string();
         crate::orch::valid_scratch(&path)?;
         Ok(RemoteDir { o, path })
@@ -527,7 +527,7 @@ impl Drop for RemoteDir<'_> {
 }
 
 /// The commands one pass runs, in order: copy the chunk list into the run's scratch directory `dir`
-/// on the Pi (its own file per pass), send it there.
+/// on the board (its own file per pass), send it there.
 pub fn pass_plan(o: &Opts, pass: usize, dir: &str) -> [Plan; 2] {
     let lic = o.licence.resolve().flags(Side::Pi, &[]);
     let lic: String = lic.iter().map(|f| format!("{} ", shq(f))).collect();
@@ -565,7 +565,7 @@ pub fn shq(s: &str) -> String {
 
 /// Most chunks of a picture: the counters are three digits (`007/123`).
 pub const MAX_CHUNKS: usize = 999;
-/// Longest packet the LoRa radio takes.
+/// Longest packet the CSS mode radio takes.
 pub const MAX_PACKET: usize = 255;
 
 /// Refuse a picture whose chunks the receiver cannot parse or the radio cannot send, before
@@ -604,7 +604,7 @@ pub fn run(o: &Opts) -> Result<()> {
         Err(e) if o.dry_run => println!("gate: a real run would be REFUSED: {e:#}"),
         Err(e) => return Err(e),
         Ok(_) => eprintln!(
-            "gate passed for the DECLARED {} MHz at +{} dBm (the stock app cannot be queried: you attest that the build on the Pi uses these)",
+            "gate passed for the DECLARED {} MHz at +{} dBm (the stock app cannot be queried: you attest that the build on the board uses these)",
             o.freq_mhz, o.power_dbm
         ),
     }
@@ -754,7 +754,7 @@ pub fn verdict(label: &str, passes: usize, re: &Reassembly, jpeg: &[u8]) -> Resu
     Ok(())
 }
 
-/// The Pi side: send each chunk line with the stock Dragino app, and write `<start> <end> <id:seq>`
+/// The board side: send each chunk line with the stock HAT maker app, and write `<start> <end> <id:seq>`
 /// for each to `out`.
 ///
 /// The app does not exit on its own after a send, so it is cut off at `app_timeout` (the expected
@@ -787,7 +787,7 @@ pub fn send_chunks(
             return Err(Cancelled.into());
         }
         let s = epoch();
-        let mut child = Command::new("./dragino_lora_app")
+        let mut child = Command::new("./hat_app")
             .args(["sender", line])
             .current_dir(app_dir)
             .stdin(Stdio::null())
@@ -796,7 +796,7 @@ pub fn send_chunks(
             .process_group(0)
             .spawn()
             .map(TxGroup::new)
-            .with_context(|| format!("start ./dragino_lora_app in {}", app_dir.display()))?;
+            .with_context(|| format!("start ./hat_app in {}", app_dir.display()))?;
         // Read stderr as it comes into a shared tail, so a chatty app never blocks on a full pipe
         // and a drain that outlasts the deadline still reports what it read.
         let mut err = child.0.stderr.take().context("no stderr pipe")?;
@@ -859,11 +859,11 @@ pub fn send_chunks(
         if let Some(st) = early {
             if !st.success() {
                 bail!(
-                    "FAILED {id}: ./dragino_lora_app exited early with {st}; stderr tail: {:?}",
+                    "FAILED {id}: ./hat_app exited early with {st}; stderr tail: {:?}",
                     tail.trim_end()
                 );
             }
-            eprintln!("warning: {id}: ./dragino_lora_app exited 0 before the timeout, which it should not");
+            eprintln!("warning: {id}: ./hat_app exited 0 before the timeout, which it should not");
             note = " early-exit";
         }
         writeln!(out, "{s:.9} {:.9} {id}{note}", epoch())?;
@@ -1030,7 +1030,7 @@ mod tests {
     fn fake_app(tag: &str, body: &str) -> (crate::testutil::Scratch, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let d = crate::testutil::Scratch::new(tag);
-        let app = d.0.join("dragino_lora_app");
+        let app = d.0.join("hat_app");
         fs::write(&app, format!("#!/bin/sh\n{body}\n")).unwrap();
         fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
         let list = d.0.join("chunks.txt");
@@ -1306,7 +1306,7 @@ mod tests {
             pi: "pi".into(),
             dev: "/dev/ttyACM0".into(),
             pi_tool: "factory-bench/moq-subghz-bench".into(),
-            pi_app_dir: "factory-bench/dragino".into(),
+            pi_app_dir: "factory-bench/gps-hat".into(),
             i_have_an_antenna: false,
             transmit: true,
             freq_mhz: 915.0,
@@ -1320,9 +1320,9 @@ mod tests {
             "scp -q -o BatchMode=yes -- out/x/pass1.chunks.txt pi:/tmp/moq-bench.AAA/pass1.chunks.txt"
         );
         assert!(p[1].shell().starts_with(
-            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/dragino /tmp/moq-bench.AAA/pass1.chunks.txt"
+            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/gps-hat /tmp/moq-bench.AAA/pass1.chunks.txt"
         ), "{}", p[1].shell());
-        // two runs on one Pi share no remote path, and each removes only its own directory
+        // two runs on one board share no remote path, and each removes only its own directory
         let (a, b) = (
             pass_plan(&o, 1, "/tmp/moq-bench.AAA"),
             pass_plan(&o, 1, "/tmp/moq-bench.BBB"),
@@ -1407,7 +1407,7 @@ mod gate_tests {
         assert!(e.contains("refusing to transmit"), "{e}");
         assert!(e.contains("868.1 MHz at up to +17 dBm"), "{e}");
         assert!(e.contains("EU region is not enabled"), "{e}");
-        assert!(e.contains("dragino-bench.patch"), "{e}");
+        assert!(e.contains("gps-hat-bench.patch"), "{e}");
         assert!(e.contains("--freq-mhz 915.0 --power-dbm 5"), "{e}");
         // the carrier alone is enough to refuse it, whatever power is declared
         assert!(gate(&station(true), d(868.1, 5)).is_err());
@@ -1476,7 +1476,7 @@ mod parity {
                     .unwrap();
             let jpeg = fs::read(
                 repo()
-                    .join("results/lora-2015/frames")
+                    .join("results/css-2015/frames")
                     .join(want["jpeg"].as_str().unwrap()),
             )
             .unwrap();

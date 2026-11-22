@@ -17,7 +17,7 @@ moq-subghz-key.hex
 key.hex
 
 # picotool backups of a stick
-catwan-backup-*.bin
+rp2040-backup-*.bin
 
 # agent scratch (quest context)
 .tmp/

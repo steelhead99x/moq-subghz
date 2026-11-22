@@ -783,6 +783,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "moq-subghz-css2015"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "clap",
+ "cmac",
+ "libc",
+ "moq-subghz-licence",
+ "moq-subghz-link",
+ "moq-subghz-radio-sx1276",
+ "moq-subghz-wire",
+ "sx1276",
+]
+
+[[package]]
 name = "moq-subghz-licence"
 version = "0.1.0"
 dependencies = [
@@ -796,22 +812,6 @@ name = "moq-subghz-link"
 version = "0.0.1"
 dependencies = [
  "moq-subghz-wire",
-]
-
-[[package]]
-name = "moq-subghz-lora2015"
-version = "0.1.0"
-dependencies = [
- "aes",
- "anyhow",
- "clap",
- "cmac",
- "libc",
- "moq-subghz-licence",
- "moq-subghz-link",
- "moq-subghz-radio-sx1276",
- "moq-subghz-wire",
- "sx1276",
 ]
 
 [[package]]

@@ -171,7 +171,7 @@ async fn publish_binary_through_a_relay() {
         "--url",
         relay.url.as_str(),
         "--name",
-        "lora/test",
+        "css/test",
         "--linger-s",
         "3",
     ]);
@@ -185,7 +185,7 @@ async fn publish_binary_through_a_relay() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let (catalog, groups) = watch(&relay, "lora/test", 4).await;
+    let (catalog, groups) = watch(&relay, "css/test", 4).await;
     let out = child.wait_with_output().unwrap();
     std::fs::remove_dir_all(&dir).ok();
     assert!(out.status.success());
@@ -236,7 +236,7 @@ async fn replay_through_recv() {
     let child = Command::new(recv)
         .args(["--replay", &replay, "--paced", "--secs", "30", "--publish"])
         .arg(relay.url.as_str())
-        .args(["--publish-name", "lora/replay", "--publish-bin"])
+        .args(["--publish-name", "css/replay", "--publish-bin"])
         .arg(env!("CARGO_BIN_EXE_moq-subghz-publish"))
         .arg("--out")
         .arg(&out)
@@ -246,7 +246,7 @@ async fn replay_through_recv() {
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
-    let (catalog, got) = watch(&relay, "lora/replay", groups).await;
+    let (catalog, got) = watch(&relay, "css/replay", groups).await;
     let status = child.wait_with_output().unwrap().status;
     assert!(status.success());
     assert!(catalog.video.renditions.contains_key(VIDEO_TRACK));

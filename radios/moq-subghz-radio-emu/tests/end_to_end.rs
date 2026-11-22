@@ -1,9 +1,9 @@
-//! Real `Fragmenter` output -> packing -> `EmuLink` (modeled HaLow) -> unpacking -> `Reassembler`,
+//! Real `Fragmenter` output -> packing -> `EmuLink` (modeled 802.11ah) -> unpacking -> `Reassembler`,
 //! with the unchanged moq-subghz-wire crate on both ends. No sockets, no radio. Everything the
 //! link reports is MODELED.
 use moq_subghz_link::{Link, Provenance};
 use moq_subghz_radio_emu::loss::LossModel;
-use moq_subghz_radio_emu::{pack, EmuCfg, EmuLink, HalowCfg, PhyKind};
+use moq_subghz_radio_emu::{pack, EmuCfg, EmuLink, PhyKind, S1gCfg};
 use moq_subghz_wire::{Event, Fragmenter, Reassembler};
 use std::time::Duration;
 
@@ -57,7 +57,7 @@ fn run(
 
 #[test]
 fn objects_survive_packing_unchanged() {
-    let (mut tx, mut rx) = EmuLink::pair(EmuCfg::new(PhyKind::Halow(HalowCfg::default()))).unwrap();
+    let (mut tx, mut rx) = EmuLink::pair(EmuCfg::new(PhyKind::S1g(S1gCfg::default()))).unwrap();
     assert_eq!(tx.caps().provenance, Provenance::Modeled);
     let mut frag = Fragmenter::new(8).unwrap();
     let mut ra = Reassembler::new();
@@ -85,9 +85,9 @@ fn fec_cannot_repair_a_whole_packet_but_one_frame_per_packet_can() {
     for (slot, max_frames) in [0usize, 1].into_iter().enumerate() {
         let mut ok = 0;
         for seed in 0..40 {
-            let mut c = EmuCfg::new(PhyKind::Halow(HalowCfg {
+            let mut c = EmuCfg::new(PhyKind::S1g(S1gCfg {
                 ack: false,
-                ..HalowCfg::default()
+                ..S1gCfg::default()
             }));
             c.loss = LossModel::Iid(0.05);
             c.seed = seed;
@@ -111,7 +111,7 @@ fn fec_cannot_repair_a_whole_packet_but_one_frame_per_packet_can() {
 
 #[test]
 fn with_ack_and_retries_a_lossy_channel_still_delivers_everything() {
-    let mut c = EmuCfg::new(PhyKind::Halow(HalowCfg::default()));
+    let mut c = EmuCfg::new(PhyKind::S1g(S1gCfg::default()));
     c.loss = LossModel::Iid(0.1);
     let (mut tx, mut rx) = EmuLink::pair(c).unwrap();
     let mut frag = Fragmenter::new(8).unwrap();

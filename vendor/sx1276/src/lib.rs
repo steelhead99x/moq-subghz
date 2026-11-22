@@ -1,4 +1,4 @@
-//! `no_std` driver for the Semtech SX1276/77/78/79 LoRa transceiver, written
+//! `no_std` driver for the Semtech SX1276/77/78/79 CSS mode transceiver, written
 //! against the `embedded-hal` 1.0 traits.
 //!
 //! Designed for throughput: every FIFO access is a single SPI transaction
@@ -10,13 +10,13 @@
 //! platform can block on a real edge event instead of polling the bus.
 //!
 //! The chip select (NSS) is handled by the [`SpiDevice`] you pass in. If NSS is
-//! a plain GPIO (as on the Dragino LoRa/GPS HAT, BCM25) wrap your bus and pin in
+//! a plain GPIO (as on the SX1276 GPS HAT, BCM25) wrap your bus and pin in
 //! `embedded_hal_bus::spi::ExclusiveDevice`.
 //!
 //! ```ignore
 //! let spi = ExclusiveDevice::new(bus, nss_pin, Delay)?;
 //! let mut radio = Sx1276::new(spi, reset_pin, PolledIrq::new(dio0_pin, Delay, 100), Delay);
-//! radio.init(915_000_000, &LoRaConfig::default())?;
+//! radio.init(915_000_000, &CssConfig::default())?;
 //! radio.start_receive(RxMode::Continuous)?;
 //! let mut buf = [0u8; 255];
 //! if let Some(pkt) = radio.receive(&mut buf, 1_000_000)? {
@@ -32,7 +32,7 @@ pub mod registers;
 
 pub use config::{
     encode_ocp, encode_pa, frf_bytes, frf_from_hz, hz_from_frf, packet_rssi_dbm, rssi_dbm,
-    Bandwidth, CodingRate, ConfigError, HeaderMode, LoRaConfig, LowDataRateOptimize, PaOutput,
+    Bandwidth, CodingRate, ConfigError, CssConfig, HeaderMode, LowDataRateOptimize, PaOutput,
     PaSettings, SpreadingFactor,
 };
 pub use registers::{Dio0Mapping, Irq, Mode, Register};
@@ -42,7 +42,7 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiDevice;
 use registers::{lna, opmode, FIFO_SIZE, SILICON_VERSION, WRITE_BIT};
 
-/// Maximum LoRa payload length.
+/// Maximum CSS mode payload length.
 pub const MAX_PAYLOAD: usize = 255;
 
 /// Maximum SPI clock supported by the SX1276 (datasheet table 7: 10 MHz).
@@ -135,7 +135,7 @@ impl<P: InputPin, D: DelayNs> IrqLine for PolledIrq<P, D> {
 pub enum RxMode {
     /// Stay in RX; packets keep arriving until you change mode.
     Continuous,
-    /// One packet or a symbol timeout (`LoRaConfig::symbol_timeout`), then standby.
+    /// One packet or a symbol timeout (`CssConfig::symbol_timeout`), then standby.
     Single,
 }
 
@@ -210,7 +210,7 @@ pub struct Sx1276<SPI, RST, IRQ, D> {
     /// Cached `RegDioMapping1`.
     dio_mapping1: Option<u8>,
     high_frequency: bool,
-    config: LoRaConfig,
+    config: CssConfig,
     /// The FSK config keeps CRC-failed packets ([`fsk::FskConfig::crc_auto_clear`] off),
     /// so reads must check CrcOk.
     fsk_crc_check: bool,
@@ -237,7 +237,7 @@ where
             mode: None,
             dio_mapping1: None,
             high_frequency: true,
-            config: LoRaConfig::default(),
+            config: CssConfig::default(),
             fsk_crc_check: false,
             buf: [0; FIFO_SIZE + 1],
         }
@@ -254,7 +254,7 @@ where
     }
 
     /// The modem configuration last applied with [`configure`](Self::configure).
-    pub fn config(&self) -> &LoRaConfig {
+    pub fn config(&self) -> &CssConfig {
         &self.config
     }
 
@@ -337,16 +337,16 @@ where
         self.read_register(Register::Version)
     }
 
-    /// Reset, check the silicon version, enter LoRa mode, set the frequency and
+    /// Reset, check the silicon version, enter CSS mode, set the frequency and
     /// modem configuration, and leave the radio in standby.
-    pub fn init(&mut self, frequency_hz: u32, config: &LoRaConfig) -> R<(), SPI::Error> {
+    pub fn init(&mut self, frequency_hz: u32, config: &CssConfig) -> R<(), SPI::Error> {
         config.validate()?;
         self.reset()?;
         let v = self.version()?;
         if v != SILICON_VERSION {
             return Err(Error::BadVersion(v));
         }
-        self.enter_lora_mode()?;
+        self.enter_css_mode()?;
         self.set_frequency(frequency_hz)?;
         // TX and RX both use the full FIFO starting at 0 (half duplex).
         self.write_burst(Register::FifoTxBaseAddr, &[0x00, 0x00])?;
@@ -357,9 +357,9 @@ where
         self.set_mode(Mode::Standby)
     }
 
-    /// Switch from FSK to LoRa: FSK sleep, then LongRangeMode + sleep (the bit can
-    /// only change in sleep). Leaves the radio in LoRa sleep.
-    pub fn enter_lora_mode(&mut self) -> R<(), SPI::Error> {
+    /// Switch from FSK to CSS mode: FSK sleep, then LongRangeMode + sleep (the bit can
+    /// only change in sleep). Leaves the radio in CSS mode sleep.
+    pub fn enter_css_mode(&mut self) -> R<(), SPI::Error> {
         let lf = self.read_register(Register::OpMode)? & opmode::LOW_FREQUENCY_MODE_ON;
         self.write_register(Register::OpMode, lf | Mode::Sleep as u8)?;
         self.delay.delay_ms(10);
@@ -372,7 +372,7 @@ where
     }
 
     /// Switch to FSK/OOK mode (LongRangeMode = 0, which can only change in sleep).
-    /// Leaves the radio in FSK sleep. Call [`enter_lora_mode`](Self::enter_lora_mode) to go back.
+    /// Leaves the radio in FSK sleep. Call [`enter_css_mode`](Self::enter_css_mode) to go back.
     pub fn enter_fsk_mode(&mut self) -> R<(), SPI::Error> {
         let lf = self.opmode_base & opmode::LOW_FREQUENCY_MODE_ON;
         self.write_register(Register::OpMode, self.opmode_base | Mode::Sleep as u8)?;
@@ -677,14 +677,14 @@ where
         Ok(m)
     }
 
-    /// Set the transceiver mode (one register write, keeps LoRa and LF bits).
+    /// Set the transceiver mode (one register write, keeps CSS mode and LF bits).
     pub fn set_mode(&mut self, mode: Mode) -> R<(), SPI::Error> {
         self.write_register(Register::OpMode, self.opmode_base | mode as u8)?;
         self.mode = Some(mode);
         Ok(())
     }
 
-    /// LoRa sleep (lowest power; FIFO contents are lost).
+    /// CSS mode sleep (lowest power; FIFO contents are lost).
     pub fn sleep(&mut self) -> R<(), SPI::Error> {
         self.set_mode(Mode::Sleep)
     }
@@ -734,8 +734,8 @@ where
         ))
     }
 
-    /// Apply a LoRa modem configuration (sleep or standby).
-    pub fn configure(&mut self, cfg: &LoRaConfig) -> R<(), SPI::Error> {
+    /// Apply a Cssm configuration (sleep or standby).
+    pub fn configure(&mut self, cfg: &CssConfig) -> R<(), SPI::Error> {
         cfg.validate()?;
         let payload_len = match cfg.header {
             HeaderMode::Implicit { payload_len } => payload_len,
@@ -945,7 +945,7 @@ where
         self.set_mode(Mode::Cad)
     }
 
-    /// Call after CadDone: returns whether LoRa activity was detected and clears the flags.
+    /// Call after CadDone: returns whether CSS mode activity was detected and clears the flags.
     pub fn finish_cad(&mut self) -> R<Option<bool>, SPI::Error> {
         let flags = self.irq_flags()?;
         if !flags.contains(Irq::CAD_DONE) {

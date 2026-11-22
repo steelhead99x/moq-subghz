@@ -1,0 +1,34 @@
+[package]
+name = "rp2040-sx1276-fw"
+version = "0.5.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/steelhead99x/moq-subghz"
+description = "USB-serial SX1276 link-test firmware for the RP2040-based device"
+
+[workspace]
+
+[dependencies]
+sx1276 = { path = "../../vendor/sx1276" }
+rp2040-hal = { version = "0.12", features = ["rt", "critical-section-impl", "rom-func-cache"] }
+rp2040-boot2 = "0.3"
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+embedded-hal = "1.0"
+embedded-hal-bus = "0.3"
+usb-device = "0.3"
+usbd-serial = "0.2"
+heapless = "0.8"
+panic-halt = "1.0"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = 2
+# thumbv6m has no unwinder. The shipped v5 image was built this way; without
+# it rustc 1.90 refuses to compile the binary.
+panic = "abort"

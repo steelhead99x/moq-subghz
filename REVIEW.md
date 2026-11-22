@@ -6,10 +6,10 @@ have drifted since; the function and type names are the reliable pointers. Secti
 Fixed describe the code on `main`.
 
 Review of the `video-demo` tree for a public release: `moq-subghz-wire`, `moq-subghz-send`,
-`moq-subghz-recv`, `moq-subghz-report`, `vendor/sx1276`, `firmware/catwan-fw`, and `scripts/`.
+`moq-subghz-recv`, `moq-subghz-report`, `vendor/sx1276`, `firmware/rp2040-sx1276-fw`, and `scripts/`.
 
-No radio hardware is attached to this environment. Nothing here was checked on a Pi or a
-CatWAN stick, and the 330 s numbers in `results/video/` were not regenerated. Changes that
+No radio hardware is attached to this environment. Nothing here was checked on a board or a
+RP2040-based device, and the 330 s numbers in `results/video/` were not regenerated. Changes that
 would alter on-air framing, FEC, pacing, or loss accounting were left in place and listed
 below. What was fixed is covered by unit tests (`cargo test --all-targets` on the
 workspace, plus the sx1276 driver tests).
@@ -17,8 +17,8 @@ workspace, plus the sx1276 driver tests).
 Host build, clippy, and tests were run with rustc 1.90.0. `moq-subghz-send` and
 `moq-subghz-recv` were also built for `armv7-unknown-linux-musleabihf` (rust-lld, static)
 and `armv7-unknown-linux-gnueabihf` (`arm-linux-gnueabihf-gcc`, dynamic). The firmware
-was built and clippy-clean for `thumbv6m-none-eabi`. `firmware/catwan-fw-v5.uf2` was
-not replaced.
+was built and clippy-clean for `thumbv6m-none-eabi`. `firmware/rp2040-sx1276-fw-v5.uf2` was
+not replaced at that time (it has since been rebuilt from the current source; see CHANGELOG).
 
 ## Critical
 
@@ -31,7 +31,7 @@ need a protocol or firmware change that would invalidate the measured runs.
 
 ### Firmware will transmit above +5 dBm and on any carrier. Fixed in source; needs a new image.
 
-`firmware/catwan-fw/src/main.rs:232` and `:259` clamp `dbm` to `2..=17` for both the
+`firmware/rp2040-sx1276-fw/src/main.rs:232` and `:259` clamp `dbm` to `2..=17` for both the
 `L` and `F` commands and program the frequency they are given. There is no check for
 902-928 MHz and no refusal of 925.0 MHz. `moq-subghz-send` (`main.rs:273` and `:276`, before it opens the stick) and
 `moq-subghz-recv` (`main.rs:313` hard-codes 5 dBm on the `F` command)
@@ -42,9 +42,9 @@ Fixed in source (2026-11-21): `L` and `F` refuse a carrier outside 902-928 MHz o
 0.3 MHz of 925.0 and power outside 2..=5 dBm, and `L` refuses a bandwidth, SF or coding
 rate it used to replace silently. The same change makes a `Q` line wait for a queue slot
 (one USB read with several short `Q` lines used to drop the later ones) and reports a bad
-frame as `ERR tx`. The shipped `catwan-fw-v5.uf2` (measured) and `catwan-fw-0.5.1.uf2`
-predate it: until a new image is built, flashed and run on the stick, a stick on those
-images still accepts anything.
+frame as `ERR tx`. The image measured earlier (old v5, old sha256 `fe86cc05...`) and `rp2040-sx1276-fw-0.5.1.uf2`
+predate it, so a stick on those images still accepts anything. The rebuilt
+`rp2040-sx1276-fw-v5.uf2` includes it, but has not been flashed or run on a stick yet.
 
 ### Replayed frames. Mostly fixed; long replays deferred.
 
@@ -105,11 +105,11 @@ in `FrameHdr::decode` drops the splice. It does not stop the driver from returni
 
 Fixed 2026-11-21. More than the 64-byte FSK FIFO still to read at PayloadReady is an error
 (the driver used to burst-read up to 255 bytes past the data, since its size check was the
-256-byte LoRa FIFO), and every error clears the half-read state. `FskConfig::crc_auto_clear`
+256-byte chirp spread spectrum (CSS) mode FIFO), and every error clears the half-read state. `FskConfig::crc_auto_clear`
 (default on, as measured) can be turned off so a CRC-failed packet raises PayloadReady with
-CrcOk clear and is dropped whole; the long-mode readers (`catwan-fw` with `long=1`,
+CrcOk clear and is dropped whole; the long-mode readers (`rp2040-sx1276-fw` with `long=1`,
 `moq-subghz-recv --radio`) turn it off, which closes the splice. This is the receive path
-that produced the Pi-side loss numbers, so they need measuring again. `FskLongRx::payload`
+that produced the board-side loss numbers, so they need measuring again. `FskLongRx::payload`
 no longer panics when no packet is stored.
 
 ### Nonce uniqueness is a caller contract. Fixed with per-run subkeys.
@@ -177,7 +177,7 @@ counted as ok. Not changed.
 
 ### `fsk_transmit_long` blocks the USB loop. Deferred.
 
-`firmware/catwan-fw/src/main.rs` calls `fsk_transmit_long` with a 1_000_000 spin limit
+`firmware/rp2040-sx1276-fw/src/main.rs` calls `fsk_transmit_long` with a 1_000_000 spin limit
 from inside the main loop, so USB is not polled for the whole long packet. That is
 how v5 was measured. The per-packet TX timeout at the `tx_pkt_t` check is the v5 fix
 and was not touched.
@@ -204,7 +204,7 @@ reverse path 4 s. Folding them together would be a new harness, not a cleanup.
 `moq-subghz-wire/src/lib.rs` had both `pub mod seal` (AEAD) and `pub fn seal` (CRC-16).
 The CRC function is now `write_crc`, which says what it does.
 
-### The Pi GPIO glue was copied twice. Fixed.
+### The board GPIO glue was copied twice. Fixed.
 
 `moq-subghz-send/src/radio.rs` and `moq-subghz-recv/src/radio.rs` duplicated `CdevIrq` and
 `Radio::open`. Both now come from `moq-subghz-pi` (`CdevIrq`, `Hat`, `open_hat`, `sx_err`), moved verbatim:
@@ -216,9 +216,9 @@ methods, so the TX path is the code it was.
 `moq-subghz-send/src/main.rs` `local_clock`. A failure leaves the zeroed `tm`, so the
 burned-in clock reads `00:00:00`. The barcode does not use that string. Not changed.
 
-### CatWAN TX formats each byte with `format!("{:02x}")`. Deferred.
+### RP2040-based device TX formats each byte with `format!("{:02x}")`. Deferred.
 
-`moq-subghz-send` `Link::send` for `Catwan`. It allocates per byte. Backpressure is the
+`moq-subghz-send` `Link::send` for `Rp2040`. It allocates per byte. Backpressure is the
 stick's 12-frame queue, not this formatting. Changing it could change host CPU during
 TX. Not changed.
 
@@ -230,10 +230,10 @@ instead of a panic. `pct` no longer panics on NaN (`:45`). A run directory that 
 not a directory still hits `file_name()` and prints an empty name rather than
 panicking. The tool does not validate that `summary.json` came from this program.
 
-### Window title said "LoRa". Fixed.
+### Window title said "CSS mode". Fixed.
 
 `moq-subghz-recv` ffplay title is now `SX1276 FSK live video (moq-subghz)`. The link is
-FSK. The README's "best known as the LoRa chip" sentence is about the silicon, and
+FSK. The README's "best known as the CSS mode chip" sentence is about the silicon, and
 was left.
 
 ## Fixed in this change
@@ -251,7 +251,7 @@ was left.
 | Per-run subkeys from a 96-bit salt replace the 32-bit session id | `seal.rs` | no birthday bound at 2^16 runs |
 | Empty `FskLongRx::payload` does not panic | `vendor/sx1276/src/lib.rs:169` | |
 | Stats line from the stick is JSON-escaped | `moq-subghz-recv/src/main.rs:176` | normal `OK S ...` lines are unchanged |
-| `panic = "abort"` on the firmware profiles | `firmware/catwan-fw/Cargo.toml` | thumbv6m cannot unwind; rustc 1.90 would not link without it |
+| `panic = "abort"` on the firmware profiles | `firmware/rp2040-sx1276-fw/Cargo.toml` | thumbv6m cannot unwind; rustc 1.90 would not link without it |
 
 Tests for the wire fixes are in `moq-subghz-wire` (`hostile_frames_do_not_panic`,
 `chunk_lengths_sum_to_objlen`, `read_line_limited_caps_and_keeps_short_lines`,
@@ -289,8 +289,8 @@ each run's `clock_end.json`): the bench's ssh alias as `"host"`. Editing those w
 change the logs the table was computed from. The alias is not a hostname with a public DNS name,
 but it is this bench's ssh alias.
 
-`firmware/catwan-fw/src/main.rs:157` hard-codes USB serial `613863E6354E26A3`. The
-same bytes are in `firmware/catwan-fw-v5.uf2`. It looks like one board's id, so
+`firmware/rp2040-sx1276-fw/src/main.rs:157` hard-codes USB serial `613863E6354E26A3`. The
+same bytes are in `firmware/rp2040-sx1276-fw-v5.uf2`. It looks like one board's id, so
 every stick flashed with this image enumerates as that serial. It was not changed,
 because the UF2 was not rebuilt.
 

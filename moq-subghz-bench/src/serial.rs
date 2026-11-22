@@ -12,7 +12,7 @@ use std::path::Path;
 pub enum Baud {
     /// The stock receiver sketch
     B9600,
-    /// catwan-fw
+    /// rp2040-sx1276-fw
     B115200,
 }
 

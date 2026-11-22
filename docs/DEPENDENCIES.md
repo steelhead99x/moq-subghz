@@ -7,11 +7,11 @@ versions in `Cargo.lock`, which CI uses unchanged (`--locked`).
 
 * What: the AEAD behind object sealing (`seal` feature of `moq-subghz-wire`), from
   [kixel-ai/rind](https://github.com/kixel-ai/rind). It is pure Rust, and armv7 uses its portable
-  backend, so the Pi builds need no C toolchain for it.
+  backend, so the board builds need no C toolchain for it.
 * Pin: `rev = "d2dc35bd796aaadc42df56aee0f1526cdee94b66"` in `moq-subghz-wire/Cargo.toml`, the same
   commit as in `Cargo.lock`. The pin is the moq-subghz decision; the upstream is kixel-ai's `main`.
 * Why a git rev: rind has no published release, so there is no version to depend on. A rev pins
-  exactly the code that was reviewed and built on the Pi, and no `cargo update` can move it.
+  exactly the code that was reviewed and built on the board, and no `cargo update` can move it.
 * Consequences: crates.io yanks and RustSec advisories do not reach it, so nobody is told if it
   gets one. It sits behind `seal` only; `cargo test -p moq-subghz-wire --no-default-features`
   builds without it.

@@ -1,7 +1,7 @@
 [package]
 name = "moq-subghz-pi"
 version = "0.1.0"
-description = "Pi glue shared by moq-subghz-send and moq-subghz-recv: the Dragino HAT's SX1276 over spidev and GPIO cdev"
+description = "Pi glue shared by moq-subghz-send and moq-subghz-recv: the SX1276 GPS HAT's SX1276 over spidev and GPIO cdev"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

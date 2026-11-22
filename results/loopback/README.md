@@ -14,7 +14,7 @@ run of the v5 tools.
 
 1. `moq-subghz-send --loopback` recorded 300 s of "air" four times: no FEC, FEC k=4, FEC k=8, and
    FEC k=8 with encryption. Same video settings as the radio runs: 320x240, 15 fps, GOP 15,
-   x264 at 180 kbit/s, test pattern. FSK profile `300000:100000:6`, the one the Pi-to-laptop
+   x264 at 180 kbit/s, test pattern. FSK profile `300000:100000:6`, the one the board-to-laptop
    runs used.
 2. `scripts/loss_sweep.py` removed radio frames from each recording and played what was left
    through `moq-subghz-recv --replay`. Every case with loss was replayed 20 times with different
@@ -113,7 +113,7 @@ recordings.)
   * The no-FEC column matches arithmetic. If each radio frame is lost on its own, a video frame
     is shown only when every radio frame before it in its GOP arrived. Worked out from the
     sender's log, that gives 5.66%, 10.94%, 24.79%, 42.52%, 55.38%, 64.86%, 89.25% and 97.51%.
-* Only the four runs towards the Pi (`r*`) are used as loss patterns. The serial logs of the four
+* Only the four runs towards the board (`r*`) are used as loss patterns. The serial logs of the four
   runs towards the laptop don't mark which lines failed their frame check, so the pattern can't
   be rebuilt from them. The script checks each log against the receiver's own count and refuses
   one that disagrees by more than 5%. For three of the four runs used, the lost frames it finds

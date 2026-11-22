@@ -2,8 +2,41 @@
 
 ## Unreleased
 
+### Neutral terminology and renames
+
+Product and brand names are out of file names, crate names, strings, flags and docs. Chip names
+(SX1276, SX1262, LR1110, RP2040, ESP32-S3, MM6108) and standard names (IEEE 802.11ah, ISM 902-928 MHz,
+FSK) stay. The chirp-modulation mode is called chirp spread spectrum (CSS) mode, IEEE 802.11ah is
+"802.11ah sub-GHz Wi-Fi" (S1G for the PHY). This supersedes #52.
+
+* Renamed: the `moq-subghz-css2015` crate and its `css2015-send` and `css2015-log` bins, the firmware
+  directory and images (`firmware/rp2040-sx1276-fw`, `rp2040-sx1276-fw-v5.uf2`,
+  `rp2040-sx1276-fw-0.5.1.uf2`, both images rebuilt, see below), the vendor directories
+  (`firmware/vendor/sx1276-gps-hat`, `firmware/vendor/rp2040-factory-receiver`),
+  `docs/S1G-EMULATION.md` (the emulation doc), `results/css-2015/`, `results/stick-0.5.1/css/`,
+  `css.csv`, `css-summary.csv`, the `framed` mode and run names `framed-*`.
+* CLI: `--link css-emu` and `--link s1g-emu`, the `--css-*` and `--s1g-*` emulation flags and
+  `--rp2040 PORT` of `moq-subghz-send`. The former spellings are removed, not kept as aliases. The
+  JSON key and link label in run summaries is `rp2040`.
+* `moq-subghz-bench analyze` still reads archived run directories written under the earlier mode
+  name (old and new directory names give the same CSV; new output uses `framed-*`).
+* The serial banner check accepts any `*-fw` firmware name, so shipped images built before the rename
+  keep working; their binary content is unchanged on purpose (checksums in `firmware/SHA256SUMS`). New
+  builds use the USB product string "RP2040-based device".
+
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
+
+### Rebuilt 0.5.1 image (not byte-identical to the measured runs)
+
+`firmware/rp2040-sx1276-fw-0.5.1.uf2` was rebuilt so that its USB product string and `I` banner carry no brand
+name (product `RP2040-based device`, banner `I rp2040-sx1276-fw 0.5.1 ...`). It was built from the 0.5.1 source
+as released (commit 4e31b7a, which has no band or power checks), Rust 1.90.0, `--locked`, thumbv6m, converted
+with `moq-subghz-bench elf2uf2`, with only those two strings changed. An unmodified rebuild differs from the old
+image in 47 bytes out of 110592, so the build is not bit-reproducible. The image is therefore NOT byte-identical to
+the one used in earlier runs. History: the old image had sha256
+`608bc4dd10e7b211440d87faf33933ccdcdcc63c1c40b6e3317438818b40528f`; the new one has
+`08ec0cdb576fe4c482e6638fb36452e2f5193f2a1b943789b0a739b1ccf9b999`. `rp2040-sx1276-fw-v5.uf2` was ALSO rebuilt, from the CURRENT source (band and power checks added; Rust 1.90.0, `--locked`, thumbv6m; it reports 0.5.1). It is NOT the image behind the earlier measured v5 runs, which stay labelled as measured with the old image. History: old sha256 `fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317`; new `d9d56afe9eae1b3fff3bcc242ca49bd0233cb31ce89c56b4f87f19eff5fd1b0e`. The new v5 file has not been flashed or run. The host tools accept both banners. Nothing was flashed.
 
 ### Bench correctness
 
@@ -11,7 +44,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   receiver's 0% gap estimate.
 * `package-051` compresses a log through a private temp file renamed into place after the licence
   scan, so a rejected log no longer removes an existing output.
-* The LoRa logger window uses the sender's `--pass-gap-ms` and is printed.
+* The CSS logger window uses the sender's `--pass-gap-ms` and is printed.
 * `factory-bench` uses a private remote scratch directory per run and a chunk file per pass, and
   removes only that directory.
 * `reverse` checks the serial port and run directories before any remote command, and kills the
@@ -20,11 +53,11 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * `factory-send` ends the stock app's whole process group (TERM, then KILL, then reap) on Ctrl-C,
   SIGTERM, SIGHUP, any error return or a panic. The reverse runner keeps its cleanup armed until
   the Pi confirms the receiver stopped (a dropped ssh is checked before any copy), and an unknown
-  pid state keeps the scratch directory with a warning. `forward` and `lora` kill and reap their
+  pid state keeps the scratch directory with a warning. `forward` and `css` kill and reap their
   capture process on every early exit.
 * `factory-send` also checks for a cancel while it drains the app's stderr and before each chunk
   (no timing row, exit 130). The reverse cleanup signals a receiver only if its pid and start time
-  match what the run recorded, so a reused pid is never touched. The LoRa runner removes the Pi's
+  match what the run recorded, so a reused pid is never touched. The CSS runner removes the Pi's
   per frame log only after the copy succeeded and its size matches, and otherwise keeps it and
   says where it is.
 * `factory-send` fails the run when the stock app exits non-zero before its timeout (no timing row)
@@ -44,8 +77,8 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 * `factory-send` and `factory-bench` no longer transmit on `--i-have-an-antenna` alone. They need
   `--transmit` and a declaration of the stock app's carrier and power (`--freq-mhz`, `--power-dbm`),
-  and run the licence gate on the laptop and again on the Pi before reading, opening or starting
-  anything. The unpatched Dragino build (868.1 MHz, +17 dBm) is refused with the way to bench it
+  and run the licence gate on the laptop and again on the board before reading, opening or starting
+  anything. The unpatched vendor app build (868.1 MHz, +17 dBm) is refused with the way to bench it
   (the 915 MHz patch). `demo-051` runs the transmit check before it writes `I` to the stick.
 * Radio `open` functions take the gate's permit (`TxPermit` / `RxPermit`), so a missing gate is a
   compile error; a permit also carries the span it checked and the open refuses another carrier.
@@ -53,7 +86,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   mode before running, and passes `--redact-licence` unless `--show-licence`. `package-051` refuses
   to copy any file holding the configured licence ID or name, or an unredacted licence line.
 * `factory-bench` fails a run whose picture has every chunk but does not match the original.
-* CatWAN `idle` waits for the stick's drained report (bounded) instead of a fixed 300 ms. Frames
+* RP2040-based device `idle` waits for the stick's drained report (bounded) instead of a fixed 300 ms. Frames
   not confirmed are left out of `frames_tx`, `bytes_tx` and `radio_busy_pct` and counted in the new
   `tx_unconfirmed_frames`.
 
@@ -62,25 +95,25 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * New crate `moq-subghz-bench`, the Rust replacement for the `scripts/` shell and Python harness.
   This first step adds `analyze` (was `scripts/analyze-051.py`), `factory-bench`, `stick-cap` and
   `factory-send` (were `results/factory-firmware/tools/`) and `elf2uf2` (was
-  `firmware/catwan-fw/elf2uf2.py`).
-* The orchestration follows: `run`, `rev`, `bench`, `bench-051`, `lora2015-run`, `demo-051`,
-  `clocklog`, `package-051`, `lora2015-table` and `lora2015-frames` (were the matching
+  `firmware/rp2040-sx1276-fw/elf2uf2.py`).
+* The orchestration follows: `run`, `rev`, `bench`, `bench-051`, `css2015-run`, `demo-051`,
+  `clocklog`, `package-051`, `css2015-table` and `css2015-frames` (were the matching
   `scripts/*.sh`). `--dry-run` prints the exact commands. A run that fails still ends
   `FAILED <run>: <why>` with exit 1, and a matrix with a failed run ends `BENCH_FAILED`.
   They need `--i-have-an-antenna`, `--transmit` and `--port` from you: no serial
   device is assumed, and the bench never adds either transmit flag itself. They are forwarded to the
   sender (and shown by `--dry-run`) only when you pass them, as bench options or among the sender
   arguments, and a real run without them stops before anything starts. The licence gate in
-  `moq-subghz-send` and `lora2015-send` still decides (docs/LICENSING.md). The Pi's per frame log
-  of a lora2015 run is checked too.
-* The ported scripts are deleted: `scripts/{run2,rev,bench,bench-051,demo-051,clocklog,lora2015-run,
-  lora2015-frames,lora2015-table,package-051}.sh`, `scripts/env.sh`, `scripts/analyze-051.py`,
-  `results/factory-firmware/tools/` and `firmware/catwan-fw/elf2uf2.py`. Docs point to
+  `moq-subghz-send` and `css2015-send` still decides (docs/LICENSING.md). The board's per frame log
+  of a css2015 run is checked too.
+* The ported scripts are deleted: `scripts/{run2,rev,bench,bench-051,demo-051,clocklog,css2015-run,
+  css2015-frames,css2015-table,package-051}.sh`, `scripts/env.sh`, `scripts/analyze-051.py`,
+  `results/factory-firmware/tools/` and `firmware/rp2040-sx1276-fw/elf2uf2.py`. Docs point to
   `moq-subghz-bench` (see its README for the flag that replaces each variable). `scripts/loss_sweep.py`
-  and `firmware/vendor/dragino-lora-gps-hat/fetch-and-build.sh` remain.
+  and `firmware/vendor/sx1276-gps-hat/fetch-and-build.sh` remain.
 
 * Bench hardening: `--pi` is checked (host name, `user@host`, IP literal; no leading `-`, white
-  space or shell characters), every ssh and scp has `-o BatchMode=yes --` before the host, the Pi's
+  space or shell characters), every ssh and scp has `-o BatchMode=yes --` before the host, the board's
   scratch files are in a `mktemp -d` directory, `--label` and run names are limited, and
   `factory-bench` refuses over 999 chunks or a packet over 255 bytes before transmitting.
   `clocklog --dry-run` no longer runs. `analyze` no longer panics on `nan`, `inf` or huge numbers
@@ -88,8 +121,8 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   rejects a bad `--seconds`, opens the stick read only and stops on a hung-up device. Every file
   the bench reads has a size cap. The licence loader uses `libc::O_NONBLOCK` (the crate now depends
   on `libc` on Unix). The UDP emulation receiver drops datagrams queued before its peer filter was
-  connected. The reverse run no longer deletes `/tmp/<run name>` on the Pi: it removes only its own
-  `mktemp -d` directory. `lora2015-run` resolves `--freq` and `--cr` once and gives them to the
+  connected. The reverse run no longer deletes `/tmp/<run name>` on the board: it removes only its own
+  `mktemp -d` directory. `css2015-run` resolves `--freq` and `--cr` once and gives them to the
   dry run, the sender, the logger and the replay, and prints them. A run that sent frames and
   received none (total loss) is now kept by `analyze` and `package-051` instead of dropped; only
   a run whose sender sent nothing is left out (the committed results have no such run, so their
@@ -124,8 +157,8 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Renamed
 
-* **The project is now moq-subghz** (it was moq-lora), and the repository moved to
-  `steelhead99x/moq-subghz`. The old address redirects. The video never went over LoRa
+* **The project is now moq-subghz** (it was moq-css), and the repository moved to
+  `steelhead99x/moq-subghz`. The old address redirects. The video never went over chirp spread spectrum (CSS) mode
   modulation, and the framing isn't tied to one radio chip.
 * The crates and tools follow: `moq-subghz-send`, `moq-subghz-recv`, `moq-subghz-wire`,
   `moq-subghz-pi`, `moq-subghz-report` and `moq-subghz-publish`. The default key file is
@@ -137,14 +170,14 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Changed
 
-* **The licence gate is now wired into `moq-subghz-send`, `moq-subghz-recv` and `lora2015-send`.**
+* **The licence gate is now wired into `moq-subghz-send`, `moq-subghz-recv` and `css2015-send`.**
   New flags `--licence-file`, `--rx-amateur`, `--transmit` and `--redact-licence`. Transmitting a
   real radio now also needs `--transmit` (default off) and a permit from the gate, in addition to
   `--i-have-an-antenna` and the existing band and power checks; scripts and HOWTO pass it.
   `moq-subghz-recv` gains `--amateur` (receive only). The gate takes the tuned frequency and signal
   width and looks the band up itself, so a signal that crosses a band edge is refused (a carrier
   at 902.0 MHz with a 500 kHz wide signal no longer passes). No tool sends station ID frames, so
-  amateur transmit is refused. The shipped CatWAN images are unchanged and still accept any
+  amateur transmit is refused. The shipped RP2040-based device images are unchanged and still accept any
   carrier and up to +17 dBm.
 * `moq-subghz-licence` API (breaking): `Permit` has private fields and accessors, only the gate
   builds one; `check_start` and `check_transmit` take a `Tuning` instead of a `Band`;
@@ -156,30 +189,30 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   capped read); names with bidirectional or invisible characters and the `YOUR` false positive are
   fixed; a relative `XDG_CONFIG_HOME` is ignored. `.gitignore` and the leak guard cover both
   `licence.toml` and `license.toml` and variants.
-* `lora2015-log` runs the receive gate before opening the stick (`--licence-file`, `--rx-amateur`, `--amateur`); an amateur profile needs licensed mode or `--rx-amateur`.
+* `css2015-log` runs the receive gate before opening the stick (`--licence-file`, `--rx-amateur`, `--amateur`); an amateur profile needs licensed mode or `--rx-amateur`.
 
 ### Fixed
 
 * **The emulated UDP link can name its peer.** `moq-subghz-send --emu-udp-from ADDR` fixes the
   datagrams' loopback source and `moq-subghz-recv --emu-udp-peer ADDR` accepts only that source;
   the default (any local process) and the loopback-only rule are unchanged.
-* **Link contract, uniformly.** `Link::idle` on the CatWAN and the SX1276 FSK backends returns the
+* **Link contract, uniformly.** `Link::idle` on the RP2040-based device and the SX1276 FSK backends returns the
   error when the radio cannot be stopped (it was printed or dropped). The real radios stop
-  themselves on `Drop` (best effort, never transmits, never panics). `CatwanTx::send` and
+  themselves on `Drop` (best effort, never transmits, never panics). `Rp2040Tx::send` and
   `FileSink::send` refuse empty and oversize packets like every other backend, through
   `moq_subghz_link::check_packet`, and `moq_subghz_link::conformance` runs the same checks against
-  the loopback, the emulation, the CatWAN stick (on a pty) and the file sink. `CatwanTx` reports
+  the loopback, the emulation, the RP2040-based device (on a pty) and the file sink. `Rp2040Tx` reports
   the computed airtime of each frame instead of 0. `Duration::MAX` no longer panics in the FSK
   `recv`. No wire or on-air change; the golden v5 test is unchanged for its six original rows.
 * **A failed send is no longer counted as sent** in `moq-subghz-send`: `frames_tx`, `bytes_tx`
   and `radio_busy_pct` count only what the link took.
-* **Models.** HaLow retries, overhead, MTU and timings are bounded and saturate (a huge
-  `--halow-retries` used to overflow or loop); `TxReport` gains `acked` next to `delivered`
-  (breaking for code that builds a `TxReport`); LoRa bandwidth and SF6 are checked against what
-  the SX1276 supports (new `--lora-implicit` selects the implicit header SF6 needs); the Gilbert-Elliott chain starts in its stationary distribution, so seeded
+* **Models.** 802.11ah sub-GHz Wi-Fi retries, overhead, MTU and timings are bounded and saturate (a huge
+  `--s1g-retries` used to overflow or loop); `TxReport` gains `acked` next to `delivered`
+  (breaking for code that builds a `TxReport`); CSS mode bandwidth and SF6 are checked against what
+  the SX1276 supports (new `--css-implicit` selects the implicit header SF6 needs); the Gilbert-Elliott chain starts in its stationary distribution, so seeded
   GE results differ from earlier runs (MODELED only). In-memory links are bounded.
 * **`R` lines have one parser.** `moq_subghz_wire::parse_r_line` is strict (every field, no extra
-  token) and `lora2015` uses it, so the receiver and the logger accept the same lines. A `--paced`
+  token) and `css2015` uses it, so the receiver and the logger accept the same lines. A `--paced`
   replay waits at most 2 s between lines.
 * **Golden v5 test** covers every FEC k from 0 to 15, sealed and unsealed, `min_frame` padding and
   the sequence wrap, and a receive-side test with and without a loss per FEC block.
@@ -192,52 +225,52 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * **Relay tokens stay off command lines.** `moq-subghz-recv --publish` with no URL reads
   `MOQ_SUBGHZ_RELAY`, passes the URL to the publisher in its environment, and refuses a URL with
   a query string on the command line.
-* **`catwan-fw` enforces the band and power limits and never drops a queued frame.** Source
+* **`rp2040-sx1276-fw` enforces the band and power limits and never drops a queued frame.** Source
   only: the shipped images predate it (see REVIEW.md).
 * **`sx1276` long-FSK receive can't return a stale or spliced packet.** New
   `FskConfig::crc_auto_clear`, off in the long-mode readers. Needs a radio test.
-* **LoRa logger:** images keyed by SSDV callsign and id, SSDV completion checks every index,
+* **CSS mode logger:** images keyed by SSDV callsign and id, SSDV completion checks every index,
   conflicting pieces start a new image, exact loss is per run (`run.csv`), and output files of a
-  reused id no longer overwrite each other. `lora2015-send` refuses a bad `--duty-pct`.
+  reused id no longer overwrite each other. `css2015-send` refuses a bad `--duty-pct`.
 * **Bench scripts fail a run when either end fails**, instead of printing DONE.
 * **The factory comparison uses one timing window** for both stacks: about 8 times, not 9.
 
-* **`catwan-fw` 0.5.1: the radio answers `I` right after power-up.** The firmware left the SX1276
+* **`rp2040-sx1276-fw` 0.5.1: the radio answers `I` right after power-up.** The firmware left the SX1276
   RESET line low (the chip held in reset) until the first `L` or `F` command, so an `I` sent
   first read `sx_version=0x00` and looked like a dead radio. The radio is not dead. 0.5.1 pulses
   RESET at boot and retries until `RegVersion` reads 0x12, retries once more inside `L` and `F`
   if the version check fails, and adds `X` to re-initialise the radio on demand
   (`X sx_version=0x12 tries=1`). Radio settings, framing and pacing are unchanged.
-  New image `firmware/catwan-fw-0.5.1.uf2` (sha256 in `firmware/SHA256SUMS`). The measured runs
-  used `catwan-fw-v5.uf2` (0.5.0), which stays in the repo.
+  New image `firmware/rp2040-sx1276-fw-0.5.1.uf2` (sha256 in `firmware/SHA256SUMS`). The measured runs
+  used `rp2040-sx1276-fw-v5.uf2` (0.5.0), which stays in the repo.
 
 ### Added
 
-* **`moq-subghz-radio-emu`: modeled links behind `Link`**: SX1276 FSK, SX1276 LoRa and an 802.11ah
-  (HaLow) channel as seeded, virtual-time models, with in-memory, loopback UDP and `R`-file
-  transports. `moq-subghz-send` and `moq-subghz-recv` gain `--link fsk-emu|lora-emu|halow-emu`,
-  `--emu-udp` and the `--halow-*`, `--lora-*`, `--fsk-*`, `--emu-loss`, `--emu-seed` flags; the
+* **`moq-subghz-radio-emu`: modeled links behind `Link`**: SX1276 FSK, SX1276 CSS mode and an 802.11ah
+  (802.11ah) channel as seeded, virtual-time models, with in-memory, loopback UDP and `R`-file
+  transports. `moq-subghz-send` and `moq-subghz-recv` gain `--link fsk-emu|css-emu|s1g-emu`,
+  `--emu-udp` and the `--s1g-*`, `--css-*`, `--fsk-*`, `--emu-loss`, `--emu-seed` flags; the
   sender packs whole wire frames into one packet when the link allows it. `moq-subghz-chan` pushes
   a recording through a model offline. Everything it reports is MODELED (`"provenance":"modeled"`),
   never measured. `--link fsk` stays the default and the bytes on the air are unchanged. See
-  `docs/HALOW.md`.
+  `docs/S1G-EMULATION.md`.
 * `moq-subghz-wire/tests/golden_v5.rs`: SHA-256 of the exact frame stream (k = 0, 4, 8, sealed and
   unsealed) for a fixed set of synthetic objects. It fails if a byte on the air changes.
 * `RLine` (a parsed `R` line) keeps the line's `t_us` and `snr`, which `parse_r_line` used to drop.
 
-* `results/stick-0.5.1/`: the full over-the-air benchmark on `catwan-fw` 0.5.1. 72 still-picture runs
-  (chunked JPEG, SSDV, LoRaWAN-framed at SF7/125, SF7/250, SF7/500, SF8/500) and 8 live FSK video runs,
+* `results/stick-0.5.1/`: the full over-the-air benchmark on `rp2040-sx1276-fw` 0.5.1. 72 still-picture runs
+  (chunked JPEG, SSDV, framed at SF7/125, SF7/250, SF7/500, SF8/500) and 8 live FSK video runs,
   next to the factory baseline, plus a 6 minute demo (`scripts/demo-051.sh`). `scripts/run2.sh` now works
   without extra sender arguments and without ffplay (`PLAY=`).
 
-* `results/factory-firmware/`: still pictures over LoRa with factory software at both ends
-  (Dragino's sample app, Electronic Cats' stock receiver), measured. Vendor images and fetch
+* `results/factory-firmware/`: still pictures over CSS mode with factory software at both ends
+  (the HAT maker's sample app, the board maker' stock receiver), measured. Vendor images and fetch
   scripts are in `firmware/vendor/`.
 
-* **`moq-subghz-lora2015`: a 2015-style LoRa image test**, in `results/lora-2015/`. A Pi sender
-  (`lora2015-send`) sends a test picture in real LoRa mode as chunked JPEG, SSDV packets or
-  LoRaWAN-framed uplinks (no network behind them), and a host logger (`lora2015-log`) reads it on the
-  CatWAN stick and writes CSV. Built and tested without radios; the airtime table is calculated,
+* **`moq-subghz-css2015`: a 2015-style CSS mode image test**, in `results/css-2015/`. An ARM single-board computer sender
+  (`css2015-send`) sends a test picture in real CSS mode as chunked JPEG, SSDV packets or
+  framed uplinks (no network behind them), and a host logger (`css2015-log`) reads it on the
+  RP2040-based device and writes CSV. Built and tested without radios; the airtime table is calculated,
   not measured. The FSK path and the existing tools are unchanged.
   `moq-subghz-pi` gains `open_hat_raw`, the part of `open_hat` that opens spidev and GPIO.
 
@@ -246,13 +279,13 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Link trait for the SX1276 code
 
-* **The SX1276 FSK and LoRa-mode code and the CatWAN writer now sit behind `moq_subghz_link::Link`**, in the new
-  `radios/moq-subghz-radio-sx1276` crate: `Sx1276FskTx` and `Sx1276FskRx` (the Pi HAT, from the two `radio.rs`
-  files), `Sx1276LoraTx` (from `lora2015-send`), `CatwanTx` (the `Q <hex>` writer from `moq-subghz-send`) and
+* **The SX1276 FSK and CSS-mode code and the RP2040-based device writer now sit behind `moq_subghz_link::Link`**, in the new
+  `radios/moq-subghz-radio-sx1276` crate: `Sx1276FskTx` and `Sx1276FskRx` (the board HAT, from the two `radio.rs`
+  files), `Sx1276CssTx` (from `css2015-send`), `Rp2040Tx` (the `Q <hex>` writer from `moq-subghz-send`) and
   `FileSink` (`--loopback`). The code was moved, not rewritten; frames, FEC, pacing, power and band checks and
   the summary fields are unchanged. `moq-subghz-send` holds a `Box<dyn Link>` instead of its own `enum Link`.
-* `moq-subghz-send --link fsk` is the default and is the only value (`--catwan` and `--loopback` still pick the stick
-  and the file). The receiver's CatWAN and replay sources still read the stick's text lines (they feed `serial.log`
+* `moq-subghz-send --link fsk` is the default and is the only value (`--rp2040` and `--loopback` still pick the stick
+  and the file). The receiver's RP2040-based device and replay sources still read the stick's text lines (they feed `serial.log`
   and the `X` line count), so only its `--radio` path goes through `Link`.
 * `Link::idle` returns a `Result` and `Link::take_tx_errors` is new (the stick reports `ERR tx` after `send`
   returned); both have defaults. `LinkError::Io` prints its message as is.
@@ -273,7 +306,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * **Breaking: frame format version 5.** The key-derivation label (the HKDF info string) is now
   `moq-subghz object key v2`, and the frame header version went from 4 to 5. A sender and
   receiver built before and after this change refuse each other's frames, and encrypted output
-  recorded before it can't be opened. Update the Pi and the laptop together. The pre-shared key
+  recorded before it can't be opened. Update the board and the laptop together. The pre-shared key
   still works once the file is named `moq-subghz-key.hex`.
 
 ### Receiver
@@ -291,7 +324,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * New `moq-subghz-publish` crate: republishes the received groups and objects 1:1 as a real MoQ
   broadcast (hang format) through moq.dev's `moq-net`, `moq-tokio` and `hang` crates, so a
   moq.dev relay or moq.pro can fan it out and the moq.dev web player can show it. Separate
-  crate (Rust 1.91+), so the Pi binaries are unchanged. See [docs/MOQ.md](docs/MOQ.md).
+  crate (Rust 1.91+), so the board binaries are unchanged. See [docs/MOQ.md](docs/MOQ.md).
 * `moq-subghz-recv --publish URL` feeds it the objects that pass the group gate.
   `summary.json` gains `publish_dropped_objects`.
 
@@ -301,7 +334,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   its video source stalls.
 * Key files must be readable only by their owner.
 * The bench scripts quote key paths and pass the receiver's key separately.
-* The Pi radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
+* The board radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
 * Two committed `.pyc` files are removed, `.gitignore` covers Python bytecode, and CI fails if one is committed again.
 
 ### Results
@@ -315,5 +348,5 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ## Bench release, 2026-11-17
 
-The first working version: live H.264 over SX1276 FSK from a Raspberry Pi 2 to a CatWAN USB
+The first working version: live H.264 over SX1276 FSK from a ARM single-board computer to an RP2040-based device USB
 stick, with optional encryption, and the eight measured runs in `results/video/`.

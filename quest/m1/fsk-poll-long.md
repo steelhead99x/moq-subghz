@@ -1,4 +1,4 @@
-# [M] Pi receive driver never returns a spliced packet
+# [M] board receive driver never returns a spliced packet
 
 ## Goal
 

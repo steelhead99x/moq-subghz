@@ -1,9 +1,9 @@
 picture,stack,runs,all_complete,pass1_loss_pct_mean,packets_per_picture,seconds_to_picture_mean,seconds_min,seconds_max,goodput_bit_s_mean,rssi_mean_dbm,snr_mean_db,factory_end_to_end_s_mean
-small,factory (Dragino app + stock stick),3,True,5.0,20,30.24,25.59,33.16,628.81,-36.17,,34.83
+small,factory (vendor app + stock receiver),3,True,5.0,20,30.24,25.59,33.16,628.81,-36.17,,34.83
 small,moq-subghz 0.5.1 chunk,3,True,0.0,10,3.73,3.732,3.733,5028.67,-24.47,9.82,
-small,moq-subghz 0.5.1 lorawan,3,True,0.0,10,3.92,3.922,3.922,4785.0,-24.51,9.8,
+small,moq-subghz 0.5.1 framed,3,True,0.0,10,3.92,3.922,3.922,4785.0,-24.51,9.8,
 small,moq-subghz 0.5.1 ssdv,3,True,3.03,11,5.14,4.405,6.607,4998.33,-24.74,9.73,
-large,factory (Dragino app + stock stick),3,True,9.26,72,114.39,108.06,122.81,604.46,-37.0,,118.85
+large,factory (vendor app + stock receiver),3,True,9.26,72,114.39,108.06,122.81,604.46,-37.0,,118.85
 large,moq-subghz 0.5.1 chunk,3,True,0.0,35,13.67,13.668,13.674,5043.33,-24.35,9.85,
-large,moq-subghz 0.5.1 lorawan,3,True,0.0,36,14.39,14.385,14.387,4792.33,-24.63,9.77,
+large,moq-subghz 0.5.1 framed,3,True,0.0,36,14.39,14.385,14.387,4792.33,-24.63,9.77,
 large,moq-subghz 0.5.1 ssdv,3,True,0.0,35,14.02,14.016,14.016,5070.0,-24.56,9.81,

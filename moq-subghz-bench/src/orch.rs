@@ -1,4 +1,4 @@
-//! `run`, `rev` and `lora2015-run`: one over-the-air run each. They start the project's own binaries and ssh,
+//! `run`, `rev` and `css2015-run`: one over-the-air run each. They start the project's own binaries and ssh,
 //! then check every artifact: a run counts only when the sender, the receiver or logger and the
 //! log copy all succeeded and left their summaries. Any failure is `FAILED <run>: <why>`, exit 1.
 //!
@@ -6,7 +6,7 @@
 //! as per docs/LICENSING.md, which the sender checks). Neither flag is ever added for the user:
 //! they are forwarded only when given here, or among the sender arguments after the profile.
 //! The transmit check runs first, before anything is written or started. Every program is given
-//! `--licence-file` or `--no-licence` (see `licence.rs`) so a licence file on the Pi cannot pick
+//! `--licence-file` or `--no-licence` (see `licence.rs`) so a licence file on the board cannot pick
 //! the mode unseen. Nothing opens a serial port here: the project's receiver and logger do, on
 //! the `--port` the user gives. (`factory-send` and `factory-bench` are in `factory.rs`, with
 //! their own gate.)
@@ -23,10 +23,10 @@ use std::time::Duration;
 /// Where things are: the ssh host, the binaries, the runs directory, the serial device.
 #[derive(Args, Clone, Debug)]
 pub struct Env {
-    /// ssh host of the Pi
+    /// ssh host of the board
     #[arg(long, env = "PI", default_value = "pi")]
     pub pi: String,
-    /// Directory on the Pi (under its home) that holds moq-subghz-send and moq-subghz-recv
+    /// Directory on the board (under its home) that holds moq-subghz-send and moq-subghz-recv
     #[arg(long, env = "PI_DIR", default_value = "moq-subghz")]
     pub pi_dir: String,
     /// Directory of the built binaries (default: the directory of this one)
@@ -35,7 +35,7 @@ pub struct Env {
     /// Where the runs are written
     #[arg(long, env = "RUNS", default_value = "runs")]
     pub runs: PathBuf,
-    /// Serial device of the CatWAN stick. No default: it is opened by the receiver, logger or sender
+    /// Serial device of the RP2040-based device. No default: it is opened by the receiver, logger or sender
     #[arg(long, env = "PORT")]
     pub port: Option<PathBuf>,
     /// Root of this repository, for the test pictures
@@ -89,7 +89,7 @@ impl Env {
                 .repo_root
                 .canonicalize()
                 .unwrap_or_else(|_| self.repo_root.clone())
-                .join("results/lora-2015/frames"),
+                .join("results/css-2015/frames"),
             antenna: self.i_have_an_antenna,
             transmit: self.transmit,
             lic: self.licence.resolve(),
@@ -160,7 +160,7 @@ impl Cfg {
         v
     }
 
-    /// Everything the bench adds to a program that runs on the Pi: the transmit flags the user
+    /// Everything the bench adds to a program that runs on the board: the transmit flags the user
     /// gave and the licence mode.
     fn pi_send_flags(&self, args: &[String]) -> Vec<String> {
         let mut v = self.tx_flags(args);
@@ -281,7 +281,7 @@ pub fn valid_name(n: &str) -> Result<()> {
     Ok(())
 }
 
-/// The Pi minus laptop clock offset from `moq-subghz-recv --clock-check`, as the text it printed
+/// The board minus laptop clock offset from `moq-subghz-recv --clock-check`, as the text it printed
 /// (kept as is, for the run's files) and as a number. Anything but a plain decimal is an error.
 pub fn parse_offset(line: &str) -> Result<(String, f64)> {
     const KEY: &str = "remote_minus_local_ms\":";
@@ -340,7 +340,7 @@ pub struct Run<'a> {
     pub args: &'a [String],
 }
 
-/// A private scratch directory on the Pi (`mktemp -d`: mode 0700, a name nobody can predict), for
+/// A private scratch directory on the board (`mktemp -d`: mode 0700, a name nobody can predict), for
 /// this run's files. The caller removes it, and only it, when the run is done. A dry run prints the
 /// command and uses a placeholder.
 pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
@@ -358,7 +358,7 @@ pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
     Ok(p.to_string())
 }
 
-/// Refuse a scratch directory name the Pi made unless it is ours: under `/tmp/moq-bench.`, plain
+/// Refuse a scratch directory name the board made unless it is ours: under `/tmp/moq-bench.`, plain
 /// characters only. Every `rm -rf` of a scratch directory is of a name that passed this.
 pub fn valid_scratch(p: &str) -> Result<()> {
     ensure!(
@@ -367,7 +367,7 @@ pub fn valid_scratch(p: &str) -> Result<()> {
             && !p.contains("..")
             && p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)),
-        "the Pi gave an odd scratch directory name: {p:?}"
+        "the board gave an odd scratch directory name: {p:?}"
     );
     Ok(())
 }
@@ -376,7 +376,7 @@ fn words(s: &str) -> Vec<String> {
     s.split_whitespace().map(String::from).collect()
 }
 
-/// The remote command that runs the Pi's sender, keeping its output in a file so ssh exits with
+/// The remote command that runs the board's sender, keeping its output in a file so ssh exits with
 /// the sender's own status.
 pub fn pi_send_script(pi_dir: &str, tmp: &str, r: &Run, flags: &[String]) -> String {
     let so = shq(&format!("{tmp}/send.out"));
@@ -394,7 +394,7 @@ pub fn pi_send_script(pi_dir: &str, tmp: &str, r: &Run, flags: &[String]) -> Str
     )
 }
 
-/// Pi to laptop: the receiver here, the sender on the Pi.
+/// board to laptop: the receiver here, the sender on the board.
 pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -512,7 +512,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
 }
 
 /// Undoes a reverse run's remote side on every way out: kills the local ssh that carries the
-/// receiver and removes this run's scratch directory on the Pi, that exact directory only.
+/// receiver and removes this run's scratch directory on the board, that exact directory only.
 struct Cleanup<'a> {
     h: &'a mut dyn Host,
     c: &'a Cfg,
@@ -574,7 +574,7 @@ exit 0"#
         .replace("@DIR@", &shq(dir))
 }
 
-/// Run [`stop_script`] on the Pi. `None` means the receiver is confirmed stopped. Otherwise the
+/// Run [`stop_script`] on the board. `None` means the receiver is confirmed stopped. Otherwise the
 /// text is the loud warning naming the scratch directory, which the caller then keeps.
 fn stop_receiver(h: &mut dyn Host, c: &Cfg, dir: &str) -> Option<String> {
     let why = match h.run(&c.ssh(stop_script(dir))) {
@@ -592,8 +592,8 @@ fn stop_receiver(h: &mut dyn Host, c: &Cfg, dir: &str) -> Option<String> {
     ))
 }
 
-/// Why the Pi's copy of the per frame log must be kept: the transfer failed, or the local copy is
-/// not the size of the remote one (`remote_wc` is the Pi's `wc -c` output). `None`: safe to remove.
+/// Why the board's copy of the per frame log must be kept: the transfer failed, or the local copy is
+/// not the size of the remote one (`remote_wc` is the board's `wc -c` output). `None`: safe to remove.
 fn keep_reason(scp_st: i32, wc_st: i32, remote_wc: &str, local: Option<u64>) -> Option<String> {
     if scp_st != 0 {
         return Some(format!("the copy exited {scp_st}"));
@@ -603,12 +603,12 @@ fn keep_reason(scp_st: i32, wc_st: i32, remote_wc: &str, local: Option<u64>) -> 
         .flatten();
     match (remote, local) {
         (Some(r), Some(l)) if r == l => None,
-        (Some(r), Some(l)) => Some(format!("the Pi's file is {r} bytes but the copy is {l}")),
-        _ => Some("the size of the Pi's file or of the copy could not be read".into()),
+        (Some(r), Some(l)) => Some(format!("the board's file is {r} bytes but the copy is {l}")),
+        _ => Some("the size of the board's file or of the copy could not be read".into()),
     }
 }
 
-/// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here.
+/// Laptop to RP2040-based device to board: the receiver on the board, the sender here.
 pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     // Every local prerequisite is checked here, before the first remote command.
@@ -625,7 +625,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     if !g.h.dry() {
         write(&c.run_file(n, ".clock_start"), &format!("{x}\n"))?;
     }
-    // Capture clock (laptop) minus receive clock (Pi), printed like Python's repr of a float.
+    // Capture clock (laptop) minus receive clock (board), printed like Python's repr of a float.
     let off = format!("{:?}", -xf);
     let scratch = pi_scratch(&mut *g.h, c)?;
     g.scratch = Some(scratch.clone());
@@ -656,7 +656,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     g.rx = Some(rx);
     g.h.sleep(Duration::from_secs(4));
     let mut a = vec![
-        "--catwan".to_string(),
+        "--rp2040".to_string(),
         port,
         "--profile".into(),
         r.profile.into(),
@@ -678,14 +678,14 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let recv_st = g.h.wait(rx)?; // ssh exits with the remote receiver's status
     if recv_st != 0 {
         // A dropped ssh also lands here, with the receiver possibly still running: confirm it
-        // stopped on the Pi before anything is copied or removed.
+        // stopped on the board before anything is copied or removed.
         if let Some(warning) = stop_receiver(&mut *g.h, c, &scratch) {
             g.scratch = None; // kept, and already warned about
             eprintln!("{warning}");
             bail!("FAILED {n}: the receiver's exit was not confirmed (ssh exited {recv_st}); nothing was copied or removed");
         }
     }
-    // The receiver is confirmed gone. scp's glob is expanded on the Pi; the Pi's copy is removed
+    // The receiver is confirmed gone. scp's glob is expanded on the board; the board's copy is removed
     // only after a good copy, and a failed copy keeps it, so from here the guard leaves it alone.
     g.scratch = None;
     let mut copy_st =
@@ -733,7 +733,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         ));
     }
     if copy_st != 0 {
-        return fail("copying the receiver's files from the Pi failed".into());
+        return fail("copying the receiver's files from the board failed".into());
     }
     if fs::metadata(&dj).map_or(true, |m| m.len() == 0) {
         return fail("no sender log".into());
@@ -751,11 +751,11 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     Ok(())
 }
 
-/// One lora2015 picture run.
-pub struct Lora<'a> {
+/// One css2015 picture run.
+pub struct Css<'a> {
     pub name: &'a str,
     pub mode: &'a str,
-    /// A file name under `results/lora-2015/frames/`
+    /// A file name under `results/css-2015/frames/`
     pub file: &'a str,
     pub profile: &'a str,
     pub passes: u32,
@@ -853,8 +853,8 @@ fn after_digits(text: &str, key: &str, dot: bool) -> Option<String> {
     })
 }
 
-/// Logger here, sender on the Pi, then the exact loss from a replay.
-pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
+/// Logger here, sender on the board, then the exact loss from a replay.
+pub fn css(h: &mut dyn Host, c: &Cfg, r: &Css) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
@@ -877,7 +877,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         }
     );
     let dry = Plan::new(
-        c.bin("lora2015-send"),
+        c.bin("css2015-send"),
         [
             "--mode",
             r.mode,
@@ -930,7 +930,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     a.extend(reference.iter().cloned());
     a.extend(c.lic_flags(Side::Local, &[]));
     let lg = g.h.start(
-        &Plan::new(c.bin("lora2015-log"), a)
+        &Plan::new(c.bin("css2015-log"), a)
             .out(c.run_file(n, ".log.out"))
             .err_to_out(),
     )?;
@@ -945,7 +945,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         .map(|a| format!("{} ", shq(a)))
         .collect();
     let script = format!(
-        "cd ~/lora2015 && ./lora2015-send --mode {} --file frames/{} --profile {} --power 5 --passes {} --tx-log {} {args}> {so} 2>&1; st=$?; tail -n 3 {so}; rm -f {so}; exit $st",
+        "cd ~/css2015 && ./css2015-send --mode {} --file frames/{} --profile {} --power 5 --passes {} --tx-log {} {args}> {so} 2>&1; st=$?; tail -n 3 {so}; rm -f {so}; exit $st",
         shq(r.mode),
         shq(r.file),
         shq(r.profile),
@@ -961,7 +961,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
             c.run_file(n, ".tx.csv").display().to_string(),
         ))?
         .code;
-    // The Pi's copy is the only one until the local copy is known good: remove it only then.
+    // The board's copy is the only one until the local copy is known good: remove it only then.
     let remote_tx = format!("{scratch}/tx.csv");
     let keep = if g.h.dry() {
         None
@@ -975,7 +975,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
             g.h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?;
         }
         Some(why) => eprintln!(
-            "WARNING: the per frame log was NOT removed from the Pi: {why}. It is at {}:{remote_tx} (scratch directory {scratch}); copy it by hand.",
+            "WARNING: the per frame log was NOT removed from the board: {why}. It is at {}:{remote_tx} (scratch directory {scratch}); copy it by hand.",
             c.pi
         ),
     }
@@ -1004,7 +1004,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         a.extend(c.lic_flags(Side::Local, &[]));
         exact_st =
             g.h.run(
-                &Plan::new(c.bin("lora2015-log"), a)
+                &Plan::new(c.bin("css2015-log"), a)
                     .out(c.run_file(n, ".exact.out"))
                     .err_to_out(),
             )?
@@ -1036,12 +1036,12 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     };
     if let Some(why) = keep {
         return fail(format!(
-            "no per frame log (tx.csv) copied from the Pi ({why}); it is kept at {}:{remote_tx}",
+            "no per frame log (tx.csv) copied from the board ({why}); it is kept at {}:{remote_tx}",
             c.pi
         ));
     }
     if fs::metadata(c.run_file(n, ".tx.csv")).map_or(true, |m| m.len() == 0) {
-        return fail("no per frame log (tx.csv) copied from the Pi".into());
+        return fail("no per frame log (tx.csv) copied from the board".into());
     }
     if exact_st != 0 || fs::metadata(rdir.join("exact/images.csv")).map_or(true, |m| m.len() == 0) {
         return fail(format!(
@@ -1346,7 +1346,7 @@ mod tests {
             .to_string()
             .contains("--i-have-an-antenna"));
         assert!(reverse(&mut f, &c, &run("t", &[])).is_err());
-        let l = Lora {
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "a.jpg",
@@ -1354,7 +1354,7 @@ mod tests {
             passes: 1,
             args: &[],
         };
-        assert!(lora(&mut f, &c, &l).is_err());
+        assert!(css(&mut f, &c, &l).is_err());
         assert!(f.log.is_empty());
         for bad in ["", "../x", "-x", "a b", "a;b", ".h"] {
             assert!(
@@ -1377,7 +1377,7 @@ mod tests {
         ] {
             assert!(e.to_string().contains("without --transmit"), "{e}");
         }
-        let l = Lora {
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "a.jpg",
@@ -1385,7 +1385,7 @@ mod tests {
             passes: 1,
             args: &[],
         };
-        assert!(lora(&mut f, &c, &l).is_err());
+        assert!(css(&mut f, &c, &l).is_err());
         assert!(f.log.is_empty());
         // Given among the sender arguments instead, it passes the gate (once, not doubled).
         let a = vec!["--transmit".to_string()];
@@ -1455,13 +1455,13 @@ mod tests {
         let d = Scratch::new("revclean");
         let mut f = Fake::default();
         f.rule("--clock-check", 0, CLOCK, vec![]);
-        f.cannot_start.push("moq-subghz-send --catwan");
+        f.cannot_start.push("moq-subghz-send --rp2040");
         let e = reverse(&mut f, &cfg(&d.0), &run("t", &[]))
             .unwrap_err()
             .to_string();
         assert!(e.contains("could not start"), "{e}");
         let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
-        // the local ssh is killed, the Pi confirms the receiver stopped, and only then the rm
+        // the local ssh is killed, the board confirms the receiver stopped, and only then the rm
         let (kill, stop, rm) = (at("kill job 0"), at("signal TERM"), at("rm -rf /tmp"));
         assert!(kill < stop && stop < rm, "{:?}", f.log);
         assert_eq!(
@@ -1494,7 +1494,7 @@ mod tests {
         let mut f = Fake::default();
         f.rule("--clock-check", 0, CLOCK, vec![]);
         f.rule("signal TERM", 3, "", vec![]);
-        f.cannot_start.push("moq-subghz-send --catwan");
+        f.cannot_start.push("moq-subghz-send --rp2040");
         assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
         assert!(!f.log.iter().any(|l| l.contains("rm -rf")), "{:?}", f.log);
     }
@@ -1508,7 +1508,7 @@ mod tests {
             // the ssh that carries the receiver drops: exit 255; the copy would succeed
             f.rule("moq-subghz-recv --radio", 255, "", vec![]);
             f.rule(
-                "moq-subghz-send --catwan",
+                "moq-subghz-send --rp2040",
                 0,
                 "{\"role\":\"send\"}\n",
                 vec![(d.0.join("t.send.jsonl"), "x\n")],
@@ -1559,7 +1559,7 @@ mod tests {
     }
 
     fn orphan(cmd: &str) -> i32 {
-        // started through a shell that exits, so init owns it and reaps it, as on the Pi
+        // started through a shell that exits, so init owns it and reaps it, as on the board
         let o = std::process::Command::new("sh")
             .arg("-c")
             .arg(format!("{cmd} >/dev/null 2>&1 </dev/null & echo $!"))
@@ -1695,18 +1695,18 @@ mod tests {
     }
 
     #[test]
-    fn forward_and_lora_kill_and_reap_the_capture_when_a_later_step_fails() {
+    fn forward_and_css_kill_and_reap_the_capture_when_a_later_step_fails() {
         let d = Scratch::new("capfail");
-        // forward: the Pi sender cannot be started after the receiver here began
+        // forward: the board sender cannot be started after the receiver here began
         let mut f = Fake::default();
         good_forward(&mut f, &d.0);
         f.cannot_start.push("moq-subghz-send --profile");
         assert!(forward(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
         assert!(f.log.iter().any(|l| l == "kill job 0"), "{:?}", f.log);
-        // lora: the Pi scratch directory cannot be made after the logger began
-        let mut f = lora_job(&d.0);
+        // css: the board scratch directory cannot be made after the logger began
+        let mut f = css_job(&d.0);
         f.cannot_start.push("mktemp");
-        let l = Lora {
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "f.jpg",
@@ -1714,7 +1714,7 @@ mod tests {
             passes: 1,
             args: &[],
         };
-        assert!(lora(&mut f, &cfg(&d.0), &l).is_err());
+        assert!(css(&mut f, &cfg(&d.0), &l).is_err());
         assert!(f.log.iter().any(|l| l == "kill job 0"), "{:?}", f.log);
     }
 
@@ -1725,7 +1725,7 @@ mod tests {
         f.rule("--clock-check", 0, CLOCK, vec![]);
         f.rule("moq-subghz-recv --radio", 0, "", vec![]);
         f.rule(
-            "moq-subghz-send --catwan",
+            "moq-subghz-send --rp2040",
             0,
             "{\"role\":\"send\"}\n",
             vec![(d.0.join("t.send.jsonl"), "{\"seq\":1}\n")],
@@ -1749,7 +1749,7 @@ mod tests {
         );
         assert_eq!(f.slept, [Duration::from_secs(4)]);
         assert!(f.log[3].starts_with(&format!(
-            "bin/moq-subghz-send --catwan {}/ttyTEST --profile 300000:100000:6 --secs 330 --log",
+            "bin/moq-subghz-send --rp2040 {}/ttyTEST --profile 300000:100000:6 --secs 330 --log",
             d.0.display()
         )));
         assert!(f.log[3]
@@ -1771,7 +1771,7 @@ mod tests {
         let mut f = Fake::default();
         f.rule("--clock-check", 0, CLOCK, vec![]);
         f.rule(
-            "moq-subghz-send --catwan",
+            "moq-subghz-send --rp2040",
             0,
             "{\"role\":\"send\"}\n",
             vec![(d.0.join("t.send.jsonl"), "x\n")],
@@ -1782,7 +1782,7 @@ mod tests {
             .to_string();
         assert_eq!(
             e,
-            "FAILED t: copying the receiver's files from the Pi failed"
+            "FAILED t: copying the receiver's files from the board failed"
         );
         assert!(!f
             .log
@@ -1790,7 +1790,7 @@ mod tests {
             .any(|l| l == "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'"));
     }
 
-    fn lora_job(d: &Path) -> Fake {
+    fn css_job(d: &Path) -> Fake {
         let mut f = Fake::default();
         f.rule(
             "--dry-run",
@@ -1799,13 +1799,13 @@ mod tests {
             vec![],
         );
         f.rule(
-            "lora2015-log --port",
+            "css2015-log --port",
             0,
             "",
             vec![(d.join("t/raw.log"), "raw")],
         );
         f.rule(
-            "lora2015-send --mode",
+            "css2015-send --mode",
             0,
             "sent frames=105 bytes=26064 wall_s=43.017\n",
             vec![],
@@ -1817,16 +1817,16 @@ mod tests {
             "",
             vec![(d.join("t/exact/images.csv"), "image\n0\n")],
         );
-        // the Pi's `wc -c` of tx.csv: the 8 bytes the copy rule writes
+        // the board's `wc -c` of tx.csv: the 8 bytes the copy rule writes
         f.rule("wc -c", 0, "8\n", vec![]);
         f
     }
 
     #[test]
-    fn lora_run_listens_for_the_passes_and_replays_with_the_sent_count() {
-        let d = Scratch::new("lora");
-        let mut f = lora_job(&d.0);
-        let l = Lora {
+    fn css_run_listens_for_the_passes_and_replays_with_the_sent_count() {
+        let d = Scratch::new("css");
+        let mut f = css_job(&d.0);
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "f.jpg",
@@ -1834,7 +1834,7 @@ mod tests {
             passes: 3,
             args: &["--dr".to_string(), "dr3".into()],
         };
-        lora(&mut f, &cfg(&d.0), &l).unwrap();
+        css(&mut f, &cfg(&d.0), &l).unwrap();
         assert!(
             f.log[1].contains("--secs 59 ") && f.log[1].contains("--reference frames/f.jpg"),
             "{}",
@@ -1852,10 +1852,10 @@ mod tests {
 
     #[test]
     fn the_logger_window_follows_the_senders_pass_gap() {
-        let d = Scratch::new("lorawin");
-        let mut f = lora_job(&d.0);
+        let d = Scratch::new("csswin");
+        let mut f = css_job(&d.0);
         let args: Vec<String> = ["--pass-gap-ms", "60000"].map(String::from).into();
-        let l = Lora {
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "f.jpg",
@@ -1863,7 +1863,7 @@ mod tests {
             passes: 2,
             args: &args,
         };
-        lora(&mut f, &cfg(&d.0), &l).unwrap();
+        css(&mut f, &cfg(&d.0), &l).unwrap();
         // 2 x 14 s of passes + one 60 s gap + 15 s margin: both passes are inside the window
         assert!(f.log[1].contains("--secs 103 "), "{}", f.log[1]);
         assert_eq!(log_secs(14.0, 2, 60.0), 103);
@@ -1877,8 +1877,8 @@ mod tests {
 
     #[test]
     fn the_pi_copy_of_the_log_is_removed_only_after_a_good_transfer() {
-        let lora_with = |f: &mut Fake, d: &Path| {
-            let l = Lora {
+        let css_with = |f: &mut Fake, d: &Path| {
+            let l = Css {
                 name: "t",
                 mode: "chunk",
                 file: "f.jpg",
@@ -1886,24 +1886,24 @@ mod tests {
                 passes: 1,
                 args: &[],
             };
-            lora(f, &cfg(d), &l)
+            css(f, &cfg(d), &l)
         };
         let removed = |f: &Fake| f.log.iter().any(|l| l.contains("rm -rf /tmp/moq-bench.T"));
         // the transfer fails: the remote file stays, and the error names where it is
         let d = Scratch::new("txfail");
-        let mut f = lora_job(&d.0);
+        let mut f = css_job(&d.0);
         f.rules[3].code = 1;
-        let e = lora_with(&mut f, &d.0).unwrap_err().to_string();
+        let e = css_with(&mut f, &d.0).unwrap_err().to_string();
         assert!(
             e.contains("pi:/tmp/moq-bench.T/tx.csv") && e.contains("kept"),
             "{e}"
         );
         assert!(!removed(&f), "{:?}", f.log);
-        // the copy arrives but its size is not the Pi's
+        // the copy arrives but its size is not the board's
         let d = Scratch::new("txsize");
-        let mut f = lora_job(&d.0);
+        let mut f = css_job(&d.0);
         f.rules.last_mut().unwrap().stdout = "99\n".into();
-        let e = lora_with(&mut f, &d.0).unwrap_err().to_string();
+        let e = css_with(&mut f, &d.0).unwrap_err().to_string();
         assert!(
             e.contains("99 bytes") && e.contains("/tmp/moq-bench.T/tx.csv"),
             "{e}"
@@ -1911,8 +1911,8 @@ mod tests {
         assert!(!removed(&f));
         // a good copy of the same size: removed
         let d = Scratch::new("txok");
-        let mut f = lora_job(&d.0);
-        lora_with(&mut f, &d.0).unwrap();
+        let mut f = css_job(&d.0);
+        css_with(&mut f, &d.0).unwrap();
         assert!(removed(&f));
         assert_eq!(keep_reason(0, 0, "8\n", Some(8)), None);
         assert!(keep_reason(0, 1, "", Some(8)).is_some());
@@ -1921,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn lora_run_fails_loud() {
+    fn css_run_fails_loud() {
         for (why, rule) in [
             ("sender exited 5", "send"),
             ("logger exited 6", "log"),
@@ -1929,8 +1929,8 @@ mod tests {
             ("exact replay failed", "replay"),
             ("tx.csv", "tx"),
         ] {
-            let d = Scratch::new("lorafail");
-            let mut f = lora_job(&d.0);
+            let d = Scratch::new("cssfail");
+            let mut f = css_job(&d.0);
             match rule {
                 "send" => f.rules[2].code = 5,
                 "log" => f.rules[1].code = 6,
@@ -1941,7 +1941,7 @@ mod tests {
             if rule == "tx" {
                 f.rules[3].files.clear();
             }
-            let l = Lora {
+            let l = Css {
                 name: "t",
                 mode: "ssdv",
                 file: "f.ssdv",
@@ -1949,7 +1949,7 @@ mod tests {
                 passes: 1,
                 args: &[],
             };
-            let e = lora(&mut f, &cfg(&d.0), &l).unwrap_err().to_string();
+            let e = css(&mut f, &cfg(&d.0), &l).unwrap_err().to_string();
             assert!(
                 e.starts_with("FAILED t: ") && e.contains(why),
                 "{rule}: {e}"
@@ -1983,7 +1983,7 @@ mod tests {
         let mut f = Fake::default();
         good_forward(&mut f, &d.0);
         forward(&mut f, &c, &run("t", &[])).unwrap();
-        // the receiver here gets the local file, the sender on the Pi gets the Pi's
+        // the receiver here gets the local file, the sender on the board gets the board's
         assert!(
             f.log[2].contains("--licence-file /here/lic.toml --redact-licence"),
             "{}",
@@ -2041,7 +2041,7 @@ mod tests {
     fn good_hosts_pass() {
         for h in [
             "pi",
-            "raspberrypi.local",
+            "sbc.local",
             "pi-1_a.example.org",
             "kd@pi",
             "kd@192.168.1.20",
@@ -2213,12 +2213,12 @@ mod tests {
 
     #[test]
     fn a_frequency_and_coding_rate_override_reaches_every_stage() {
-        let d = Scratch::new("loraov");
-        let mut f = lora_job(&d.0);
+        let d = Scratch::new("cssov");
+        let mut f = css_job(&d.0);
         let args: Vec<String> = ["--freq", "903.5", "--cr=7", "--dr", "dr3"]
             .map(String::from)
             .into();
-        let l = Lora {
+        let l = Css {
             name: "t",
             mode: "chunk",
             file: "f.jpg",
@@ -2226,7 +2226,7 @@ mod tests {
             passes: 3,
             args: &args,
         };
-        lora(&mut f, &cfg(&d.0), &l).unwrap();
+        css(&mut f, &cfg(&d.0), &l).unwrap();
         let has = |pat: &str| {
             let hits: Vec<&String> = f.log.iter().filter(|l| l.contains(pat)).collect();
             assert!(!hits.is_empty(), "no stage with {pat}");
@@ -2234,8 +2234,8 @@ mod tests {
         };
         // dry run, transmitter (ssh), live logger, replay
         for pat in [
-            "lora2015-send --mode chunk --file",
-            "lora2015-log --port",
+            "css2015-send --mode chunk --file",
+            "css2015-log --port",
             "--replay",
         ] {
             for l in has(pat) {
@@ -2245,7 +2245,7 @@ mod tests {
                 );
             }
         }
-        for l in has("lora2015-log") {
+        for l in has("css2015-log") {
             assert!(l.contains("--freq 903.5") && l.contains("--cr 7"), "{l}");
         }
     }
@@ -2280,7 +2280,7 @@ mod tests {
         let mut f = Fake::default();
         f.rule("--clock-check", 0, CLOCK, vec![]);
         f.rule(
-            "moq-subghz-send --catwan",
+            "moq-subghz-send --rp2040",
             0,
             "{}\n",
             vec![(d.0.join("t.send.jsonl"), "x\n")],

@@ -15,7 +15,7 @@ RF side. Things that exist in amateur radio today, and are candidates to carry o
 * FM and linear transponders on amateur satellites ([AMSAT](https://www.amsat.org),
   [ARRL satellites](https://www.arrl.org/satellites))
 * digital voice with open codecs: [Codec2](https://github.com/drowe67/codec2) and [FreeDV](https://github.com/drowe67/freedv-gui)
-* LoRa or FSK experiments on the 70 cm and 33 cm amateur bands (which bands, and where, depends on your
+* chirp spread spectrum (CSS) mode or FSK experiments on the 70 cm and 33 cm amateur bands (which bands, and where, depends on your
   country and ITU region; see your national band plan and the [IARU](https://www.iaru.org))
 
 Which satellites are active, and on which frequencies and modes, changes. This page names none; use the
@@ -49,7 +49,7 @@ satellites' own documentation and the AMSAT pages above.
 ## What this means for the code (planned)
 
 * The current **ChaCha20-Poly1305 sealing must be off** on any amateur-band profile. That includes the
-  AES payload in the LoRaWAN-style frames of `lora2015`.
+  AES payload in the uplink-style frames of `css2015`.
 * The planned region and profile system must enforce it, for example a profile flag
   `encryption = "forbidden"`, a required callsign, and **no transmit without a configured callsign**.
 * Objects are **signed (authentication only)** or sent in the clear with callsign ID. Whether even a

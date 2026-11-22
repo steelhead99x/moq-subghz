@@ -1,4 +1,4 @@
-//! SX1276 on the Dragino HAT in FSK mode. The HAT glue is in `moq-subghz-pi`.
+//! SX1276 on the SX1276 GPS HAT in FSK mode. The HAT glue is in `moq-subghz-pi`.
 //! Moved from `moq-subghz-send/src/radio.rs` and `moq-subghz-recv/src/radio.rs`.
 
 use anyhow::{bail, Result};
@@ -124,7 +124,7 @@ fn standby(r: &mut Hat) -> Result<(), LinkError> {
         .map_err(|e| LinkError::Io(sx_err(e).to_string()))
 }
 
-/// FSK receive on the HAT (reverse direction: CatWAN to Pi).
+/// FSK receive on the HAT (reverse direction: RP2040-based device to Pi).
 pub struct Sx1276FskRx {
     r: Hat,
     st: sx1276::FskLongRx,

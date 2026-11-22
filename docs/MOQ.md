@@ -6,7 +6,7 @@ Media over QUIC broadcast, built on [moq.dev](https://moq.dev)'s Rust crates. A 
 then fans it out, and anyone can watch it in a browser.
 
 ```
-Pi 2 ──▶ 915 MHz FSK ──▶ CatWAN stick ──▶ laptop: moq-subghz-recv ──▶ moq-subghz-publish ──▶ MoQ relay ──▶ viewers
+board 2 ──▶ 915 MHz FSK ──▶ RP2040-based device ──▶ laptop: moq-subghz-recv ──▶ moq-subghz-publish ──▶ MoQ relay ──▶ viewers
 ```
 
 ## How it maps
@@ -26,7 +26,7 @@ connection is protected by TLS (and a token on moq.pro).
 ## Build
 
 `moq-subghz-publish` is its own crate, outside the radio workspace, because moq.dev's crates need
-Rust 1.91. The Pi binaries do not change.
+Rust 1.91. The board binaries do not change.
 
 ```sh
 cargo build --release                                       # moq-subghz-send / moq-subghz-recv
@@ -51,7 +51,7 @@ Then add `--publish` to the receiver. With no radios, a loopback file works too:
 ```sh
 ./target/release/moq-subghz-send --loopback /tmp/air.txt --secs 20
 ./target/release/moq-subghz-recv --replay /tmp/air.txt --paced --out /tmp/run \
-  --publish http://localhost:4443/anon --publish-name lora
+  --publish http://localhost:4443/anon --publish-name css
 ```
 
 `http://` makes the client fetch the relay's self-signed certificate fingerprint, which is fine
@@ -65,7 +65,7 @@ dashboard (the token goes in `?jwt=`):
 
 ```sh
 read -rs MOQ_SUBGHZ_RELAY && export MOQ_SUBGHZ_RELAY   # paste https://cdn.moq.pro/...?jwt=YOUR_TOKEN
-moq-subghz-recv --port /dev/cu.usbmodemXXXX ... --publish --publish-name lora
+moq-subghz-recv --port /dev/cu.usbmodemXXXX ... --publish --publish-name css
 ```
 
 `--publish` with no URL reads `MOQ_SUBGHZ_RELAY`, and the receiver hands the URL to
@@ -79,7 +79,7 @@ moq.dev's web player is a web component. Point it at the same relay and broadcas
 
 ```html
 <script type="module">import "https://esm.sh/@moq/watch/element";</script>
-<moq-watch url="http://localhost:4443/anon" name="lora"><canvas></canvas></moq-watch>
+<moq-watch url="http://localhost:4443/anon" name="css"><canvas></canvas></moq-watch>
 ```
 
 ## Tests

@@ -2,23 +2,23 @@
 
 DIY live video over sub-GHz radio, heading toward a multi-link, multi-hardware project.
 
-**Live video from a Raspberry Pi over a LoRa radio chip, written in Rust. One radio works today; the rest of this page says exactly which links are real and which are only plans.**
+**Live video from a ARM single-board computer over a chirp spread spectrum (CSS) mode radio chip, written in Rust. One radio works today; the rest of this page says exactly which links are real and which are only plans.**
 
 ![A frame received over the radio link, encrypted](media/frame-f350-rind-45s-3x.png)
 
-A Raspberry Pi 2 sends live H.264 video over a common LoRa radio chip to a USB stick on a laptop.
-320x240 at 15 fps, about 135 ms glass to glass (capture to screen). It is not LoRaWAN, and it needs no internet,
+A ARM single-board computer sends live H.264 video over a common CSS mode radio chip to a USB stick on a laptop.
+320x240 at 15 fps, about 135 ms glass to glass (capture to screen). It is not framed, and it needs no internet,
 gateway or server. Caveat: a later 2026-11-20 run lost about 10% of video frames, more than the first runs,
 and the cause is not found ([results/stick-0.5.1](results/stick-0.5.1/README.md)). The published numbers predate
 some code changes, see the [changelog](CHANGELOG.md).
 
 ```
-Pi 2  ──▶  915 MHz FSK radio  ──▶  CatWAN USB stick  ──▶  laptop
+board 2  ──▶  915 MHz FSK radio  ──▶  RP2040-based device  ──▶  laptop
 ```
 
 ## Why it's interesting
 
-* **Live video on a LoRa chip.** The SX1276 is slow in LoRa mode, but its plain FSK mode does
+* **Live video on a CSS mode chip.** The SX1276 is slow in CSS mode, but its plain FSK mode does
   300 kbit/s, enough for a small video stream.
 * **Lost frames freeze, they don't smear.** Video is split into MoQ groups (one keyframe interval
   is one group) and objects (one frame is one object). If a frame is lost, the receiver drops the
@@ -46,13 +46,13 @@ exists in [`results/`](results/).
 
 | link | state | what exists today |
 |---|---|---|
-| SX1276 FSK, live video | **Measured** | Pi 2 B to CatWAN stick, 915 MHz, 300 and 350 kbit/s radio rate ([results](results/video/table.md)) |
-| SX1276 LoRa mode, still pictures | **Measured** | chunked JPEG, SSDV, LoRaWAN-style frames, Pi 2 B to CatWAN ([results](results/stick-0.5.1/README.md)) |
-| Wi-Fi HaLow (802.11ah) | **Modeled** | emulation and airtime math only. The module and its pins are not decided, there is no real driver. The emulation is on an unmerged branch, not in `main` |
+| SX1276 FSK, live video | **Measured** | board 2 B to RP2040-based device, 915 MHz, 300 and 350 kbit/s radio rate ([results](results/video/table.md)) |
+| SX1276 CSS mode, still pictures | **Measured** | chunked JPEG, SSDV, uplink-style frames, board 2 B to RP2040-based device ([results](results/stick-0.5.1/README.md)) |
+| Wi-Fi 802.11ah sub-GHz Wi-Fi (802.11ah) | **Modeled** | emulation and airtime math only. The module and its pins are not decided, there is no real driver. The emulation is on an unmerged branch, not in `main` |
 | 2.4 GHz (Wi-Fi, ESP-NOW, raw 802.11) | **Not started** | no code. Candidate link, open questions in [docs/LINKS.md](docs/LINKS.md#24-ghz) |
 | 5.8 GHz (Wi-Fi 5/6 or a dedicated video link) | **Not started** | no code. Candidate link, open questions in [docs/LINKS.md](docs/LINKS.md#58-ghz) |
 | SX1262 / LR1121 | **Planned** | a driver is in the plan, nothing written |
-| Meshtastic node (T1000-E class) | **Planned** | a read-only host bridge is in the plan, nothing written here |
+| P2P mesh networks node (LR1110 tracker node class) | **Planned** | a read-only host bridge is in the plan, nothing written here |
 | Amateur radio and amateur satellite bridge | **Not started** | receive-only and recording first, see [docs/AMATEUR.md](docs/AMATEUR.md) |
 | `Link` trait and hardware profiles | **Planned** | the direction in the [evolution plan](docs/LINKS.md#architecture-planned) |
 
@@ -60,15 +60,15 @@ Hardware, same legend (details and sources in [docs/HARDWARE.md](docs/HARDWARE.m
 
 | hardware | role | state |
 |---|---|---|
-| Raspberry Pi 2 B + Dragino LoRa/GPS HAT | sender | **Measured** (the only host used in the published runs) |
-| CatWAN USB Stick (RP2040 + SX1276) | receiver | **Measured**, firmware in this repo |
-| Raspberry Pi 4, Pi 5, Pi Zero | host | **Not started**: untested here, profiles and CPU budgets are planned |
-| Seeed XIAO ESP32-S3, ESP32-C6 | 2.4 GHz and node candidates | **Not started**: a feasibility spike is planned |
-| Seeed T1000-E (Meshtastic) | host-side bridge | **Planned** |
+| ARM single-board computer + SX1276 GPS HAT | sender | **Measured** (the only host used in the published runs) |
+| RP2040-based device (RP2040 + SX1276) | receiver | **Measured**, firmware in this repo |
+| Newer ARM single-board computers | host | **Not started**: untested here, profiles and CPU budgets are planned |
+| ESP32-S3, ESP32-C6 boards | 2.4 GHz and node candidates | **Not started**: a feasibility spike is planned |
+| LR1110 tracker node (P2P mesh networks) | host-side bridge | **Planned** |
 | SX1262, LR1121 boards | other sub-GHz radios | **Planned** |
-| HaLow modules (any) | HaLow link | **Modeled** only. No module chosen |
+| 802.11ah modules (any) | 802.11ah link | **Modeled** only. No module chosen |
 
-The only link with real over-the-air numbers is SX1276, in FSK and LoRa mode. Every HaLow figure is a
+The only link with real over-the-air numbers is SX1276, in FSK and CSS mode. Every 802.11ah figure is a
 model and must be read as a best case.
 
 ## How the links relate
@@ -76,7 +76,7 @@ model and must be read as a best case.
 ```
 camera/ffmpeg ─▶ MoQ groups + objects ─▶ frames (+ optional parity, sealing) ─▶ a link ─▶ ... ─▶ receiver ─▶ player
                                                                                  │
-              today: SX1276 FSK, SX1276 LoRa, file replay                        └─ planned: HaLow, SX1262/LR1121, 2.4 GHz, 5.8 GHz
+              today: SX1276 FSK, SX1276 CSS mode, file replay                        └─ planned: 802.11ah, SX1262/LR1121, 2.4 GHz, 5.8 GHz
 ```
 
 The framing (MoQ groups and objects, XOR parity, optional sealing) does not depend on the radio. The
@@ -103,7 +103,7 @@ see [docs/BENCHMARKS.md](docs/BENCHMARKS.md). With real radios, follow **[HOWTO.
 * The tools **never transmit by default**. They need `--i-have-an-antenna` and `--transmit`, the
   licence gate must permit it ([docs/LICENSING.md](docs/LICENSING.md)), and they refuse
   frequencies and powers outside built-in limits. That includes the bench crate's `factory-send` and
-  `factory-bench`: the stock Dragino app's 868.1 MHz at +17 dBm is refused. The shipped CatWAN
+  `factory-bench`: the stock the HAT maker app's 868.1 MHz at +17 dBm is refused. The shipped RP2040-based device
   firmware images do not enforce any of this.
 * The built-in limits cover **915 MHz, about 3 mW**, only. 915 MHz is licence-free in the Americas,
   but **not in Europe and many other places**. Sub-GHz ISM bands differ by region.
@@ -134,8 +134,8 @@ Full text, with sources and open questions: [docs/AMATEUR.md](docs/AMATEUR.md).
 ## Roadmap
 
 The next steps are written up in an evolution plan (an owner proposal, not yet in this repo): first tidy and a golden test for the wire format,
-then the `Link` trait, emulated HaLow and LoRa links, hardware profiles, a benchmark command,
-and only then real HaLow hardware once a module is chosen. Today's planned work lives in
+then the `Link` trait, emulated 802.11ah and CSS mode links, hardware profiles, a benchmark command,
+and only then real 802.11ah hardware once a module is chosen. Today's planned work lives in
 [ROADMAP.md](ROADMAP.md) and the [quest log](quest/README.md); the multi-link direction is in
 [docs/LINKS.md](docs/LINKS.md#architecture-planned).
 
@@ -147,7 +147,8 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 
 ## Learn more
 
-* [docs/LINKS.md](docs/LINKS.md): each link (FSK, LoRa, HaLow, 2.4 GHz, 5.8 GHz), a comparison table, the planned architecture
+* [docs/LINKS.md](docs/LINKS.md): each link (FSK, CSS mode, 802.11ah, 2.4 GHz, 5.8 GHz), a comparison table, the planned architecture
+* [docs/S1G-EMULATION.md](docs/S1G-EMULATION.md): the modeled 802.11ah sub-GHz Wi-Fi channel
 * [docs/HARDWARE.md](docs/HARDWARE.md): boards and radio chips, with sources
 * [docs/BENCHMARKS.md](docs/BENCHMARKS.md): how to run and reproduce the benchmarks, labels, where reports live
 * [docs/REGULATORY.md](docs/REGULATORY.md): rules per band, and what the tools enforce
@@ -157,7 +158,7 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 * [docs/MOQ.md](docs/MOQ.md): republishing to a MoQ relay
 * [HOWTO.md](HOWTO.md): parts, setup and your first live picture
 * [results/loopback](results/loopback/README.md): how the picture holds up as the link gets worse (a replay, no radio)
-* [results/lora-2015](results/lora-2015/README.md): what a 2015 team could have sent over real LoRa and LoRaWAN-style frames
+* [results/css-2015](results/css-2015/README.md): what a 2015 team could have sent over real CSS mode and uplink-style frames
 * [results/stick-0.5.1](results/stick-0.5.1/README.md): the measured over-the-air benchmark against the factory software
 * [CHANGELOG.md](CHANGELOG.md), [ROADMAP.md](ROADMAP.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [REVIEW.md](REVIEW.md)
 
@@ -169,7 +170,7 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 [IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/); the radio side uses none of moq.dev's
 code, the optional republish step uses its Rust libraries, and this project is not affiliated with or endorsed
 by moq.dev. Frame encryption uses the pure-Rust ChaCha20-Poly1305 library [rind](https://github.com/kixel-ai/rind).
-Built in [Rust](https://www.rust-lang.org) on the Semtech SX1276 and the Electronic Cats CatWAN USB Stick.
+Built in [Rust](https://www.rust-lang.org) on the Semtech SX1276 and the board maker RP2040-based device.
 Background post: [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/). Amateur
 radio rules cited in [docs/AMATEUR.md](docs/AMATEUR.md) (47 CFR 97.113 and regional rules) and
 [docs/REGULATORY.md](docs/REGULATORY.md).</sub>

@@ -17,7 +17,7 @@ The radio driver and the firmware are separate crates:
 
 ```sh
 (cd vendor/sx1276 && cargo test)
-(cd firmware/catwan-fw && cargo build --release)   # needs the thumbv6m-none-eabi target
+(cd firmware/rp2040-sx1276-fw && cargo build --release)   # needs the thumbv6m-none-eabi target
 ```
 
 You don't need radios to try a change. The README's quick start runs the whole pipeline through

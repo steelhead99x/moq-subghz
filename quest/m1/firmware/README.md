@@ -1,8 +1,8 @@
-# CatWAN firmware v6 image
+# RP2040-based device firmware v6 image
 
 ## Goal
 
-A rebuilt `firmware/catwan-fw-v6.uf2` carrying this epic's fixes replaces v5, with `SHA256SUMS`
+A rebuilt `firmware/rp2040-sx1276-fw-v6.uf2` carrying this epic's fixes replaces v5, with `SHA256SUMS`
 updated, and the forward and reverse bench runs are re-measured on it.
 
 ## Plan

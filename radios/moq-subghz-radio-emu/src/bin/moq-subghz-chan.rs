@@ -16,7 +16,7 @@ use std::path::Path;
 #[derive(Parser)]
 #[command(version, about)]
 struct A {
-    #[arg(long, value_enum, default_value = "halow-emu")]
+    #[arg(long, value_enum, default_value = "s1g-emu")]
     link: EmuSel,
     #[command(flatten)]
     emu: EmuArgs,

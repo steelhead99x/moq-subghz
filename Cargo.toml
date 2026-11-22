@@ -3,9 +3,9 @@ resolver = "2"
 members = [
     "moq-subghz-licence",
     "radios/moq-subghz-radio-emu",
-    "moq-subghz-report", "moq-subghz-wire", "moq-subghz-pi", "moq-subghz-send", "moq-subghz-recv", "moq-subghz-lora2015", "moq-subghz-link", "radios/moq-subghz-radio-sx1276", "moq-subghz-bench"]
+    "moq-subghz-report", "moq-subghz-wire", "moq-subghz-pi", "moq-subghz-send", "moq-subghz-recv", "moq-subghz-css2015", "moq-subghz-link", "radios/moq-subghz-radio-sx1276", "moq-subghz-bench"]
 # moq-subghz-publish needs Rust 1.91 for the moq.dev crates; it builds on its own.
-exclude = ["vendor/sx1276", "firmware/catwan-fw", "moq-subghz-publish"]
+exclude = ["vendor/sx1276", "firmware/rp2040-sx1276-fw", "moq-subghz-publish"]
 
 [workspace.package]
 edition = "2021"

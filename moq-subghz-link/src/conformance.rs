@@ -1,6 +1,6 @@
 //! Checks every [`Link`] backend must pass. Each backend's tests call these on a link they built,
 //! so the contract in the trait docs is tested the same way for the loopback, the emulation, the
-//! CatWAN stick and the file sink, not once per copy of the same three lines.
+//! RP2040-based device and the file sink, not once per copy of the same three lines.
 //!
 //! Both functions panic with a message on a violation, like an assertion.
 

@@ -1,5 +1,5 @@
-//! moq-subghz-recv: CatWAN USB serial (`R <t> <rssi> <snr> <hex>` lines from the sx1276-rs
-//! catwan-fw) -> reassembly + XOR FEC -> MoQ group gate -> H.264 Annex-B to
+//! moq-subghz-recv: RP2040-based device USB serial (`R <t> <rssi> <snr> <hex>` lines from the sx1276-rs
+//! rp2040-sx1276-fw) -> reassembly + XOR FEC -> MoQ group gate -> H.264 Annex-B to
 //! (a) ffplay for live display, (b) a recording, (c) an ffmpeg decoder whose output
 //! frames are scanned for the burned-in barcode = capture->decoded latency, and
 //! (d) optionally `moq-subghz-publish`, which republishes the objects as real MoQ.
@@ -25,14 +25,14 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// What `--link` selects. `fsk` is the real receive path (CatWAN port, Pi HAT or a replay file);
+/// What `--link` selects. `fsk` is the real receive path (RP2040-based device port, board HAT or a replay file);
 /// the `-emu` kinds read a MODELED channel from `--emu-udp` and drive no radio.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 enum LinkKind {
     Fsk,
     FskEmu,
-    LoraEmu,
-    HalowEmu,
+    CssEmu,
+    S1gEmu,
 }
 
 impl LinkKind {
@@ -40,8 +40,8 @@ impl LinkKind {
         match self {
             LinkKind::Fsk => None,
             LinkKind::FskEmu => Some(EmuSel::Fsk),
-            LinkKind::LoraEmu => Some(EmuSel::Lora),
-            LinkKind::HalowEmu => Some(EmuSel::Halow),
+            LinkKind::CssEmu => Some(EmuSel::Css),
+            LinkKind::S1gEmu => Some(EmuSel::S1g),
         }
     }
 }
@@ -49,12 +49,12 @@ impl LinkKind {
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// Link: `fsk` (default; CatWAN port, `--radio` or `--replay`, as before) or a modeled
-    /// channel, `fsk-emu`, `lora-emu` or `halow-emu`, read from `--emu-udp`
+    /// Link: `fsk` (default; RP2040-based device port, `--radio` or `--replay`, as before) or a modeled
+    /// channel, `fsk-emu`, `css-emu` or `s1g-emu`, read from `--emu-udp`
     #[arg(long, value_enum, default_value_t = LinkKind::Fsk)]
     link: LinkKind,
     /// With a `-emu` link: loopback address to listen on for the sender's datagrams. Start the
-    /// receiver first; the sender must use the same link and `--halow-*` settings.
+    /// receiver first; the sender must use the same link and `--s1g-*` settings.
     #[arg(long)]
     emu_udp: Option<String>,
     /// With `--emu-udp`: accept datagrams only from this loopback address (the sender's
@@ -63,10 +63,10 @@ struct Args {
     emu_udp_peer: Option<String>,
     #[command(flatten)]
     emu: EmuArgs,
-    /// CatWAN serial port (macOS: /dev/cu.usbmodemXXXX)
+    /// RP2040-based device serial port (macOS: /dev/cu.usbmodemXXXX)
     #[arg(long)]
     port: Option<String>,
-    /// Receive on the local SX1276 (Pi HAT) instead of a CatWAN port (reverse direction)
+    /// Receive on the local SX1276 (board HAT) instead of an RP2040-based device port (reverse direction)
     #[arg(long)]
     radio: bool,
     /// Replay a file of `R` lines instead of a port (offline test)
@@ -382,7 +382,7 @@ fn clock_check(host: &str) -> Result<()> {
     Ok(())
 }
 
-/// The gate's answer for opening a radio to receive (a CatWAN port or the Pi's SX1276). The
+/// The gate's answer for opening a radio to receive (an RP2040-based device port or the board's SX1276). The
 /// radio opens take the permit this returns, so they do not compile without one.
 fn receive_permit(station: &Station, a: &Args, bitrate: u32, fdev: u32) -> Result<RxPermit> {
     let (profile, encryption) = (
@@ -558,10 +558,10 @@ fn main() -> Result<()> {
             "OK F",
         )?;
         if !r.ends_with("None") {
-            bail!("CatWAN config error: {r}");
+            bail!("RP2040-based device config error: {r}");
         }
         cmd(&mut wr, "R", "OK R")?;
-        eprintln!("CatWAN listening: {r}");
+        eprintln!("RP2040-based device listening: {r}");
         port_w = Some(wr);
     } else if a.radio {
         #[cfg(target_os = "linux")]
@@ -922,7 +922,7 @@ fn main() -> Result<()> {
     }
     if let Some(mut wr) = port_w.filter(|_| !port_closed) {
         if let Err(e) = wr.write_all(b"S\n") {
-            eprintln!("stopping the CatWAN failed: {e}");
+            eprintln!("stopping the RP2040-based device failed: {e}");
         }
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(2) {
@@ -992,7 +992,7 @@ fn main() -> Result<()> {
     };
     let licence = station.json_member();
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}{emu_field}{licence}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"rp2040\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}{emu_field}{licence}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad, re.frames_late, re.frames_stray, re.frames_stale,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),

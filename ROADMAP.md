@@ -21,15 +21,15 @@ is a promise or a date, and nothing has been run over the air unless the README 
 | `Link` trait crate with a loopback pair | **done** | [#46](https://github.com/steelhead99x/moq-subghz/pull/46) |
 | Multi-link README and per-topic docs (hardware profiles described) | **done** | [#47](https://github.com/steelhead99x/moq-subghz/pull/47) |
 | Repo hygiene (committed bytecode removed, guarded) | **done** | [#44](https://github.com/steelhead99x/moq-subghz/pull/44) |
-| SX1276 FSK and LoRa-mode code behind `Link`, `--link fsk` default | **open PR** | [#48](https://github.com/steelhead99x/moq-subghz/pull/48) |
+| SX1276 FSK and CSS-mode code behind `Link`, `--link fsk` default | **open PR** | [#48](https://github.com/steelhead99x/moq-subghz/pull/48) |
 | `seal` feature gate and `plan()` for the frame plan | **open PR** | [#49](https://github.com/steelhead99x/moq-subghz/pull/49) |
 | Licensed and unlicensed modes (gate crate, no wiring into the tools yet) | **open PR** | [#50](https://github.com/steelhead99x/moq-subghz/pull/50) |
 | Hardware profiles as code (host and radio presets) | **planned** | next after the `Link` work in #48 |
-| Emulated HaLow link | **planned** | no module needed, so it can come first |
-| Real HaLow driver | **not started** | waits for a module and its pins to be chosen |
+| Emulated 802.11ah sub-GHz Wi-Fi link | **planned** | no module needed, so it can come first |
+| Real 802.11ah driver | **not started** | waits for a module and its pins to be chosen |
 | ESP32-S3 and ESP32-C6 nodes | **not started** | feasibility spike first, see [docs/HARDWARE.md](docs/HARDWARE.md) |
-| Raspberry Pi 4, Pi 5 and Pi Zero hosts | **not started** | untested, CPU budget unknown |
-| Meshtastic T1000-E bridge, SX1262 and LR1121 drivers | **planned** | host-side serial bridge only, new drivers, nothing written |
+| Newer ARM single-board computers and small-board hosts | **not started** | untested, CPU budget unknown |
+| P2P mesh networks LR1110 tracker node bridge, SX1262 and LR1121 drivers | **planned** | host-side serial bridge only, new drivers, nothing written |
 | Receive-only amateur radio and AMSAT bridge | **not started** | policy in [docs/AMATEUR.md](docs/AMATEUR.md), receive side and SSTV first |
 | Amateur receive-side SDR | **not started** | direction only, see [docs/HARDWARE.md](docs/HARDWARE.md#amateur-receive-side-sdr) |
 

@@ -26,7 +26,7 @@ impl Inputs {
     pub fn under(root: &Path) -> Inputs {
         let r = root.join("results");
         Inputs {
-            frames: r.join("lora-2015/frames"),
+            frames: r.join("css-2015/frames"),
             factory_csv: r.join("factory-firmware/results.csv"),
             factory_data: r.join("factory-firmware/data"),
         }
@@ -276,8 +276,8 @@ pub fn passes(indexes: &[i64]) -> Vec<Vec<i64>> {
     out
 }
 
-/// One measured lora2015 run, with every column of `lora.csv`.
-pub struct LoraRun {
+/// One measured css2015 run, with every column of `css.csv`.
+pub struct CssRun {
     pub mode: String,
     pub profile: String,
     pub size: String,
@@ -297,7 +297,9 @@ pub struct LoraRun {
 /// `chunk-sf7-125-small-r2` into (mode, profile, size, rep).
 fn parse_run_name(n: &str) -> Option<(String, String, String, i64)> {
     let (mode, rest) = n.split_once('-')?;
-    if !["chunk", "ssdv", "lorawan"].contains(&mode) {
+    // `lorawan` is the name archived runs were written under; read it as `framed`.
+    let mode = if mode == "lorawan" { "framed" } else { mode };
+    if !["chunk", "ssdv", "framed"].contains(&mode) {
         return None;
     }
     let (profile, rest) = {
@@ -338,10 +340,14 @@ fn int(s: &str, what: &str, run: &str) -> Result<i64> {
         .with_context(|| format!("run {run}: {what} is not an integer: {s:?}"))
 }
 
-fn lora_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<LoraRun>> {
+fn css_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<CssRun>> {
     let Some((mode, profile, size, rep)) = parse_run_name(n) else {
         return Ok(None);
     };
+    // Archived runs keep their old directory name on disk; the CSV shows the neutral one.
+    let shown = n
+        .strip_prefix("lorawan-")
+        .map_or_else(|| n.to_string(), |r| format!("framed-{r}"));
     let d = runs.join(n);
     let images = d.join("exact/images.csv");
     if !images.exists() {
@@ -429,7 +435,7 @@ fn lora_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<Lor
     let (snr_lo, snr_hi) = rng(&snr);
     let opt_i = |v: Option<i64>| v.map_or(Cell::None, Cell::Int);
     let cells = vec![
-        Cell::Str(n.into()),
+        Cell::Str(shown.clone()),
         Cell::Str(mode.clone()),
         Cell::Str(profile.clone()),
         Cell::Str(size.clone()),
@@ -462,7 +468,7 @@ fn lora_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<Lor
         snr_lo.into(),
         snr_hi.into(),
     ];
-    Ok(Some(LoraRun {
+    Ok(Some(CssRun {
         mode,
         profile,
         size,
@@ -480,7 +486,7 @@ fn lora_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<Lor
     }))
 }
 
-const LORA_HEADER: [&str; 28] = [
+const CSS_HEADER: [&str; 28] = [
     "run",
     "mode",
     "profile",
@@ -511,8 +517,8 @@ const LORA_HEADER: [&str; 28] = [
     "snr_max_db",
 ];
 
-/// Every lora2015 run in `runs` (`<mode>-sfN-<bw>-<size>-rN` with an `exact/` replay).
-pub fn lora_runs(runs: &Path, inp: &Inputs, psnr: Psnr) -> Result<Vec<LoraRun>> {
+/// Every css2015 run in `runs` (`<mode>-sfN-<bw>-<size>-rN` with an `exact/` replay).
+pub fn css_runs(runs: &Path, inp: &Inputs, psnr: Psnr) -> Result<Vec<CssRun>> {
     let mut out = Vec::new();
     // Same glob as the Python: a single digit after "-r".
     for n in names(runs, |n, _| {
@@ -520,7 +526,7 @@ pub fn lora_runs(runs: &Path, inp: &Inputs, psnr: Psnr) -> Result<Vec<LoraRun>> 
             && n[n.len() - 3..].starts_with("-r")
             && n.as_bytes()[n.len() - 1].is_ascii_digit()
     })? {
-        out.extend(lora_run(runs, &n, inp, psnr)?);
+        out.extend(css_run(runs, &n, inp, psnr)?);
     }
     Ok(out)
 }
@@ -549,7 +555,7 @@ pub struct Group<'a> {
     pub size: &'a str,
     pub profile: &'a str,
     pub mode: &'a str,
-    pub runs: Vec<&'a LoraRun>,
+    pub runs: Vec<&'a CssRun>,
 }
 
 fn profile_order(p: &str) -> Result<usize> {
@@ -559,8 +565,8 @@ fn profile_order(p: &str) -> Result<usize> {
         .with_context(|| format!("unknown profile {p}"))
 }
 
-/// Group runs by (size, profile, mode), in the order of `lora-summary.csv`.
-pub fn groups(l: &[LoraRun]) -> Result<Vec<Group<'_>>> {
+/// Group runs by (size, profile, mode), in the order of `css-summary.csv`.
+pub fn groups(l: &[CssRun]) -> Result<Vec<Group<'_>>> {
     let mut g: Vec<Group> = Vec::new();
     for r in l {
         match g
@@ -592,7 +598,7 @@ pub fn groups(l: &[LoraRun]) -> Result<Vec<Group<'_>>> {
 }
 
 fn summary_row(g: &Group) -> Vec<Cell> {
-    let v = |f: &dyn Fn(&LoraRun) -> Option<f64>| g.runs.iter().map(|r| f(r)).collect::<Vec<_>>();
+    let v = |f: &dyn Fn(&CssRun) -> Option<f64>| g.runs.iter().map(|r| f(r)).collect::<Vec<_>>();
     let secs = v(&|r| r.seconds_to_image);
     vec![
         Cell::Str(g.size.into()),
@@ -668,7 +674,7 @@ pub struct CompareRow {
     pub cells: Vec<Cell>,
 }
 
-pub fn compare_rows(l: &[LoraRun], inp: &Inputs) -> Result<Vec<CompareRow>> {
+pub fn compare_rows(l: &[CssRun], inp: &Inputs) -> Result<Vec<CompareRow>> {
     let fac = read_dict(&inp.factory_csv)?;
     let mut win = Vec::new();
     for r in &fac {
@@ -713,11 +719,11 @@ pub fn compare_rows(l: &[LoraRun], inp: &Inputs) -> Result<Vec<CompareRow>> {
                 .all(|&i| fac[i].get("byte_identical").map(String::as_str) == Some("True"));
             out.push(CompareRow {
                 picture: size,
-                stack: "factory (Dragino app + stock stick)".into(),
+                stack: "factory (vendor app + stock receiver)".into(),
                 seconds_mean: mean(&w),
                 cells: vec![
                     Cell::Str(size.into()),
-                    Cell::Str("factory (Dragino app + stock stick)".into()),
+                    Cell::Str("factory (vendor app + stock receiver)".into()),
                     Cell::Int(idx.len() as i64),
                     Cell::Bool(all),
                     mean(&c("pass1_loss_pct")?).into(),
@@ -732,14 +738,14 @@ pub fn compare_rows(l: &[LoraRun], inp: &Inputs) -> Result<Vec<CompareRow>> {
                 ],
             });
         }
-        for mode in ["chunk", "lorawan", "ssdv"] {
+        for mode in ["chunk", "framed", "ssdv"] {
             let Some(g) = gs
                 .iter()
                 .find(|g| g.size == size && g.profile == "sf7-125" && g.mode == mode)
             else {
                 continue;
             };
-            let v = |f: &dyn Fn(&LoraRun) -> Option<f64>| {
+            let v = |f: &dyn Fn(&CssRun) -> Option<f64>| {
                 g.runs.iter().map(|r| f(r)).collect::<Vec<_>>()
             };
             let secs = v(&|r| r.seconds_to_image);
@@ -802,24 +808,24 @@ pub fn bars(title: &str, items: &[(String, f64, &str)], unit: &str) -> String {
     o.join("\n")
 }
 
-/// Write `fsk.csv`, `lora.csv`, `lora-summary.csv`, `compare.csv` and the two charts into `out`.
+/// Write `fsk.csv`, `css.csv`, `css-summary.csv`, `compare.csv` and the two charts into `out`.
 pub fn run(runs: &Path, out: &Path, inp: &Inputs, psnr: Psnr) -> Result<()> {
     fs::create_dir_all(out)?;
     let fsk = fsk_rows(runs)?;
     if !fsk.is_empty() {
         write_csv(&out.join("fsk.csv"), &FSK_COLS, &fsk)?;
     }
-    let lora = lora_runs(runs, inp, psnr)?;
-    if !lora.is_empty() {
+    let css = css_runs(runs, inp, psnr)?;
+    if !css.is_empty() {
         write_csv(
-            &out.join("lora.csv"),
-            &LORA_HEADER,
-            &lora.iter().map(|r| r.cells.clone()).collect::<Vec<_>>(),
+            &out.join("css.csv"),
+            &CSS_HEADER,
+            &css.iter().map(|r| r.cells.clone()).collect::<Vec<_>>(),
         )?;
-        let gs = groups(&lora)?;
+        let gs = groups(&css)?;
         let rows: Vec<Vec<Cell>> = gs.iter().map(summary_row).collect();
-        write_csv(&out.join("lora-summary.csv"), &SUMMARY_HEADER, &rows)?;
-        let cmp = compare_rows(&lora, inp)?;
+        write_csv(&out.join("css-summary.csv"), &SUMMARY_HEADER, &rows)?;
+        let cmp = compare_rows(&css, inp)?;
         write_csv(
             &out.join("compare.csv"),
             &COMPARE_HEADER,
@@ -875,7 +881,7 @@ pub fn run(runs: &Path, out: &Path, inp: &Inputs, psnr: Psnr) -> Result<()> {
             )?;
         }
     }
-    println!("fsk runs {}, lora runs {}", fsk.len(), lora.len());
+    println!("fsk runs {}, css runs {}", fsk.len(), css.len());
     Ok(())
 }
 
@@ -896,7 +902,7 @@ mod tests {
                 fs::copy(e.path().join(f), d.join(f)).unwrap();
             }
         }
-        for e in fs::read_dir(r.join("lora")).unwrap() {
+        for e in fs::read_dir(r.join("css")).unwrap() {
             let e = e.unwrap();
             let n = e.file_name();
             let x = s.0.join(&n).join("exact");
@@ -958,8 +964,8 @@ mod tests {
         let want = repo().join("results/stick-0.5.1");
         for f in [
             "fsk.csv",
-            "lora.csv",
-            "lora-summary.csv",
+            "css.csv",
+            "css-summary.csv",
             "compare.csv",
             "time-to-picture-small.svg",
             "time-to-picture-large.svg",
@@ -968,7 +974,7 @@ mod tests {
                 fs::read_to_string(out.0.join(f)).unwrap(),
                 fs::read_to_string(want.join(f)).unwrap(),
             );
-            if with_ffmpeg || !f.starts_with("lora") {
+            if with_ffmpeg || !f.starts_with("css") {
                 assert_eq!(a, b, "{f}");
             } else {
                 assert_eq!(blank_psnr(&a), blank_psnr(&b), "{f}");
@@ -1061,8 +1067,8 @@ mod tests {
     #[test]
     fn run_names() {
         assert_eq!(
-            parse_run_name("lorawan-sf8-500-large-r12"),
-            Some(("lorawan".into(), "sf8-500".into(), "large".into(), 12))
+            parse_run_name("framed-sf8-500-large-r12"),
+            Some(("framed".into(), "sf8-500".into(), "large".into(), 12))
         );
         for bad in [
             "chunk-sf7-125-small",
@@ -1073,6 +1079,35 @@ mod tests {
         ] {
             assert_eq!(parse_run_name(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn archived_old_name_runs_are_read_like_new_ones() {
+        assert_eq!(
+            parse_run_name("lorawan-sf8-500-large-r12"),
+            Some(("framed".into(), "sf8-500".into(), "large".into(), 12))
+        );
+        let src = repo().join("results/stick-0.5.1/css/chunk-sf7-125-small-r1");
+        let stage = |tag: &str, name: &str| {
+            let s = Scratch::new(tag);
+            copy_tree(&src, &s.0.join(name).join("exact"));
+            fs::copy(src.join("send.txt"), s.0.join(format!("{name}.send"))).unwrap();
+            s
+        };
+        let old = stage("an-old-name", "lorawan-sf7-125-small-r1");
+        let new = stage("an-new-name", "framed-sf7-125-small-r1");
+        let inp = Inputs::under(&repo());
+        let none = |_: &Path, _: &Path, _: Option<&str>| Ok(None);
+        let (o, n) = (Scratch::new("an-old-out"), Scratch::new("an-new-out"));
+        run(&old.0, &o.0, &inp, &none).unwrap();
+        run(&new.0, &n.0, &inp, &none).unwrap();
+        let (a, b) = (
+            fs::read_to_string(o.0.join("css.csv")).unwrap(),
+            fs::read_to_string(n.0.join("css.csv")).unwrap(),
+        );
+        assert!(a.lines().count() > 1, "old-name run was skipped");
+        assert_eq!(a, b);
+        assert!(!a.contains("lorawan"));
     }
 
     #[test]
@@ -1088,11 +1123,11 @@ mod tests {
     fn a_missing_sender_line_is_an_error() {
         let runs = Scratch::new("nosend");
         copy_tree(
-            &repo().join("results/stick-0.5.1/lora/chunk-sf7-125-small-r1"),
+            &repo().join("results/stick-0.5.1/css/chunk-sf7-125-small-r1"),
             &runs.0.join("chunk-sf7-125-small-r1/exact"),
         );
         fs::write(runs.0.join("chunk-sf7-125-small-r1.send"), "nothing useful").unwrap();
-        let e = lora_runs(&runs.0, &Inputs::under(&repo()), &|_, _, _| Ok(None))
+        let e = css_runs(&runs.0, &Inputs::under(&repo()), &|_, _, _| Ok(None))
             .err()
             .expect("error")
             .to_string();
@@ -1115,11 +1150,11 @@ mod tests {
         );
     }
 
-    /// A staged runs directory with one FSK run and one LoRa run, and the files to mutate.
+    /// A staged runs directory with one FSK run and one CSS mode run, and the files to mutate.
     fn small_stage(tag: &str) -> (Scratch, Vec<(PathBuf, Vec<u8>)>) {
         let s = Scratch::new(tag);
         let r = repo().join("results/stick-0.5.1");
-        let (fsk, lora) = ("f300-fec8-p5-1", "chunk-sf7-125-small-r1");
+        let (fsk, css) = ("f300-fec8-p5-1", "chunk-sf7-125-small-r1");
         let fsk = fs::read_dir(r.join("fsk"))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -1132,13 +1167,13 @@ mod tests {
             fs::copy(r.join("fsk").join(&fsk).join(f), d.join(f)).unwrap();
             files.push((d.join(f), fs::read(d.join(f)).unwrap()));
         }
-        let x = s.0.join(lora).join("exact");
-        copy_tree(&r.join("lora").join(lora), &x);
+        let x = s.0.join(css).join("exact");
+        copy_tree(&r.join("css").join(css), &x);
         for f in ["images.csv", "rx.csv"] {
             files.push((x.join(f), fs::read(x.join(f)).unwrap()));
         }
-        let send = s.0.join(format!("{lora}.send"));
-        fs::copy(r.join("lora").join(lora).join("send.txt"), &send).unwrap();
+        let send = s.0.join(format!("{css}.send"));
+        fs::copy(r.join("css").join(css).join("send.txt"), &send).unwrap();
         files.push((send.clone(), fs::read(&send).unwrap()));
         (s, files)
     }

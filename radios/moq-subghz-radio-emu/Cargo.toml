@@ -1,7 +1,7 @@
 [package]
 name = "moq-subghz-radio-emu"
 version = "0.0.1"
-description = "Emulated links for moq-subghz-link: SX1276 FSK, SX1276 LoRa and 802.11ah HaLow channel models. MODELED, never measured; no radio is driven"
+description = "Emulated links for moq-subghz-link: SX1276 FSK, SX1276 CSS mode and 802.11ah channel models. MODELED, never measured; no radio is driven"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
