@@ -52,6 +52,14 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Added
 
+* **`moq-subghz-radio-emu`: modeled links behind `Link`**: SX1276 FSK, SX1276 LoRa and an 802.11ah
+  (HaLow) channel as seeded, virtual-time models, with in-memory, loopback UDP and `R`-file
+  transports. `moq-subghz-send` and `moq-subghz-recv` gain `--link fsk-emu|lora-emu|halow-emu`,
+  `--emu-udp` and the `--halow-*`, `--lora-*`, `--fsk-*`, `--emu-loss`, `--emu-seed` flags; the
+  sender packs whole wire frames into one packet when the link allows it. `moq-subghz-chan` pushes
+  a recording through a model offline. Everything it reports is MODELED (`"provenance":"modeled"`),
+  never measured. `--link fsk` stays the default and the bytes on the air are unchanged. See
+  `docs/HALOW.md`.
 * `moq-subghz-wire/tests/golden_v5.rs`: SHA-256 of the exact frame stream (k = 0, 4, 8, sealed and
   unsealed) for a fixed set of synthetic objects. It fails if a byte on the air changes.
 * `RLine` (a parsed `R` line) keeps the line's `t_us` and `snr`, which `parse_r_line` used to drop.

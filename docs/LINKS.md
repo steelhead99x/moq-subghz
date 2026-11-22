@@ -15,7 +15,7 @@ Not legal advice. You are responsible for what you transmit. See [REGULATORY.md]
 |---|---|---|---|
 | [SX1276 FSK](#sx1276-fsk) | sub-GHz ISM (tools allow 902-928 MHz only) | **Measured** | `vendor/sx1276`, `moq-subghz-send`, `moq-subghz-recv`, `results/video` |
 | [SX1276 LoRa mode](#sx1276-lora-mode) | same | **Measured** (still pictures only) | `moq-subghz-lora2015`, `results/stick-0.5.1` |
-| [Wi-Fi HaLow](#wi-fi-halow-80211ah) | sub-GHz ISM, varies by country | **Modeled** | not in `main`; see below |
+| [Wi-Fi HaLow](#wi-fi-halow-80211ah) | sub-GHz ISM, varies by country | **Modeled** | modeled link in `main` (`docs/HALOW.md`), no hardware; see below |
 | [2.4 GHz](#24-ghz) | 2.4 GHz ISM | **Not started** | nothing in this repo |
 | [5.8 GHz](#58-ghz) | 5 GHz / 5.8 GHz | **Not started** | nothing in this repo |
 | [Amateur radio / satellite](AMATEUR.md) | amateur bands | **Not started** | receive-only first |
