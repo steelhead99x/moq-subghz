@@ -168,11 +168,19 @@ impl Cfg {
         v
     }
 
+    /// The local checks every run makes before any process (and above all any remote one) starts:
+    /// a plain run name, an explicit serial port that exists, and the run directories.
     fn prepare(&self, h: &dyn Host, name: &str) -> Result<()> {
         valid_name(name)?;
+        let port = self.port()?;
+        ensure!(!port.starts_with('-'), "--port {port:?} looks like an option");
         if !h.dry() {
-            fs::create_dir_all(&self.runs)
-                .with_context(|| format!("create {}", self.runs.display()))?;
+            ensure!(
+                Path::new(&port).exists(),
+                "the serial port {port} does not exist"
+            );
+            fs::create_dir_all(self.runs.join(name))
+                .with_context(|| format!("create {}", self.runs.join(name).display()))?;
         }
         Ok(())
     }
@@ -485,18 +493,47 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     Ok(())
 }
 
+/// Undoes a reverse run's remote side on every way out: kills the local ssh that carries the
+/// receiver and removes this run's scratch directory on the Pi, that exact directory only.
+struct Cleanup<'a> {
+    h: &'a mut dyn Host,
+    c: &'a Cfg,
+    scratch: Option<String>,
+    rx: Option<usize>,
+}
+
+impl Drop for Cleanup<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.rx.take() {
+            self.h.kill(id);
+        }
+        if let Some(dir) = self.scratch.take() {
+            let _ = self.h.run(&self.c.ssh(format!("rm -rf {}", shq(&dir))));
+        }
+    }
+}
+
 /// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here.
 pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
+    // Every local prerequisite is checked here, before the first remote command.
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
-    let (x, xf) = clock(h, c)?;
-    if !h.dry() {
+    let port = c.port()?;
+    let mut g = Cleanup {
+        h,
+        c,
+        scratch: None,
+        rx: None,
+    };
+    let (x, xf) = clock(&mut *g.h, c)?;
+    if !g.h.dry() {
         write(&c.run_file(n, ".clock_start"), &format!("{x}\n"))?;
     }
     // Capture clock (laptop) minus receive clock (Pi), printed like Python's repr of a float.
     let off = format!("{:?}", -xf);
-    let scratch = pi_scratch(h, c)?;
+    let scratch = pi_scratch(&mut *g.h, c)?;
+    g.scratch = Some(scratch.clone());
     let tmp = shq(&format!("{scratch}/rx"));
     let mut rxa = format!(
         "./moq-subghz-recv --radio --profile {} --secs {} --out {tmp} --decode --raw-log --clock-offset-ms={}",
@@ -512,11 +549,14 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         rxa += &format!(" {}", shq(&w));
     }
     let script = format!("cd ~/{} && {rxa}", shq(&c.pi_dir));
-    let rx = h.start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
-    h.sleep(Duration::from_secs(4));
+    let rx = g
+        .h
+        .start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
+    g.rx = Some(rx);
+    g.h.sleep(Duration::from_secs(4));
     let mut a = vec![
         "--catwan".to_string(),
-        c.port()?,
+        port,
         "--profile".into(),
         r.profile.into(),
         "--secs".into(),
@@ -532,23 +572,24 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let send = Plan::new(c.bin("moq-subghz-send"), a)
         .out(c.run_file(n, ".send"))
         .err(c.run_file(n, ".send.err"));
-    let send_st = h.run(&send)?.code;
-    let recv_st = h.wait(rx)?; // ssh exits with the remote receiver's status
-    if !h.dry() {
-        fs::create_dir_all(c.runs.join(n))?;
-    }
-    // scp's glob is expanded on the Pi; the Pi's copy is removed only after a good copy.
-    let mut copy_st = h
+    let send_st = g.h.run(&send)?.code;
+    g.rx = None;
+    let recv_st = g.h.wait(rx)?; // ssh exits with the remote receiver's status
+    // scp's glob is expanded on the Pi; the Pi's copy is removed only after a good copy, and a
+    // failed copy keeps it, so from here the guard leaves the directory alone.
+    g.scratch = None;
+    let mut copy_st = g
+        .h
         .run(&scp_plan(
             format!("{}:{scratch}/rx/*", scp_host(&c.pi)),
             format!("{}/", c.runs.join(n).display()),
         ))?
         .code;
     if copy_st == 0 {
-        copy_st = h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?.code;
+        copy_st = g.h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?.code;
     }
-    if h.dry() {
-        h.run(
+    if g.h.dry() {
+        g.h.run(
             &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
                 .out(c.run_file(n, ".clock_end")),
         )?;
@@ -565,7 +606,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         &c.run_file(n, ".send"),
         &c.runs.join(n).join("send_summary.json"),
     )?;
-    h.run(
+    g.h.run(
         &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
             .out(c.run_file(n, ".clock_end")),
     )?;
@@ -657,9 +698,39 @@ pub fn radio_overrides(args: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Seconds the logger has to listen: `passes` passes of `pass_s` plus a second each, and 14 more.
-pub fn log_secs(pass_s: f64, passes: u32) -> i64 {
-    (passes as f64 * (pass_s + 1.0) + 14.0) as i64
+/// The pause the sender is configured to leave between passes, in seconds: `--pass-gap-ms` in the
+/// sender arguments, else the sender's own default of one second.
+pub fn pass_gap_s(args: &[String]) -> Result<f64> {
+    let mut gap = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let (key, inline) = match a.split_once('=') {
+            Some((k, v)) => (k, Some(v.to_string())),
+            None => (a.as_str(), None),
+        };
+        if key != "--pass-gap-ms" {
+            continue;
+        }
+        let v = match inline {
+            Some(v) => v,
+            None => it
+                .next()
+                .cloned()
+                .with_context(|| format!("{key} needs a value"))?,
+        };
+        let ms: u32 = v
+            .parse()
+            .with_context(|| format!("--pass-gap-ms {v:?} is not a number of milliseconds"))?;
+        ensure!(gap.replace(ms).is_none(), "--pass-gap-ms given twice");
+    }
+    Ok(gap.unwrap_or(1000) as f64 / 1000.0)
+}
+
+/// Seconds the logger has to listen: `passes` passes of `pass_s`, `passes - 1` gaps of `gap_s`
+/// between them, and 15 s of margin for the first frame and the last one's tail.
+pub fn log_secs(pass_s: f64, passes: u32, gap_s: f64) -> i64 {
+    let gaps = passes.saturating_sub(1) as f64;
+    (passes as f64 * pass_s + gaps * gap_s + 15.0).ceil() as i64
 }
 
 fn after_digits(text: &str, key: &str, dot: bool) -> Option<String> {
@@ -712,7 +783,13 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     let pass_s: f64 = after_digits(&d.stdout, "pass_s=", true)
         .and_then(|s| s.parse().ok())
         .with_context(|| format!("no pass_s= in the output of {}", dry.shell()))?;
-    let secs = log_secs(pass_s, r.passes);
+    let gap_s = pass_gap_s(r.args)?;
+    let secs = log_secs(pass_s, r.passes, gap_s);
+    println!(
+        "logging window for {n}: {secs} s ({} passes x {pass_s:.3} s + {} gaps x {gap_s:.3} s + 15 s margin)",
+        r.passes,
+        r.passes.saturating_sub(1)
+    );
     let reference: Vec<String> = if r.file.ends_with(".jpg") {
         vec!["--reference".into(), frame.display().to_string()]
     } else {
@@ -860,6 +937,8 @@ pub mod fake {
         pub rules: Vec<Rule>,
         pub log: Vec<String>,
         pub slept: Vec<Duration>,
+        /// Plans whose line holds one of these could not be started: `run` returns an error.
+        pub cannot_start: Vec<&'static str>,
         bg: Vec<i32>,
     }
 
@@ -909,7 +988,14 @@ pub mod fake {
 
     impl Host for Fake {
         fn run(&mut self, p: &Plan) -> Result<Done> {
-            Ok(self.apply(p))
+            let done = self.apply(p);
+            if let Some(w) = self.cannot_start.iter().find(|w| p.shell().contains(**w)) {
+                bail!("could not start {w}");
+            }
+            Ok(done)
+        }
+        fn kill(&mut self, id: usize) {
+            self.log.push(format!("kill job {id}"));
         }
         fn start(&mut self, p: &Plan) -> Result<usize> {
             let d = self.apply(p);
@@ -932,12 +1018,14 @@ mod tests {
     use crate::testutil::Scratch;
 
     fn cfg(dir: &Path) -> Cfg {
+        // A port that exists, since a real run checks before it starts anything remote.
+        fs::write(dir.join("ttyTEST"), "").unwrap();
         Cfg {
             pi: "pi".into(),
             pi_dir: "moq-subghz".into(),
             bin: "bin".into(),
             runs: dir.to_path_buf(),
-            port: Some("/dev/ttyTEST".into()),
+            port: Some(dir.join("ttyTEST")),
             frames: "frames".into(),
             antenna: true,
             transmit: true,
@@ -997,7 +1085,7 @@ mod tests {
         );
         assert_eq!(
             f.log[2],
-            format!("bin/moq-subghz-recv --port /dev/ttyTEST --profile 300000:100000:6 --secs 340 --out {r}/t --decode --raw-log --clock-offset-ms=-12.50 --key-file 'my key.hex' --no-licence --redact-licence --x 1 > {r}/t.out 2>&1")
+            format!("bin/moq-subghz-recv --port {r}/ttyTEST --profile 300000:100000:6 --secs 340 --out {r}/t --decode --raw-log --clock-offset-ms=-12.50 --key-file 'my key.hex' --no-licence --redact-licence --x 1 > {r}/t.out 2>&1")
         );
         assert_eq!(
             f.log[3],
@@ -1201,6 +1289,48 @@ mod tests {
     }
 
     #[test]
+    fn reverse_checks_the_port_before_it_starts_anything_remote() {
+        let d = Scratch::new("revport");
+        let mut missing = cfg(&d.0);
+        missing.port = Some(d.0.join("nope"));
+        let mut unset = cfg(&d.0);
+        unset.port = None;
+        for (c, why) in [(missing, "does not exist"), (unset, "--port")] {
+            let mut f = Fake::default();
+            f.rule("--clock-check", 0, CLOCK, vec![]);
+            let e = reverse(&mut f, &c, &run("t", &[])).unwrap_err().to_string();
+            assert!(e.contains(why), "{e}");
+            assert!(f.log.is_empty(), "nothing ran: {:?}", f.log);
+        }
+        // the antenna and transmit gate comes first, too
+        let mut c = cfg(&d.0);
+        c.antenna = false;
+        let mut f = Fake::default();
+        assert!(reverse(&mut f, &c, &run("t", &[])).is_err());
+        assert!(f.log.is_empty());
+    }
+
+    #[test]
+    fn reverse_kills_the_receiver_and_removes_only_its_scratch_when_the_sender_cannot_start() {
+        let d = Scratch::new("revclean");
+        let mut f = Fake::default();
+        f.rule("--clock-check", 0, CLOCK, vec![]);
+        f.cannot_start.push("moq-subghz-send --catwan");
+        let e = reverse(&mut f, &cfg(&d.0), &run("t", &[]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("could not start"), "{e}");
+        let kill = f.log.iter().position(|l| l == "kill job 0").unwrap();
+        let rm = f
+            .log
+            .iter()
+            .position(|l| l == "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'")
+            .unwrap();
+        assert!(kill < rm, "{:?}", f.log);
+        assert_eq!(f.log.iter().filter(|l| l.contains("rm -rf")).count(), 1);
+    }
+
+    #[test]
     fn reverse_negates_the_offset_and_copies_before_it_removes() {
         let d = Scratch::new("rev");
         let mut f = Fake::default();
@@ -1230,9 +1360,10 @@ mod tests {
             f.log[2]
         );
         assert_eq!(f.slept, [Duration::from_secs(4)]);
-        assert!(f.log[3].starts_with(
-            "bin/moq-subghz-send --catwan /dev/ttyTEST --profile 300000:100000:6 --secs 330 --log"
-        ));
+        assert!(f.log[3].starts_with(&format!(
+            "bin/moq-subghz-send --catwan {}/ttyTEST --profile 300000:100000:6 --secs 330 --log",
+            d.0.display()
+        )));
         assert!(f.log[3]
             .contains("--i-have-an-antenna --transmit --no-licence --redact-licence --fec-k 8 > "));
         let (scp, rm) = (
@@ -1326,7 +1457,32 @@ mod tests {
         assert!(f.log.iter().any(|l| l.contains(
             "--power 5 --passes 3 --tx-log /tmp/moq-bench.T/tx.csv --i-have-an-antenna --transmit --no-licence --redact-licence --dr dr3 >"
         )));
-        assert_eq!(log_secs(14.0, 3), 59);
+        assert_eq!(log_secs(14.0, 3, 1.0), 59);
+    }
+
+    #[test]
+    fn the_logger_window_follows_the_senders_pass_gap() {
+        let d = Scratch::new("lorawin");
+        let mut f = lora_job(&d.0);
+        let args: Vec<String> = ["--pass-gap-ms", "60000"].map(String::from).into();
+        let l = Lora {
+            name: "t",
+            mode: "chunk",
+            file: "f.jpg",
+            profile: "sf7-125",
+            passes: 2,
+            args: &args,
+        };
+        lora(&mut f, &cfg(&d.0), &l).unwrap();
+        // 2 x 14 s of passes + one 60 s gap + 15 s margin: both passes are inside the window
+        assert!(f.log[1].contains("--secs 103 "), "{}", f.log[1]);
+        assert_eq!(log_secs(14.0, 2, 60.0), 103);
+        assert_eq!(pass_gap_s(&[]).unwrap(), 1.0);
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(pass_gap_s(&a(&["--pass-gap-ms=2500"])).unwrap(), 2.5);
+        assert!(pass_gap_s(&a(&["--pass-gap-ms"])).is_err());
+        assert!(pass_gap_s(&a(&["--pass-gap-ms", "x"])).is_err());
+        assert!(pass_gap_s(&a(&["--pass-gap-ms=1", "--pass-gap-ms=2"])).is_err());
     }
 
     #[test]

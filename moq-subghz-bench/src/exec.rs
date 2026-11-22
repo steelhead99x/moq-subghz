@@ -125,6 +125,8 @@ pub trait Host {
     /// Start in the background; `wait` joins it.
     fn start(&mut self, p: &Plan) -> Result<usize>;
     fn wait(&mut self, id: usize) -> Result<i32>;
+    /// Stop a job `start` began and reap it; a job already joined is not an error.
+    fn kill(&mut self, id: usize);
     fn sleep(&mut self, d: Duration);
     /// True when nothing really runs, so a caller skips checks of files that were never written.
     fn dry(&self) -> bool {
@@ -177,6 +179,13 @@ impl Host for Real {
         Ok(code(ch.wait()?))
     }
 
+    fn kill(&mut self, id: usize) {
+        if let Some(mut ch) = self.jobs.get_mut(id).and_then(Option::take) {
+            let _ = ch.kill();
+            let _ = ch.wait();
+        }
+    }
+
     fn sleep(&mut self, d: Duration) {
         std::thread::sleep(d);
     }
@@ -216,6 +225,8 @@ impl Host for Dry {
     fn wait(&mut self, _: usize) -> Result<i32> {
         Ok(0)
     }
+
+    fn kill(&mut self, _: usize) {}
 
     fn sleep(&mut self, d: Duration) {
         println!("sleep {}", d.as_secs_f64());
@@ -291,6 +302,10 @@ mod tests {
         let id = h.start(&Plan::new("sh", ["-c", "exit 4"])).unwrap();
         assert_eq!(h.wait(id).unwrap(), 4);
         assert!(h.wait(id).is_err(), "a job is joined once");
+        let id = h.start(&Plan::new("sleep", ["30"])).unwrap();
+        h.kill(id);
+        assert!(h.wait(id).is_err(), "a killed job is reaped");
+        h.kill(id); // a second kill is harmless
         assert_eq!(last_line("a\nb\n"), "b");
         assert_eq!(last_line(""), "");
     }
