@@ -16,7 +16,7 @@ OFF=$(python3 -c 'import sys; print(-float(sys.argv[1]))' "$X") # capture clock 
 ssh "$PI" "cd ~/$(printf '%q' "$PI_DIR") && rm -rf $(printf '%q' "/tmp/$N") && ./moq-subghz-recv --radio --profile $(printf '%q' "$P") --secs $((S + 10)) --out $(printf '%q' "/tmp/$N") --decode --raw-log --clock-offset-ms=$(printf '%q' "$OFF") ${RX_KEY:+--key-file $(printf '%q' "$RX_KEY")} ${RX:-}" > "$RUNS/$N.out" 2>&1 &
 RXP=$!
 sleep 4
-"$BIN/moq-subghz-send" --catwan "$PORT" --profile "$P" --secs "$S" --log "$RUNS/$N.send.jsonl" --i-have-an-antenna "$@" > "$RUNS/$N.send" 2> "$RUNS/$N.send.err"
+"$BIN/moq-subghz-send" --catwan "$PORT" --profile "$P" --secs "$S" --log "$RUNS/$N.send.jsonl" --i-have-an-antenna --transmit "$@" > "$RUNS/$N.send" 2> "$RUNS/$N.send.err"
 send_st=$?
 wait "$RXP"; recv_st=$? # ssh exits with the remote receiver's status
 mkdir -p "$RUNS/$N" && scp -q "$PI:/tmp/$N/*" "$RUNS/$N/" && ssh "$PI" rm -rf "$(printf '%q' "/tmp/$N")"

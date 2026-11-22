@@ -20,7 +20,7 @@ LP=$!
 sleep 3
 remote_args=''; [ $# -gt 0 ] && remote_args=$(printf '%q ' "$@")
 # Output to a file on the Pi, not a pipe, so ssh exits with the sender's own status.
-ssh "$PI" "cd ~/lora2015 && ./lora2015-send --mode $MODE --file frames/$FILE --profile $PROF --power 5 --passes $PASSES --tx-log /tmp/$N.tx.csv --i-have-an-antenna ${remote_args}> /tmp/$N.send.out 2>&1; st=\$?; tail -n 3 /tmp/$N.send.out; rm -f /tmp/$N.send.out; exit \$st" > "$RUNS/$N.send"
+ssh "$PI" "cd ~/lora2015 && ./lora2015-send --mode $MODE --file frames/$FILE --profile $PROF --power 5 --passes $PASSES --tx-log /tmp/$N.tx.csv --i-have-an-antenna --transmit ${remote_args}> /tmp/$N.send.out 2>&1; st=\$?; tail -n 3 /tmp/$N.send.out; rm -f /tmp/$N.send.out; exit \$st" > "$RUNS/$N.send"
 send_st=$?
 wait $LP; log_st=$?
 scp -q "$PI:/tmp/$N.tx.csv" "$RUNS/$N.tx.csv"; ssh "$PI" "rm -f /tmp/$N.tx.csv"

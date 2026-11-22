@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
+use moq_subghz_licence::{Auth, Encryption, GateArgs, Mode, Permit, Profile, Station, Tuning};
 use moq_subghz_link::Link;
 use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
 use moq_subghz_radio_emu::{pack, EmuLink};
@@ -121,6 +122,14 @@ struct Args {
     /// The moq-subghz-publish binary for --publish
     #[arg(long, default_value = "moq-subghz-publish")]
     publish_bin: String,
+    /// Treat 902-928 MHz as the amateur 33 cm band (amateur profile). Receive only: needs
+    /// licensed mode (`--licence-file`) or `--rx-amateur`, and no `--key-file`
+    #[arg(long)]
+    amateur: bool,
+    /// Licensed or unlicensed mode and the receive rules (see docs/LICENSING.md). This tool
+    /// never transmits; `--transmit` has no effect here.
+    #[command(flatten)]
+    gate: GateArgs,
 }
 
 fn unix_us() -> u64 {
@@ -358,6 +367,33 @@ fn clock_check(host: &str) -> Result<()> {
     Ok(())
 }
 
+/// The gate's answer for opening a radio to receive (a CatWAN port or the Pi's SX1276). The
+/// radio code is only reached with the permit this returns.
+fn receive_permit(station: &Station, a: &Args, bitrate: u32, fdev: u32) -> Result<Permit> {
+    let (profile, encryption) = (
+        if a.amateur {
+            Profile::AMATEUR
+        } else {
+            Profile::ISM
+        },
+        if a.key_file.is_some() {
+            Encryption::Sealed
+        } else {
+            Encryption::None
+        },
+    );
+    let width = u64::from(bitrate) + 2 * u64::from(fdev);
+    let centre = (a.freq * 1e6).round() as u64;
+    station
+        .check_start(
+            Tuning::occupied(centre, width),
+            profile,
+            encryption,
+            Auth::None,
+        )
+        .map_err(|e| anyhow::anyhow!("refusing to open the radio: {e}"))
+}
+
 fn main() -> Result<()> {
     let a = Args::parse();
     if let Some(h) = &a.clock_check {
@@ -399,6 +435,15 @@ fn main() -> Result<()> {
     let prof = parse_fsk_profile(&a.profile).map_err(|e| anyhow::anyhow!(e))?;
     let (br, fdev, pre, unchecked) = (prof.bitrate, prof.fdev, prof.preamble, prof.unchecked);
 
+    // The licence file, if any, is loaded whatever the source; only a real radio needs a permit.
+    let station = a.gate.station().context("licence")?;
+    eprintln!(
+        "mode: {}",
+        match station.mode() {
+            Mode::Licensed => "licensed",
+            Mode::Unlicensed => "unlicensed",
+        }
+    );
     // ---- line source
     let (ltx, lrx) = mpsc::channel::<(u64, String)>();
     let mut replay_th: Option<std::thread::JoinHandle<std::io::Result<()>>> = None;
@@ -452,6 +497,7 @@ fn main() -> Result<()> {
             RADIO_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
         });
     } else if let Some(port) = &a.port {
+        let _permit = receive_permit(&station, &a, br, fdev)?;
         let f = open_serial(port)?;
         let mut wr = f.try_clone()?;
         let rd = f;
@@ -503,6 +549,7 @@ fn main() -> Result<()> {
     } else if a.radio {
         #[cfg(target_os = "linux")]
         {
+            let _permit = receive_permit(&station, &a, br, fdev)?;
             let cfg = sx1276::fsk::FskConfig {
                 bitrate_bps: br,
                 fdev_hz: fdev,
@@ -957,8 +1004,9 @@ fn main() -> Result<()> {
     } else {
         ""
     };
+    let licence = station.json_member();
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}{emu_field}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}{emu_field}{licence}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad, re.frames_late, re.frames_stray, re.frames_stale,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),

@@ -2,7 +2,8 @@
 //! sits in a generated report or log under `results/`.
 //!
 //! What it checks (it cannot know your real values, so it looks for shapes):
-//!  1. no tracked file is named `licence.toml`;
+//!  1. no tracked file is named like a private licence file (`licence.toml`, `license.toml`,
+//!     variants and backups), and `.gitignore` ignores all of those;
 //!  2. no text file has a `licence_id` / `operator_name` / `licence_id=` / `operator=` value
 //!     other than a placeholder or `[redacted]`;
 //!  3. no token in a tracked text file or under `results/` has the shape of a US callsign;
@@ -116,17 +117,62 @@ fn key_values<'a>(line: &'a str, key: &str) -> Vec<&'a str> {
     out
 }
 
+/// A file name that looks like a private licence file in either spelling (`licence.toml`,
+/// `license.toml`, `licence.local.toml`, `my-license.toml`, `licence.toml.bak`).
+fn is_licence_file_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    (n.contains("licence") || n.contains("license"))
+        && n.contains(".toml")
+        && n != "licence.example.toml"
+}
+
 #[test]
 fn no_licence_file_is_tracked() {
     for f in tracked() {
         let name = f.rsplit('/').next().unwrap();
         assert!(
-            !(name.starts_with("licence")
-                && name.ends_with(".toml")
-                && name != "licence.example.toml"),
+            !is_licence_file_name(name),
             "a licence file is tracked: {f}"
         );
     }
+}
+
+#[test]
+fn licence_file_names_are_recognised_and_ignored_by_git() {
+    for n in [
+        "licence.toml",
+        "license.toml",
+        "licence.local.toml",
+        "my-licence.toml",
+        "licence.toml.bak",
+        "license.toml~",
+    ] {
+        assert!(is_licence_file_name(n), "{n}");
+        // .gitignore must agree with the guard, at the top and in a subdirectory.
+        for path in [n.to_string(), format!("sub/dir/{n}")] {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(root())
+                .args(["check-ignore", "-q", "--no-index", &path])
+                .status();
+            match out {
+                Ok(s) => assert!(s.success(), "{path} is not ignored by .gitignore"),
+                Err(_) => panic!("git is needed for this test"),
+            }
+        }
+    }
+    // The guard folds case; .gitignore cannot, so it only has to cover the lower-case names.
+    assert!(is_licence_file_name("LICENSE.TOML"));
+    for n in ["licence.example.toml", "Cargo.toml", "LICENSE-MIT"] {
+        assert!(!is_licence_file_name(n), "{n}");
+    }
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(root())
+        .args(["check-ignore", "-q", "--no-index", "licence.example.toml"])
+        .status()
+        .unwrap();
+    assert!(!ok.success(), "licence.example.toml must stay tracked");
 }
 
 #[test]
@@ -166,17 +212,13 @@ fn private_values_appear_nowhere_public() {
         Ok(c) => c,
         Err(ConfigError::NotFound) | Err(_) => return, // no private file here (CI): nothing to compare
     };
-    let (id, name) = (cfg.id(false), cfg.name(false));
     let mut hits = Vec::new();
     let mut files = scan_set();
     // The crate's own files are exempt from shape checks but must not hold the real values.
     files.extend(tracked().into_iter().filter(|r| exempt(r)));
     for rel in files {
         let Some(text) = text_of(&rel) else { continue };
-        let up = text.to_ascii_uppercase();
-        if id.is_some_and(|i| up.contains(&i.to_ascii_uppercase()))
-            || name.is_some_and(|n| text.contains(n))
-        {
+        if cfg.appears_in(&text) {
             hits.push(rel);
         }
     }

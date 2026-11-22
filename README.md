@@ -100,8 +100,10 @@ see [docs/BENCHMARKS.md](docs/BENCHMARKS.md). With real radios, follow **[HOWTO.
 
 ## Radio rules (all bands)
 
-* The tools **never transmit by default**. They need `--i-have-an-antenna`, and they refuse
-  frequencies and powers outside built-in limits.
+* The tools **never transmit by default**. They need `--i-have-an-antenna` and `--transmit`, the
+  licence gate must permit it ([docs/LICENSING.md](docs/LICENSING.md)), and they refuse
+  frequencies and powers outside built-in limits. The shipped CatWAN firmware images do not
+  enforce any of this.
 * The built-in limits cover **915 MHz, about 3 mW**, only. 915 MHz is licence-free in the Americas,
   but **not in Europe and many other places**. Sub-GHz ISM bands differ by region.
 * 2.4 GHz and 5.8 GHz rules differ by region too, and some 5 GHz channels need radar avoidance (DFS)
