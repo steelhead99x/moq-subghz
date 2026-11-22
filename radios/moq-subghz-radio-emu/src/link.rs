@@ -6,9 +6,10 @@
 //!
 //! * [`EmuLink::pair`]: two ends in memory, for tests.
 //! * [`EmuLink::udp_sender`] and [`EmuLink::udp_receiver`]: one UDP datagram per delivered packet,
-//!   loopback addresses only. The receiver takes a datagram from any local process: the sender's
-//!   port is not fixed, so there is nothing to filter on. This is a test channel, not a security
-//!   boundary; a local process can inject frames and the receiver treats them as noise it has to
+//!   loopback addresses only. By default the sender's port is random and the receiver takes a
+//!   datagram from any local process. Give the sender a fixed source address and the receiver
+//!   that address as its peer, and the kernel drops everything else. Either way this is a test
+//!   channel, not a security boundary; the receiver treats a foreign datagram as noise it has to
 //!   survive (an empty or oversize datagram is an error, never a panic).
 //! * [`EmuLink::file_sender`]: `R <t> 0 0 <hex>` lines (one per wire frame) that
 //!   `moq-subghz-recv --replay` reads.
@@ -150,10 +151,13 @@ impl EmuLink {
         Ok((a, b))
     }
 
-    /// Send-only: every delivered packet becomes one UDP datagram to `addr` (loopback only).
-    pub fn udp_sender(cfg: EmuCfg, addr: &str) -> Result<Self, LinkError> {
+    /// Send-only: every delivered packet becomes one UDP datagram to `addr` (loopback only),
+    /// sent from `from` (loopback only, so a receiver can name its peer) or a random port.
+    pub fn udp_sender(cfg: EmuCfg, addr: &str, from: Option<&str>) -> Result<Self, LinkError> {
         let to = loopback_addr(addr)?;
-        let sock = UdpSocket::bind("127.0.0.1:0").map_err(io)?;
+        let from = from.map(loopback_addr).transpose()?;
+        let sock = UdpSocket::bind(from.unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0))))
+            .map_err(io)?;
         sock.connect(to).map_err(io)?;
         let (tx, rx) = mpsc::channel::<(Instant, Vec<u8>)>();
         let th = std::thread::spawn(move || delay_loop(rx, sock));
@@ -161,9 +165,14 @@ impl EmuLink {
     }
 
     /// Receive-only: read the datagrams of a [`EmuLink::udp_sender`] on `bind` (loopback only).
-    /// `cfg` must match the sender's, so the receiver knows whether packets are packed.
-    pub fn udp_receiver(cfg: EmuCfg, bind: &str) -> Result<Self, LinkError> {
+    /// `cfg` must match the sender's, so the receiver knows whether packets are packed. With
+    /// `peer` (loopback only) it takes datagrams from that address and no other; without it,
+    /// from any local process.
+    pub fn udp_receiver(cfg: EmuCfg, bind: &str, peer: Option<&str>) -> Result<Self, LinkError> {
         let sock = UdpSocket::bind(loopback_addr(bind)?).map_err(io)?;
+        if let Some(p) = peer {
+            sock.connect(loopback_addr(p)?).map_err(io)?;
+        }
         EmuLink::new(cfg, false, true, Out::None, In::Udp(sock))
     }
 
@@ -471,18 +480,21 @@ mod tests {
         tx(&mut a, &pack::pack(&[&[7u8; 40][..]]).unwrap());
         let mut f = EmuLink::file_sender(fsk(), "/dev/null").unwrap();
         tx(&mut f, &[9, 9]);
-        let mut rx = EmuLink::udp_receiver(fsk(), "127.0.0.1:0").unwrap();
+        let mut rx = EmuLink::udp_receiver(fsk(), "127.0.0.1:0", None).unwrap();
         let addr = rx.local_addr().unwrap().to_string();
-        let mut u = EmuLink::udp_sender(fsk(), &addr).unwrap();
+        let mut u = EmuLink::udp_sender(fsk(), &addr, None).unwrap();
         round_trip(&mut u, &mut rx, &[4, 5, 6]);
         tx(&mut u, &[1]);
     }
 
     #[test]
     fn udp_receiver_survives_foreign_datagrams() {
-        let mut rx =
-            EmuLink::udp_receiver(EmuCfg::new(PhyKind::Fsk(FskCfg::default())), "127.0.0.1:0")
-                .unwrap();
+        let mut rx = EmuLink::udp_receiver(
+            EmuCfg::new(PhyKind::Fsk(FskCfg::default())),
+            "127.0.0.1:0",
+            None,
+        )
+        .unwrap();
         let to = rx.local_addr().unwrap();
         let s = UdpSocket::bind("127.0.0.1:0").unwrap();
         s.send_to(&[], to).unwrap();
@@ -493,6 +505,26 @@ mod tests {
         assert_eq!(rx.recv(&mut buf, t), Err(LinkError::Empty));
         assert_eq!(rx.recv(&mut buf, t), Err(LinkError::TooLong));
         assert_eq!(rx.recv(&mut buf, t).unwrap().unwrap().len, 5);
+    }
+
+    #[test]
+    fn a_receiver_with_a_peer_ignores_everyone_else() {
+        use moq_subghz_link::conformance::round_trip;
+        let cfg = || EmuCfg::new(PhyKind::Fsk(FskCfg::default()));
+        // pick a free port for the sender, then release it
+        let from = UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+        let mut rx = EmuLink::udp_receiver(cfg(), "127.0.0.1:0", Some(&from)).unwrap();
+        let to = rx.local_addr().unwrap();
+        let stranger = UdpSocket::bind("127.0.0.1:0").unwrap();
+        stranger.send_to(&[9u8; 5], to).unwrap();
+        let mut tx = EmuLink::udp_sender(cfg(), &to.to_string(), Some(&from)).unwrap();
+        // the stranger's datagram never arrives, the peer's do (and `round_trip` checks the
+        // queue is empty afterwards)
+        round_trip(&mut tx, &mut rx, &[1, 2, 3]);
     }
 
     #[test]
@@ -535,7 +567,8 @@ mod tests {
         assert_eq!(a.send(&vec![1u8; 1473]), Err(LinkError::TooLong));
         // 3 bytes are not whole packed records: [len 9][1 2] is truncated
         assert!(matches!(a.send(&[9, 1, 2]), Err(LinkError::Io(_))));
-        let mut rx = EmuLink::udp_receiver(halow(LossModel::None, true), "127.0.0.1:0").unwrap();
+        let mut rx =
+            EmuLink::udp_receiver(halow(LossModel::None, true), "127.0.0.1:0", None).unwrap();
         assert_eq!(rx.send(&[1]), Err(LinkError::Unsupported));
         let mut tx =
             EmuLink::file_sender(EmuCfg::new(PhyKind::Fsk(FskCfg::default())), "/dev/null")
@@ -554,16 +587,18 @@ mod tests {
     #[test]
     fn udp_refuses_non_loopback_addresses() {
         let cfg = EmuCfg::new(PhyKind::Fsk(FskCfg::default()));
-        assert!(EmuLink::udp_sender(cfg.clone(), "192.0.2.1:9").is_err());
-        assert!(EmuLink::udp_receiver(cfg, "0.0.0.0:0").is_err());
+        assert!(EmuLink::udp_sender(cfg.clone(), "192.0.2.1:9", None).is_err());
+        assert!(EmuLink::udp_sender(cfg.clone(), "127.0.0.1:9", Some("192.0.2.1:0")).is_err());
+        assert!(EmuLink::udp_receiver(cfg.clone(), "0.0.0.0:0", None).is_err());
+        assert!(EmuLink::udp_receiver(cfg, "127.0.0.1:0", Some("192.0.2.1:9")).is_err());
     }
 
     #[test]
     fn udp_round_trip_on_loopback() {
         let cfg = halow(LossModel::None, true);
-        let mut rx = EmuLink::udp_receiver(cfg.clone(), "127.0.0.1:0").unwrap();
+        let mut rx = EmuLink::udp_receiver(cfg.clone(), "127.0.0.1:0", None).unwrap();
         let addr = rx.local_addr().unwrap().to_string();
-        let mut tx = EmuLink::udp_sender(cfg, &addr).unwrap();
+        let mut tx = EmuLink::udp_sender(cfg, &addr, None).unwrap();
         let pkt = pack::pack(&[&[7u8; 255][..], &[8u8; 40][..]]).unwrap();
         tx.send(&pkt).unwrap();
         tx.idle().unwrap();

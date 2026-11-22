@@ -56,6 +56,10 @@ struct Args {
     /// receiver first; the sender must use the same link and `--halow-*` settings.
     #[arg(long)]
     emu_udp: Option<String>,
+    /// With `--emu-udp`: accept datagrams only from this loopback address (the sender's
+    /// `--emu-udp-from`). Default: any local process.
+    #[arg(long)]
+    emu_udp_peer: Option<String>,
     #[command(flatten)]
     emu: EmuArgs,
     /// CatWAN serial port (macOS: /dev/cu.usbmodemXXXX)
@@ -421,7 +425,8 @@ fn main() -> Result<()> {
             .as_deref()
             .context("a -emu link needs --emu-udp ADDR")?;
         let cfg = a.emu.to_cfg(sel).map_err(|e| anyhow::anyhow!(e))?;
-        let mut rx = EmuLink::udp_receiver(cfg, addr).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut rx = EmuLink::udp_receiver(cfg, addr, a.emu_udp_peer.as_deref())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         eprintln!(
             "modeled link: {} listening on {addr} (no radio is driven; results are MODELED)",
             rx.cfg().name()

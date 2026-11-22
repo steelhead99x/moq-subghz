@@ -36,6 +36,9 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Fixed
 
+* **The emulated UDP link can name its peer.** `moq-subghz-send --emu-udp-from ADDR` fixes the
+  datagrams' loopback source and `moq-subghz-recv --emu-udp-peer ADDR` accepts only that source;
+  the default (any local process) and the loopback-only rule are unchanged.
 * **Link contract, uniformly.** `Link::idle` on the CatWAN and the SX1276 FSK backends returns the
   error when the radio cannot be stopped (it was printed or dropped). The real radios stop
   themselves on `Drop` (best effort, never transmits, never panics). `CatwanTx::send` and
