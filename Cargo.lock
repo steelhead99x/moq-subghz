@@ -786,6 +786,7 @@ name = "moq-subghz-licence"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "moq-subghz-licence",
 ]
 

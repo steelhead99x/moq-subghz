@@ -54,6 +54,26 @@ forward path waits 3 s before the Pi transmits, the reverse path 4 s before the 
 `PKEY` for `rev` (the receiver is the Pi). It is quoted on both sides of ssh, so paths and sender
 arguments may contain spaces. `--rx` adds other receiver arguments and is split on spaces.
 
+## Input checks
+
+* `--pi`/`PI` must be a host name, `user@host` or an IPv4 or IPv6 literal. A leading `-`, white
+  space, control characters and shell characters are refused before anything runs, and every
+  `ssh` and `scp` the bench starts has `-o BatchMode=yes --` before the host, so a host can never be
+  read as an option and an unattended run never waits for a prompt.
+* The Pi's scratch files live in a private directory made with `mktemp -d` (mode 0700) for each
+  run, removed at the end, never in a name another user could predict.
+* `--label` and run names: letters, digits, `_`, `-` and `.`, at most 64, no `..`, no leading `-` or `.`.
+* `factory-bench` refuses a picture that makes more than 999 chunks (the counters have three
+  digits), a packet over 255 bytes, or an empty picture, before it transmits.
+* `stick-cap` stops with an error if its output files exist (add `--append` to add to them),
+  does not follow symlinks, rejects a `--seconds` that is not a number from 0 to 30 days, and opens
+  the stick read only.
+* Every file the bench reads whole has a size cap (64 MiB for tables, JSON and logs, 16 MiB for a
+  picture, 32 MiB for an ELF, 1 GiB streamed for the raw log `package-051` compresses): a bigger
+  one is an error naming the file. `analyze` treats `nan`, `inf` and other malformed numbers in a
+  table as missing or as an error, never a panic.
+* `clocklog --dry-run` prints the one command it repeats and writes nothing.
+
 The published runs used an ssh alias and a macOS `cu.usbmodem*` port. Those values are not
 defaults here: set `PI` and `PORT` to your own.
 

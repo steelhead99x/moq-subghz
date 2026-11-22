@@ -302,7 +302,14 @@ fn real_main() -> Result<()> {
             let out = out.unwrap_or_else(|| c.runs.join("demo"));
             demo::run(&mut *h, &c, &out, play)
         }
-        Cmd::Clocklog { env } => matrix::clocklog_until_file(&env.cfg()?),
+        Cmd::Clocklog { env } => {
+            let c = env.cfg()?;
+            if env.dry_run {
+                // One plan, nothing written: no stop file removed, no directory made, no loop.
+                return matrix::clocklog_dry(&mut exec::Dry::new(), &c);
+            }
+            matrix::clocklog_until_file(&c)
+        }
         Cmd::Package051 { runs, demo, out } => package::run(&runs, &demo, &out),
         Cmd::Lora2015Table { bin, repo_root } => {
             let bin = match bin {
@@ -350,9 +357,7 @@ fn real_main() -> Result<()> {
             factory::send_chunks(&chunks, &app_dir, Duration::from_millis(timeout_ms))
         }
         Cmd::Elf2uf2 { elf, uf2 } => {
-            let (bytes, line) = uf2::convert(
-                &std::fs::read(&elf).with_context(|| format!("read {}", elf.display()))?,
-            )?;
+            let (bytes, line) = uf2::convert(&cell::read_capped(&elf, cell::MAX_ELF)?)?;
             std::fs::write(&uf2, bytes)?;
             println!("{line}");
             Ok(())

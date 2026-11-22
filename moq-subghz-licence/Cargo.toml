@@ -1,16 +1,20 @@
 [package]
 name = "moq-subghz-licence"
 version = "0.1.0"
-description = "Licensed vs unlicensed operating mode: licence config, region rules, band table and the transmit gate. No radio code, no required dependencies."
+description = "Licensed vs unlicensed operating mode: licence config, region rules, band table and the transmit gate. No radio code; on Unix only libc, for the loader's open flags."
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
-# No required dependencies and no dependency on the send/recv crates. The config is a small
+# No dependency on the send/recv crates, and on Unix only `libc` (O_NONBLOCK differs per
+# platform, so it is not hard-coded). The config is a small
 # strict subset of TOML parsed by hand (see config.rs). `clap` is optional, for `GateArgs`.
 [dependencies]
 clap = { version = "4", features = ["derive"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 # `GateArgs` as a clap argument group, for the binaries. Off by default so the crate stays
