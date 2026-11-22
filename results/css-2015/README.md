@@ -1,6 +1,6 @@
 # A 2015-style chirp spread spectrum (CSS) mode image test
 
-What could a small team have done in 2015 with a CSS mode chip and a Raspberry Pi? They would not
+What could a small team have done in 2015 with a CSS mode chip and a ARM single-board computer? They would not
 have sent live video. They would have sent still pictures, in small packets, and waited. This
 test does that on the same Pi, HAT and RP2040-based device as the moq-subghz video, so the two can be
 compared on the same bench.
@@ -98,7 +98,7 @@ cycle, usually 1%, so a 400 ms frame must be followed by about 40 s of silence. 
 
 ## What you need
 
-* The Pi with the the HAT maker HAT, an antenna on it, and the 915 MHz stick on the Mac with its antenna.
+* The board with the SX1276 GPS HAT, an antenna on it, and the 915 MHz stick on the Mac with its antenna.
 * The stick on `rp2040-sx1276-fw` v5 (`firmware/rp2040-sx1276-fw-v5.uf2`), the image the other runs used, or 0.5.1
   (`firmware/rp2040-sx1276-fw-0.5.1.uf2`), which only fixes the radio start-up (see the CHANGELOG).
   On v5 the logger's first `I` can read `sx_version=0x00` right after power-up; the radio is
@@ -109,7 +109,7 @@ cycle, usually 1%, so a 400 ms frame must be followed by about 40 s of silence. 
 
 ## Run it
 
-Build the logger on the Mac and the sender for the Pi, as in [HOWTO section 3](../../HOWTO.md#3-build):
+Build the logger on the Mac and the sender for the board, as in [HOWTO section 3](../../HOWTO.md#3-build):
 
 ```sh
 cargo build --release -p moq-subghz-css2015
@@ -120,18 +120,18 @@ scp target/armv7-unknown-linux-musleabihf/release/css2015-send pi:css2015/
 scp -r results/css-2015/frames pi:css2015/
 ```
 
-**Before any radio.** Check the plan on the Pi (nothing is sent):
+**Before any radio.** Check the plan on the board (nothing is sent):
 
 ```sh
 ssh pi 'cd css2015 && ./css2015-send --mode chunk --file frames/f160x120-q20.jpg --dry-run'
 ```
 
-**1. Power and cables.** Power the Pi with the HAT on. Plug the stick into the Mac. Screw an
+**1. Power and cables.** Power the board with the HAT on. Plug the stick into the Mac. Screw an
 antenna on both. Never transmit without one.
 
 **2. Find the stick's port** on the Mac: `ls /dev/cu.usbmodem*`.
 
-**3. The 30 second smoke test.** Start the logger on the Mac first, then the sender on the Pi.
+**3. The 30 second smoke test.** Start the logger on the Mac first, then the sender on the board.
 The small picture at SF7/125 takes about 3.7 s per pass, so 30 s is about 8 passes.
 
 ```sh
@@ -198,7 +198,7 @@ In the `--out` directory:
 
 ## Sources
 
-* Dave Akerman, [Making a CSS mode Gateway](https://www.daveakerman.com/?p=1719) (21 Jan 2015): a Pi
+* Dave Akerman, [Making a CSS mode Gateway](https://www.daveakerman.com/?p=1719) (21 Jan 2015): a board
   with a CSS mode board, `ssdv` for decoding images, and the gateway's CSS modes (mode 1 is "normal
   for SSDV", mode 3 is "fast SSDV": 250 kHz, SF7, 4/6). Also his
   [Portable CSS mode Gateway](https://www.daveakerman.com/?p=1905) (9 Dec 2015).

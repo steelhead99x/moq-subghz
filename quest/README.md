@@ -2,7 +2,7 @@
 
 ## Goal
 
-Live H.264 over an SX1276 in FSK mode, from a Raspberry Pi to a USB stick, that anyone with the
+Live H.264 over an SX1276 in FSK mode, from a ARM single-board computer to a USB stick, that anyone with the
 parts can reproduce from the README and HOWTO, with tools that never lose or misreport a run and
 numbers that hold up on re-measurement.
 

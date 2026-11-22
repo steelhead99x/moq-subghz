@@ -1,5 +1,5 @@
 Bench check of the radio start-up fix, 2026-11-20. RP2040-based device on a Linux host, serial commands.
-Raspberry Pi 2 B with the the HAT maker HAT sent with the HAT maker's stock sample app (915 MHz, SF7, 125 kHz, sync 0x12, +5 dBm setting).
+ARM single-board computer with the SX1276 GPS HAT sent with the HAT maker's stock sample app (915 MHz, SF7, 125 kHz, sync 0x12, +5 dBm setting).
 
 == 0.5.0 (rp2040-sx1276-fw-v5.uf2), right after flashing ==
 > I
@@ -12,7 +12,7 @@ OK L 915000000 None
 I rp2040-sx1276-fw 0.5.0 sx_version=0x12 t_us=28204613
 (RESET is held low until the first L or F, so the chip reads 0x00 before it.)
 
-== 0.5.1 (rp2040-sx1276-fw-0.5.1.uf2, sha256 608bc4dd...), right after flashing ==
+== 0.5.1 (rp2040-sx1276-fw-0.5.1.uf2, sha256 608bc4dd..., the image measured here; the shipped file was rebuilt later, see CHANGELOG), right after flashing ==
 > I
 I rp2040-sx1276-fw 0.5.1 sx_version=0x12 t_us=23622149
 > I
@@ -22,7 +22,7 @@ X sx_version=0x12 tries=1
 > I
 I rp2040-sx1276-fw 0.5.1 sx_version=0x12 t_us=26644591
 
-== 0.5.1 CSS mode receive smoke test, 6 packets sent from the Pi ==
+== 0.5.1 CSS mode receive smoke test, 6 packets sent from the board ==
 > L 915000000 7 125000 5 5 0
 OK L 915000000 None
 > R

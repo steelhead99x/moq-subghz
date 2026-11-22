@@ -9,7 +9,7 @@
 //! `--clock-log FILE` (lines `{"t_us": <laptop unix µs>, "c": {"remote_minus_local_ms": Pi-minus-laptop}}`,
 //! written every few seconds by `moq-subghz-bench clocklog` during the runs) re-bases every latency
 //! sample on the offset interpolated at that moment instead of the single offset measured
-//! before the run. Needed because the Pi's timesyncd can step its clock by tens of ms mid-run.
+//! before the run. Needed because the board's timesyncd can step its clock by tens of ms mid-run.
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
@@ -142,7 +142,7 @@ fn main() -> Result<()> {
             if reverse {
                 // receiver = Pi; used = -(Pi-laptop) at start; true = -(Pi-laptop)(t)
                 // laptop time = Pi time - (Pi - laptop) = t_us + used, in signed math:
-                // `used` is positive when the Pi is behind.
+                // `used` is positive when the board is behind.
                 let laptop_us = i64::try_from(t_us)
                     .ok()?
                     .checked_add((used * 1000.0) as i64)?;

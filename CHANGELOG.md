@@ -12,7 +12,7 @@ stay. The LoRa-class modulation is called chirp spread spectrum (CSS) mode, IEEE
 | Old | New |
 |---|---|
 | crate and bins `moq-subghz-lora2015`, `lora2015-send`, `lora2015-log` | `moq-subghz-css2015`, `css2015-send`, `css2015-log` |
-| `firmware/catwan-fw`, `catwan-fw-v5.uf2`, `catwan-fw-0.5.1.uf2` | `firmware/rp2040-sx1276-fw`, `rp2040-sx1276-fw-v5.uf2`, `rp2040-sx1276-fw-0.5.1.uf2` (same bytes) |
+| `firmware/catwan-fw`, `catwan-fw-v5.uf2`, `catwan-fw-0.5.1.uf2` | `firmware/rp2040-sx1276-fw`, `rp2040-sx1276-fw-v5.uf2`, `rp2040-sx1276-fw-0.5.1.uf2` (v5 same bytes; 0.5.1 rebuilt, see below) |
 | `firmware/vendor/dragino-lora-gps-hat`, `.../electronic-cats-catwan-rp2040` | `firmware/vendor/sx1276-gps-hat`, `firmware/vendor/rp2040-factory-receiver` |
 | `docs/HALOW.md` (moved: now `docs/S1G-EMULATION.md`) | `docs/S1G-EMULATION.md` |
 | `results/lora-2015/`, `results/stick-0.5.1/lora/`, `lora.csv`, `lora-summary.csv`, run names `lorawan-*` | `results/css-2015/`, `results/stick-0.5.1/css/`, `css.csv`, `css-summary.csv`, `framed-*` |
@@ -32,6 +32,20 @@ Redirect: a link to `docs/HALOW.md` now goes to `docs/S1G-EMULATION.md`.
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### Rebuilt 0.5.1 image (not byte-identical to the measured runs)
+
+`firmware/rp2040-sx1276-fw-0.5.1.uf2` was rebuilt so that its USB product string and `I` banner carry no brand
+name (product `RP2040-based device`, banner `I rp2040-sx1276-fw 0.5.1 ...`). It was built from the 0.5.1 source
+as released (commit 4e31b7a, which has no band or power checks), Rust 1.90.0, `--locked`, thumbv6m, converted
+with `moq-subghz-bench elf2uf2`, with only those two strings changed. An unmodified rebuild differs from the old
+image in 47 bytes out of 110592, so the build is not bit-reproducible. The image is therefore NOT byte-identical to
+the one used in earlier runs. History: the old image had sha256
+`608bc4dd10e7b211440d87faf33933ccdcdcc63c1c40b6e3317438818b40528f`; the new one has
+`08ec0cdb576fe4c482e6638fb36452e2f5193f2a1b943789b0a739b1ccf9b999`. `rp2040-sx1276-fw-v5.uf2` (sha256
+`fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317`) is unchanged: the source it was built from
+cannot be reproduced here (a build of the matching commit gives a different size), so it still carries the old
+product string and banner. The host tools accept both banners. Nothing was flashed.
+
 ### CI and hygiene
 
 * The leak guard fails closed (no git, an unreadable tracked file or a private licence file that
@@ -46,7 +60,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 * `factory-send` and `factory-bench` no longer transmit on `--i-have-an-antenna` alone. They need
   `--transmit` and a declaration of the stock app's carrier and power (`--freq-mhz`, `--power-dbm`),
-  and run the licence gate on the laptop and again on the Pi before reading, opening or starting
+  and run the licence gate on the laptop and again on the board before reading, opening or starting
   anything. The unpatched vendor app build (868.1 MHz, +17 dBm) is refused with the way to bench it
   (the 915 MHz patch). `demo-051` runs the transmit check before it writes `I` to the stick.
 * Radio `open` functions take the gate's permit (`TxPermit` / `RxPermit`), so a missing gate is a
@@ -73,7 +87,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   device is assumed, and the bench never adds either transmit flag itself. They are forwarded to the
   sender (and shown by `--dry-run`) only when you pass them, as bench options or among the sender
   arguments, and a real run without them stops before anything starts. The licence gate in
-  `moq-subghz-send` and `css2015-send` still decides (docs/LICENSING.md). The Pi's per frame log
+  `moq-subghz-send` and `css2015-send` still decides (docs/LICENSING.md). The board's per frame log
   of a css2015 run is checked too.
 * The ported scripts are deleted: `scripts/{run2,rev,bench,bench-051,demo-051,clocklog,css2015-run,
   css2015-frames,css2015-table,package-051}.sh`, `scripts/env.sh`, `scripts/analyze-051.py`,
@@ -82,7 +96,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   and `firmware/vendor/sx1276-gps-hat/fetch-and-build.sh` remain.
 
 * Bench hardening: `--pi` is checked (host name, `user@host`, IP literal; no leading `-`, white
-  space or shell characters), every ssh and scp has `-o BatchMode=yes --` before the host, the Pi's
+  space or shell characters), every ssh and scp has `-o BatchMode=yes --` before the host, the board's
   scratch files are in a `mktemp -d` directory, `--label` and run names are limited, and
   `factory-bench` refuses over 999 chunks or a packet over 255 bytes before transmitting.
   `clocklog --dry-run` no longer runs. `analyze` no longer panics on `nan`, `inf` or huge numbers
@@ -90,7 +104,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   rejects a bad `--seconds`, opens the stick read only and stops on a hung-up device. Every file
   the bench reads has a size cap. The licence loader uses `libc::O_NONBLOCK` (the crate now depends
   on `libc` on Unix). The UDP emulation receiver drops datagrams queued before its peer filter was
-  connected. The reverse run no longer deletes `/tmp/<run name>` on the Pi: it removes only its own
+  connected. The reverse run no longer deletes `/tmp/<run name>` on the board: it removes only its own
   `mktemp -d` directory. `css2015-run` resolves `--freq` and `--cr` once and gives them to the
   dry run, the sender, the logger and the replay, and prints them. A run that sent frames and
   received none (total loss) is now kept by `analyze` and `package-051` instead of dropped; only
@@ -236,7 +250,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   (the HAT maker's sample app, the board maker' stock receiver), measured. Vendor images and fetch
   scripts are in `firmware/vendor/`.
 
-* **`moq-subghz-css2015`: a 2015-style CSS mode image test**, in `results/css-2015/`. A Pi sender
+* **`moq-subghz-css2015`: a 2015-style CSS mode image test**, in `results/css-2015/`. An ARM single-board computer sender
   (`css2015-send`) sends a test picture in real CSS mode as chunked JPEG, SSDV packets or
   framed uplinks (no network behind them), and a host logger (`css2015-log`) reads it on the
   RP2040-based device and writes CSV. Built and tested without radios; the airtime table is calculated,
@@ -249,7 +263,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 ### Link trait for the SX1276 code
 
 * **The SX1276 FSK and CSS-mode code and the RP2040-based device writer now sit behind `moq_subghz_link::Link`**, in the new
-  `radios/moq-subghz-radio-sx1276` crate: `Sx1276FskTx` and `Sx1276FskRx` (the Pi HAT, from the two `radio.rs`
+  `radios/moq-subghz-radio-sx1276` crate: `Sx1276FskTx` and `Sx1276FskRx` (the board HAT, from the two `radio.rs`
   files), `Sx1276CssTx` (from `css2015-send`), `Rp2040Tx` (the `Q <hex>` writer from `moq-subghz-send`) and
   `FileSink` (`--loopback`). The code was moved, not rewritten; frames, FEC, pacing, power and band checks and
   the summary fields are unchanged. `moq-subghz-send` holds a `Box<dyn Link>` instead of its own `enum Link`.
@@ -275,7 +289,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * **Breaking: frame format version 5.** The key-derivation label (the HKDF info string) is now
   `moq-subghz object key v2`, and the frame header version went from 4 to 5. A sender and
   receiver built before and after this change refuse each other's frames, and encrypted output
-  recorded before it can't be opened. Update the Pi and the laptop together. The pre-shared key
+  recorded before it can't be opened. Update the board and the laptop together. The pre-shared key
   still works once the file is named `moq-subghz-key.hex`.
 
 ### Receiver
@@ -293,7 +307,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * New `moq-subghz-publish` crate: republishes the received groups and objects 1:1 as a real MoQ
   broadcast (hang format) through moq.dev's `moq-net`, `moq-tokio` and `hang` crates, so a
   moq.dev relay or moq.pro can fan it out and the moq.dev web player can show it. Separate
-  crate (Rust 1.91+), so the Pi binaries are unchanged. See [docs/MOQ.md](docs/MOQ.md).
+  crate (Rust 1.91+), so the board binaries are unchanged. See [docs/MOQ.md](docs/MOQ.md).
 * `moq-subghz-recv --publish URL` feeds it the objects that pass the group gate.
   `summary.json` gains `publish_dropped_objects`.
 
@@ -303,7 +317,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   its video source stalls.
 * Key files must be readable only by their owner.
 * The bench scripts quote key paths and pass the receiver's key separately.
-* The Pi radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
+* The board radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
 * Two committed `.pyc` files are removed, `.gitignore` covers Python bytecode, and CI fails if one is committed again.
 
 ### Results
@@ -317,5 +331,5 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ## Bench release, 2026-11-17
 
-The first working version: live H.264 over SX1276 FSK from a Raspberry Pi 2 to an RP2040-based device USB
+The first working version: live H.264 over SX1276 FSK from a ARM single-board computer to an RP2040-based device USB
 stick, with optional encryption, and the eight measured runs in `results/video/`.

@@ -6,7 +6,7 @@
 //! as per docs/LICENSING.md, which the sender checks). Neither flag is ever added for the user:
 //! they are forwarded only when given here, or among the sender arguments after the profile.
 //! The transmit check runs first, before anything is written or started. Every program is given
-//! `--licence-file` or `--no-licence` (see `licence.rs`) so a licence file on the Pi cannot pick
+//! `--licence-file` or `--no-licence` (see `licence.rs`) so a licence file on the board cannot pick
 //! the mode unseen. Nothing opens a serial port here: the project's receiver and logger do, on
 //! the `--port` the user gives. (`factory-send` and `factory-bench` are in `factory.rs`, with
 //! their own gate.)
@@ -23,10 +23,10 @@ use std::time::Duration;
 /// Where things are: the ssh host, the binaries, the runs directory, the serial device.
 #[derive(Args, Clone, Debug)]
 pub struct Env {
-    /// ssh host of the Pi
+    /// ssh host of the board
     #[arg(long, env = "PI", default_value = "pi")]
     pub pi: String,
-    /// Directory on the Pi (under its home) that holds moq-subghz-send and moq-subghz-recv
+    /// Directory on the board (under its home) that holds moq-subghz-send and moq-subghz-recv
     #[arg(long, env = "PI_DIR", default_value = "moq-subghz")]
     pub pi_dir: String,
     /// Directory of the built binaries (default: the directory of this one)
@@ -160,7 +160,7 @@ impl Cfg {
         v
     }
 
-    /// Everything the bench adds to a program that runs on the Pi: the transmit flags the user
+    /// Everything the bench adds to a program that runs on the board: the transmit flags the user
     /// gave and the licence mode.
     fn pi_send_flags(&self, args: &[String]) -> Vec<String> {
         let mut v = self.tx_flags(args);
@@ -270,7 +270,7 @@ pub fn valid_name(n: &str) -> Result<()> {
     Ok(())
 }
 
-/// The Pi minus laptop clock offset from `moq-subghz-recv --clock-check`, as the text it printed
+/// The board minus laptop clock offset from `moq-subghz-recv --clock-check`, as the text it printed
 /// (kept as is, for the run's files) and as a number. Anything but a plain decimal is an error.
 pub fn parse_offset(line: &str) -> Result<(String, f64)> {
     const KEY: &str = "remote_minus_local_ms\":";
@@ -329,7 +329,7 @@ pub struct Run<'a> {
     pub args: &'a [String],
 }
 
-/// A private scratch directory on the Pi (`mktemp -d`: mode 0700, a name nobody can predict), for
+/// A private scratch directory on the board (`mktemp -d`: mode 0700, a name nobody can predict), for
 /// this run's files. The caller removes it, and only it, when the run is done. A dry run prints the
 /// command and uses a placeholder.
 pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
@@ -349,7 +349,7 @@ pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
             && !p.contains("..")
             && p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)),
-        "the Pi gave an odd scratch directory name: {p:?}"
+        "the board gave an odd scratch directory name: {p:?}"
     );
     Ok(p.to_string())
 }
@@ -358,7 +358,7 @@ fn words(s: &str) -> Vec<String> {
     s.split_whitespace().map(String::from).collect()
 }
 
-/// The remote command that runs the Pi's sender, keeping its output in a file so ssh exits with
+/// The remote command that runs the board's sender, keeping its output in a file so ssh exits with
 /// the sender's own status.
 pub fn pi_send_script(pi_dir: &str, tmp: &str, r: &Run, flags: &[String]) -> String {
     let so = shq(&format!("{tmp}/send.out"));
@@ -376,7 +376,7 @@ pub fn pi_send_script(pi_dir: &str, tmp: &str, r: &Run, flags: &[String]) -> Str
     )
 }
 
-/// Pi to laptop: the receiver here, the sender on the Pi.
+/// board to laptop: the receiver here, the sender on the board.
 pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -485,7 +485,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     Ok(())
 }
 
-/// Laptop to RP2040-based device to Pi: the receiver on the Pi, the sender here.
+/// Laptop to RP2040-based device to Pi: the receiver on the board, the sender here.
 pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -537,7 +537,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     if !h.dry() {
         fs::create_dir_all(c.runs.join(n))?;
     }
-    // scp's glob is expanded on the Pi; the Pi's copy is removed only after a good copy.
+    // scp's glob is expanded on the board; the board's copy is removed only after a good copy.
     let mut copy_st = h
         .run(&scp_plan(
             format!("{}:{scratch}/rx/*", scp_host(&c.pi)),
@@ -583,7 +583,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         ));
     }
     if copy_st != 0 {
-        return fail("copying the receiver's files from the Pi failed".into());
+        return fail("copying the receiver's files from the board failed".into());
     }
     if fs::metadata(&dj).map_or(true, |m| m.len() == 0) {
         return fail("no sender log".into());
@@ -673,7 +673,7 @@ fn after_digits(text: &str, key: &str, dot: bool) -> Option<String> {
     })
 }
 
-/// Logger here, sender on the Pi, then the exact loss from a replay.
+/// Logger here, sender on the board, then the exact loss from a replay.
 pub fn css(h: &mut dyn Host, c: &Cfg, r: &Css) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -824,7 +824,7 @@ pub fn css(h: &mut dyn Host, c: &Cfg, r: &Css) -> Result<()> {
         ));
     };
     if tx_st != 0 || fs::metadata(c.run_file(n, ".tx.csv")).map_or(true, |m| m.len() == 0) {
-        return fail("no per frame log (tx.csv) copied from the Pi".into());
+        return fail("no per frame log (tx.csv) copied from the board".into());
     }
     if exact_st != 0 || fs::metadata(rdir.join("exact/images.csv")).map_or(true, |m| m.len() == 0) {
         return fail(format!(
@@ -1263,7 +1263,7 @@ mod tests {
             .to_string();
         assert_eq!(
             e,
-            "FAILED t: copying the receiver's files from the Pi failed"
+            "FAILED t: copying the receiver's files from the board failed"
         );
         assert!(!f
             .log
@@ -1392,7 +1392,7 @@ mod tests {
         let mut f = Fake::default();
         good_forward(&mut f, &d.0);
         forward(&mut f, &c, &run("t", &[])).unwrap();
-        // the receiver here gets the local file, the sender on the Pi gets the Pi's
+        // the receiver here gets the local file, the sender on the board gets the board's
         assert!(
             f.log[2].contains("--licence-file /here/lic.toml --redact-licence"),
             "{}",
@@ -1450,7 +1450,7 @@ mod tests {
     fn good_hosts_pass() {
         for h in [
             "pi",
-            "raspberrypi.local",
+            "sbc.local",
             "pi-1_a.example.org",
             "kd@pi",
             "kd@192.168.1.20",

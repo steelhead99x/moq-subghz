@@ -1,7 +1,7 @@
-# SX1276 GPS HAT for Raspberry Pi: vendor sample app
+# SX1276 GPS HAT for ARM single-board computer: vendor sample app
 
 The sender in the [factory benchmark](../../../results/factory-firmware/README.md). The HAT vendor's own
-example program for the HAT's SX1276, built on the Pi.
+example program for the HAT's SX1276, built on the board.
 
 | | |
 |---|---|
@@ -38,7 +38,7 @@ Unpatched, the app builds and runs for 868 MHz and the public-network sync word.
 
 ## Build and use
 
-On a Raspberry Pi with the HAT, SPI enabled, g++ and WiringPi:
+On a ARM single-board computer with the HAT, SPI enabled, g++ and WiringPi:
 
 ```sh
 firmware/vendor/sx1276-gps-hat/fetch-and-build.sh      # builds hat_app in the upstream app directory under ./build
@@ -46,7 +46,7 @@ firmware/vendor/sx1276-gps-hat/fetch-and-build.sh      # builds hat_app in the u
 ./hat_app rec                # prints packet RSSI, SNR, length and text
 ```
 
-Raspberry Pi OS Trixie has no WiringPi package. Build tag `v3.20` without installing it and
+Debian-based OS Trixie has no WiringPi package. Build tag `v3.20` without installing it and
 point the script at it (the comments in `fetch-and-build.sh` have the three commands). The app
 drives the HAT's chip select, reset and DIO0 pins through WiringPi's numbering (6, 0 and 7; GPIO25,
 GPIO17 and GPIO4), so no pin changes are needed on the SX1276 GPS HAT.

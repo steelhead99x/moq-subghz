@@ -1,4 +1,4 @@
-//! SX1276 on the the HAT maker HAT in CSS mode, transmit only. Moved from `css2015-send`'s
+//! SX1276 on the HAT maker HAT in CSS mode, transmit only. Moved from `css2015-send`'s
 //! `transmit`; the profile, planning and pacing stay in `moq-subghz-css2015`.
 
 use anyhow::{bail, Result};

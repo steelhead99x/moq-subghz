@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fetch the HAT maker's official Raspberry Pi sample app at a pinned commit, check its hash,
-# apply the four-constant bench patch, and build it on a Raspberry Pi. Needs git, g++ and WiringPi.
+# Fetch the HAT maker's official ARM single-board computer sample app at a pinned commit, check its hash,
+# apply the four-constant bench patch, and build it on a ARM single-board computer. Needs git, g++ and WiringPi.
 #   ./fetch-and-build.sh [workdir]        default workdir: ./build
 # Nothing from the vendor's repository is stored in this repository: it has no license file.
 set -euo pipefail
@@ -17,7 +17,7 @@ echo "$UPSTREAM_SHA  main.c" | sha256sum -c -
 git checkout -q -- main.c
 patch --no-backup-if-mismatch main.c < "$HERE/gps-hat-bench.patch"
 echo "$PATCHED_SHA  main.c" | sha256sum -c -
-# WiringPi: Raspberry Pi OS Trixie has no package. Either install it, or build v3.20 and point at it:
+# WiringPi: Debian-based OS Trixie has no package. Either install it, or build v3.20 and point at it:
 #   git clone --branch v3.20 https://github.com/WiringPi/WiringPi && make -C WiringPi/wiringPi
 #   ln -sf libwiringPi.so.3.20 WiringPi/wiringPi/libwiringPi.so ; export WIRINGPI=$PWD/WiringPi/wiringPi
 if [ -n "${WIRINGPI:-}" ]; then

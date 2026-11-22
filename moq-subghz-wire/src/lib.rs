@@ -125,7 +125,7 @@ pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// One received frame as reported by the RP2040-based device firmware, the Pi receiver thread or
+/// One received frame as reported by the RP2040-based device firmware, the board receiver thread or
 /// the loopback file: `R <t_us> <rssi> <snr> <hex>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RLine {

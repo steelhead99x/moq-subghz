@@ -9,7 +9,7 @@ Every number in this project should carry one of:
 * **MODELED**: computed from a formula or an emulation. Name the model. A fit of measured data is MODELED.
 
 A MODELED number is never placed in a MEASURED column. Today the only MEASURED numbers are SX1276 FSK and
-chirp spread spectrum (CSS) mode on a Pi 2 B and an RP2040-based device. 802.11ah sub-GHz Wi-Fi, 2.4 GHz and 5.8 GHz have none.
+chirp spread spectrum (CSS) mode on a board 2 B and an RP2040-based device. 802.11ah sub-GHz Wi-Fi, 2.4 GHz and 5.8 GHz have none.
 
 ## Reproduce without a radio
 
@@ -34,13 +34,13 @@ removed, not an over-the-air result.
 
 ## Reproduce with radios
 
-Needs the Pi 2 B, the HAT and the RP2040-based device from the [HOWTO](../HOWTO.md). Set `PORT` and `PI` to your
+Needs the board 2 B, the HAT and the RP2040-based device from the [HOWTO](../HOWTO.md). Set `PORT` and `PI` to your
 own values, then:
 
 ```sh
 B=target/release/moq-subghz-bench
-$B run --i-have-an-antenna --transmit myrun 300000:100000:6 330 --fec-k 8    # Pi to laptop
-$B rev --i-have-an-antenna --transmit myrun 300000:100000:12 330 --fec-k 8   # laptop to Pi
+$B run --i-have-an-antenna --transmit myrun 300000:100000:6 330 --fec-k 8    # board to laptop
+$B rev --i-have-an-antenna --transmit myrun 300000:100000:12 330 --fec-k 8   # laptop to board
 $B bench --i-have-an-antenna --transmit                                      # the 8-run set
 $B bench-051 --i-have-an-antenna --transmit                                  # the stick 0.5.1 matrix (--part fsk, css, all)
 cargo run --release -p moq-subghz-report -- runs/*/     # table from run directories

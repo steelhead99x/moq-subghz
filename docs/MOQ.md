@@ -6,7 +6,7 @@ Media over QUIC broadcast, built on [moq.dev](https://moq.dev)'s Rust crates. A 
 then fans it out, and anyone can watch it in a browser.
 
 ```
-Pi 2 ──▶ 915 MHz FSK ──▶ RP2040-based device ──▶ laptop: moq-subghz-recv ──▶ moq-subghz-publish ──▶ MoQ relay ──▶ viewers
+board 2 ──▶ 915 MHz FSK ──▶ RP2040-based device ──▶ laptop: moq-subghz-recv ──▶ moq-subghz-publish ──▶ MoQ relay ──▶ viewers
 ```
 
 ## How it maps
@@ -26,7 +26,7 @@ connection is protected by TLS (and a token on moq.pro).
 ## Build
 
 `moq-subghz-publish` is its own crate, outside the radio workspace, because moq.dev's crates need
-Rust 1.91. The Pi binaries do not change.
+Rust 1.91. The board binaries do not change.
 
 ```sh
 cargo build --release                                       # moq-subghz-send / moq-subghz-recv

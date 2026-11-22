@@ -1,6 +1,6 @@
 # HOWTO
 
-From a bare Raspberry Pi 2 and a USB radio stick to a live picture in `ffplay`. Budget an hour.
+From a bare ARM single-board computer and a USB radio stick to a live picture in `ffplay`. Budget an hour.
 
 Just want to see it work? The [quick start in the README](README.md#try-it-no-radio-needed)
 runs the whole pipeline through a file, with no radios.
@@ -14,8 +14,8 @@ runs the whole pipeline through a file, with no radios.
 
 | part | job |
 |---|---|
-| Raspberry Pi 2 Model B (any Pi with a 40-pin header works) | sender: makes the video and transmits it |
-| SX1276 GPS HAT, **915 MHz version** | the Pi's radio (the GPS part goes unused) |
+| ARM single-board computer (2015 class) (any board with a 40-pin header works) | sender: makes the video and transmits it |
+| SX1276 GPS HAT, **915 MHz version** | the board's radio (the GPS part goes unused) |
 | the board maker **RP2040-based device**, 915 MHz | receiver: plugs into your laptop |
 | two 915 MHz antennas | both boards come with one |
 | a laptop (macOS or Linux) | runs the receiver and the player |
@@ -25,9 +25,9 @@ You don't need a camera. The sender uses ffmpeg's `testsrc2` pattern by default.
 <details>
 <summary>Pinouts (you only need these if you use a different board)</summary>
 
-**the HAT maker HAT on the Pi**
+**the SX1276 GPS HAT on the board**
 
-| radio pin | Pi GPIO (BCM) | header pin |
+| radio pin | board GPIO (BCM) | header pin |
 |---|---|---|
 | SCK / MISO / MOSI | 11 / 9 / 10 | 23 / 21 / 19 (`/dev/spidev0.0`) |
 | NSS (chip select) | 25 | 22 |
@@ -46,9 +46,9 @@ You don't need a camera. The sender uses ffmpeg's `testsrc2` pattern by default.
 
 </details>
 
-## 2. Set up the Pi
+## 2. Set up the board
 
-1. Install Raspberry Pi OS (32-bit Bookworm or later). Turn on SPI with `sudo raspi-config`
+1. Install Debian-based OS. Turn on SPI with `sudo raspi-config`
    (Interface Options, then SPI) and reboot.
 2. Let your user reach the radio without root:
    ```sh
@@ -66,14 +66,14 @@ On the laptop, with Rust 1.90 or newer and ffmpeg installed:
 git clone https://github.com/steelhead99x/moq-subghz && cd moq-subghz
 cargo build --release
 
-# The Pi binaries: static, no cross compiler needed
+# The board binaries: static, no cross compiler needed
 rustup target add armv7-unknown-linux-musleabihf
 cargo build --release -p moq-subghz-send -p moq-subghz-recv --target armv7-unknown-linux-musleabihf
 ssh pi mkdir -p moq-subghz
 scp target/armv7-unknown-linux-musleabihf/release/moq-subghz-{send,recv} pi:moq-subghz/
 ```
 
-The only thing the Pi needs besides these two files is ffmpeg.
+The only thing the board needs besides these two files is ffmpeg.
 
 ## 4. Flash the USB stick
 
@@ -110,7 +110,7 @@ Screw on both antennas. Start the receiver on the laptop first, because it waits
 ./target/release/moq-subghz-recv --port /dev/cu.usbmodemXXXX --secs 120 --out runs/first --play --decode
 ```
 
-Then start the sender on the Pi:
+Then start the sender on the board:
 
 ```sh
 cd ~/moq-subghz && ./moq-subghz-send --fec-k 8 --secs 110 --i-have-an-antenna --transmit
@@ -145,7 +145,7 @@ The sender takes the usual knobs:
 | `--fps` | `15` | |
 | `--size` | `320x240` | the width must be a multiple of 40, because the barcode is 20 blocks wide |
 | `--src` | `testsrc2` | any ffmpeg lavfi source, or a file (loops) or device path |
-| `--encoder` | `x264` | `hw` uses the Pi's `h264_v4l2m2m`. It uses less CPU but adds ~250 ms of encoder delay. |
+| `--encoder` | `x264` | `hw` uses the board's `h264_v4l2m2m`. It uses less CPU but adds ~250 ms of encoder delay. |
 | `--fec-k` | `0` | one parity frame per K radio frames. `8` is a good start: 12.5% more airtime and repairs one loss per 8. |
 
 **The bitrate budget.** Keep the video bitrate to about **60% of the radio rate**. At 300 kbit/s FSK,
@@ -175,8 +175,8 @@ during it:
 ```sh
 export PORT=/dev/cu.usbmodemXXXX PI=pi
 B=target/release/moq-subghz-bench
-$B run --i-have-an-antenna --transmit myrun 300000:100000:6 330 --fec-k 8     # Pi to laptop
-$B rev --i-have-an-antenna --transmit myrun 300000:100000:12 330 --fec-k 8    # laptop to Pi
+$B run --i-have-an-antenna --transmit myrun 300000:100000:6 330 --fec-k 8     # board to laptop
+$B rev --i-have-an-antenna --transmit myrun 300000:100000:12 330 --fec-k 8    # laptop to board
 $B bench --i-have-an-antenna --transmit                                       # the full 8-run set from the README
 cargo run --release -p moq-subghz-report -- runs/*/        # results table
 ```
@@ -192,7 +192,7 @@ themselves; the bench never adds them. More detail is in [moq-subghz-bench/READM
   ```sh
   ( umask 077; openssl rand -hex 32 > moq-subghz-key.hex )    # mode 0600, never commit it
   scp moq-subghz-key.hex pi:
-  ./moq-subghz-send ... --key-file ~/moq-subghz-key.hex         # on the Pi
+  ./moq-subghz-send ... --key-file ~/moq-subghz-key.hex         # on the board
   ./moq-subghz-recv ... --key-file moq-subghz-key.hex           # on the laptop
   ```
   It costs 20 bytes per frame, 28 on the first of each GOP, which carries the run's
@@ -201,9 +201,9 @@ themselves; the bench never adds them. More detail is in [moq-subghz-bench/READM
   sent unencrypted, so an attacker can cause loss or skew the loss counts. Apart from
   replaying recorded frames, it can't read or change the picture. The tools refuse a key
   file that other users can read.
-* **Reverse direction (laptop to Pi).** Run `moq-subghz-send --rp2040 /dev/cu.usbmodemXXXX` on
-  the laptop and `moq-subghz-recv --radio` on the Pi. Use a longer preamble, `300000:100000:12`
-  (or `350000:100000:14:x`). The Pi's HAT can't signal when data has arrived, so the Pi has to
+* **Reverse direction (laptop to board).** Run `moq-subghz-send --rp2040 /dev/cu.usbmodemXXXX` on
+  the laptop and `moq-subghz-recv --radio` on the board. Use a longer preamble, `300000:100000:12`
+  (or `350000:100000:14:x`). The board's HAT can't signal when data has arrived, so the board has to
   keep checking, which uses a whole core. Expect more loss than the forward direction.
 * **A camera.** `--src /dev/video0` should work but is untested. The clock and barcode are drawn
   onto whatever the source gives, so latency measurement still works.
@@ -221,7 +221,7 @@ themselves; the bench never adds them. More detail is in [moq-subghz-bench/READM
 | the window opens but stays black | the sender isn't running, or the `--profile` differs between the two ends |
 | lots of freezes | check both antennas are on and try another spot, use `--fec-k 8`, or lower `--bitrate`. Loss also varies a lot from run to run. |
 | `objects_dropped` or `objects_dropped_queue_full` grows on the sender | the video bitrate is too high for the radio rate (see section 6) |
-| `open /dev/spidev0.0` fails on the Pi | SPI isn't enabled, or you haven't logged in again after `usermod` |
+| `open /dev/spidev0.0` fails on the board | SPI isn't enabled, or you haven't logged in again after `usermod` |
 | `refusing to transmit` | add `--i-have-an-antenna --transmit`, after attaching one |
 
 ## 9. Radio rules

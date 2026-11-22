@@ -7,30 +7,30 @@ the `moq-subghz-licence` crate and how the tools use it.
 
 * `moq-subghz-send`, `moq-subghz-recv`, `css2015-send`, `css2015-log` and the bench crate's
   `factory-send` / `factory-bench` run the gate before they open a real
-  radio (an RP2040-based device port or the Pi's SX1276). Transmitting needs the gate to return a permit, which
+  radio (an RP2040-based device port or the board's SX1276). Transmitting needs the gate to return a permit, which
   needs `--transmit` as well as `--i-have-an-antenna`. Without `--transmit` the senders never
   transmit; the receivers never transmit at all. The existing frequency (902-928 MHz, not within
   0.3 MHz of 925.0) and power (2 to 5 dBm) checks still run first.
 * `moq-subghz-bench` is gated too. Its orchestration commands (`run`, `rev`, `bench`, `bench-051`,
   `css2015-run`, `demo-051`) start the project's own programs, which run the gate; the bench adds
   neither transmit flag for you, and `demo-051` runs the transmit check before it writes to the
-  stick or calls the Pi. `factory-send` and `factory-bench` drive the **stock the HAT maker app**, which
+  stick or calls the board. `factory-send` and `factory-bench` drive the **stock the HAT maker app**, which
   cannot be queried, so they need `--transmit`, `--i-have-an-antenna` and a declaration of what the
-  build on the Pi transmits (`--freq-mhz`, `--power-dbm`); the gate checks the declaration and runs
-  on the Pi as well as on the laptop, before anything is read or started. **The stock build
+  build on the board transmits (`--freq-mhz`, `--power-dbm`); the gate checks the declaration and runs
+  on the board as well as on the laptop, before anything is read or started. **The stock build
   (868.1 MHz, up to +17 dBm) is refused**: it is outside the project's US ISM rules and the gate
   has no 868 MHz profile (the EU region is not enabled, and region `other` is blocked). To bench
   it legitimately, apply `firmware/vendor/sx1276-gps-hat/gps-hat-bench.patch` (915.0 MHz,
   +5 dBm) and declare `--freq-mhz 915.0 --power-dbm 5`. The declaration is yours: the tool cannot
-  verify that the app on the Pi really is the patched build.
+  verify that the app on the board really is the patched build.
 * In the radio crates every `open` takes the gate's permit (`TxPermit` to transmit, `RxPermit` to
   receive) and refuses a frequency the permit did not check, so opening a radio without asking the
-  gate does not compile. The lower Pi glue crate (`moq-subghz-pi`) is below that line. A raw serial
+  gate does not compile. The lower board glue crate (`moq-subghz-pi`) is below that line. A raw serial
   session, `stick-cap` (read only) and the RP2040-based device firmware images are not covered.
 * The bench passes every program it starts either `--licence-file PATH` (`--licence-file` for the
-  programs here, `--pi-licence-file` for those on the Pi) or `--no-licence`, which also stops the
+  programs here, `--pi-licence-file` for those on the board) or `--no-licence`, which also stops the
   program from looking at `MOQ_SUBGHZ_LICENCE` and the XDG path. With neither option the bench
-  says unlicensed explicitly: a licence file left on the Pi cannot switch a run to licensed mode
+  says unlicensed explicitly: a licence file left on the board cannot switch a run to licensed mode
   unseen. It prints the mode of each end before running, and passes `--redact-licence` unless you
   give `--show-licence`. `package-051` scans every text file it copies (summaries, gzipped logs,
   CSVs) for the configured ID and name and refuses on a hit; it needs `--licence-file` (or finds

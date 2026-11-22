@@ -3,7 +3,7 @@
 //! adapt its arguments and results. Every `open` takes the gate's permit (`TxPermit` to transmit,
 //! `RxPermit` to receive), so opening a radio without asking the gate does not compile.
 //!
-//! The Pi HAT's spidev and GPIO glue stays in `moq-subghz-pi`, below this gate.
+//! The board HAT's spidev and GPIO glue stays in `moq-subghz-pi`, below this gate.
 
 //! With the permit the call compiles; without one, or with a receive permit where a transmit
 //! one is needed, it does not:

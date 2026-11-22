@@ -346,7 +346,7 @@ pub enum ConfigError {
 /// Which PA output pin the antenna is connected to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PaOutput {
-    /// PA_BOOST pin: +2..=+20 dBm (RFM95 / the SX1276 GPS HAT use this).
+    /// PA_BOOST pin: +2..=+20 dBm (sub-GHz CSS transceiver modules / the SX1276 GPS HAT use this).
     PaBoost,
     /// RFO pin: -4..=+15 dBm.
     Rfo,

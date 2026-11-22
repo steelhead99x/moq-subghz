@@ -1,5 +1,5 @@
 //! One trait for every radio the tools can use: send a packet, wait for a packet, and say what the
-//! link can do. Backends (the SX1276 on the Pi HAT, the RP2040-based device, emulations, replay files)
+//! link can do. Backends (the SX1276 on the board HAT, the RP2040-based device, emulations, replay files)
 //! implement [`Link`]; the sender and receiver talk only to it.
 //!
 //! The trait is synchronous: the sender is a blocking loop and the receiver already runs a
@@ -72,7 +72,7 @@ pub struct LinkCaps {
     pub max_frames_per_packet: usize,
     pub tx: bool,
     pub rx: bool,
-    /// Receiving busy-polls inside `recv` (the Pi HAT wires no DIO1), so a waiting `recv` uses a core.
+    /// Receiving busy-polls inside `recv` (the board HAT wires no DIO1), so a waiting `recv` uses a core.
     pub rx_needs_poll: bool,
     pub reports_rssi: bool,
     pub reports_snr: bool,

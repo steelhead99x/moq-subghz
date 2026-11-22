@@ -1,4 +1,4 @@
-//! RP2040-based device link-test firmware: the onboard RFM95W (SX1276) driven by the
+//! RP2040-based device link-test firmware: the onboard sub-GHz CSS transceiver module (SX1276) driven by the
 //! `sx1276` crate, controlled over USB CDC serial with a line protocol.
 //!
 //! Wiring (from the device KiCad netlist): SPI0 MISO=GPIO16, NSS=GPIO17, SCK=GPIO18,

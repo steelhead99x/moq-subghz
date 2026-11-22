@@ -1,4 +1,4 @@
-//! `factory-bench`: the factory-vs-factory picture test of `results/factory-firmware/`. The Pi
+//! `factory-bench`: the factory-vs-factory picture test of `results/factory-firmware/`. The board
 //! runs the stock the HAT maker app, once per text chunk of a JPEG, and the stock the board maker
 //! receiver on the stick prints what it hears.  The stick capture is the `stick-cap` subcommand.
 //!
@@ -370,29 +370,29 @@ pub struct Opts {
     pub limit: usize,
     #[arg(long, default_value = "results/factory-firmware/data")]
     pub out: PathBuf,
-    /// ssh host of the Pi
+    /// ssh host of the board
     #[arg(long, default_value = "pi")]
     pub pi: String,
     /// Serial device of the stick (the receiver sketch prints at 9600 baud). No default: it is opened.
     #[arg(long)]
     pub dev: PathBuf,
-    /// This binary on the Pi, built for it (`factory-send` runs there)
+    /// This binary on the board, built for it (`factory-send` runs there)
     #[arg(long, default_value = "factory-bench/moq-subghz-bench")]
     pub pi_tool: String,
-    /// Directory of the stock `hat_app` on the Pi
+    /// Directory of the stock `hat_app` on the board
     #[arg(long, default_value = "factory-bench/gps-hat")]
     pub pi_app_dir: String,
     /// Required: the antennas are on both radios
     #[arg(long)]
     pub i_have_an_antenna: bool,
-    /// Required to transmit (the licence gate). Forwarded to the Pi's `factory-send`
+    /// Required to transmit (the licence gate). Forwarded to the board's `factory-send`
     #[arg(long)]
     pub transmit: bool,
-    /// The carrier the stock app on the Pi is built for, in MHz. No default: the app cannot be
+    /// The carrier the stock app on the board is built for, in MHz. No default: the app cannot be
     /// queried, so you declare it and the gate checks it (the stock build's 868.1 is refused)
     #[arg(long)]
     pub freq_mhz: f64,
-    /// The power the stock app on the Pi is built for, in dBm (the project allows 2 to 5)
+    /// The power the stock app on the board is built for, in dBm (the project allows 2 to 5)
     #[arg(long)]
     pub power_dbm: i8,
     #[command(flatten)]
@@ -416,7 +416,7 @@ const APP_WIDTH_HZ: u64 = 125_000;
 const STOCK_868: &str = "the stock the HAT maker app transmits 868.1 MHz at up to +17 dBm, which is outside the \
 project's US ISM rules, and the gate has no 868 MHz profile to check it against (the EU region is not \
 enabled; region \"other\" is blocked). To bench legitimately, apply firmware/vendor/sx1276-gps-hat/gps-hat-bench.patch \
-(915.0 MHz, +5 dBm), rebuild the app on the Pi and declare --freq-mhz 915.0 --power-dbm 5";
+(915.0 MHz, +5 dBm), rebuild the app on the board and declare --freq-mhz 915.0 --power-dbm 5";
 
 /// The licence gate for the stock app on the declared carrier and power. The result is the proof
 /// that [`send_chunks`] needs, so nothing is keyed without it. Refuses outside 902-928 MHz (not
@@ -470,7 +470,7 @@ pub fn cap_plan(o: &Opts, exe: &str) -> Plan {
     )
 }
 
-/// The commands one pass runs, in order: copy the chunk list to the Pi, send it there.
+/// The commands one pass runs, in order: copy the chunk list to the board, send it there.
 pub fn pass_plan(o: &Opts, pass: usize) -> [Plan; 2] {
     let lic = o.licence.resolve().flags(Side::Pi, &[]);
     let lic: String = lic.iter().map(|f| format!("{} ", shq(f))).collect();
@@ -545,7 +545,7 @@ pub fn run(o: &Opts) -> Result<()> {
         Err(e) if o.dry_run => println!("gate: a real run would be REFUSED: {e:#}"),
         Err(e) => return Err(e),
         Ok(_) => eprintln!(
-            "gate passed for the DECLARED {} MHz at +{} dBm (the stock app cannot be queried: you attest that the build on the Pi uses these)",
+            "gate passed for the DECLARED {} MHz at +{} dBm (the stock app cannot be queried: you attest that the build on the board uses these)",
             o.freq_mhz, o.power_dbm
         ),
     }
@@ -681,7 +681,7 @@ pub fn verdict(label: &str, passes: usize, re: &Reassembly, jpeg: &[u8]) -> Resu
     Ok(())
 }
 
-/// The Pi side: send each chunk line with the stock the HAT maker app, and print `<start> <end> <id:seq>`.
+/// The board side: send each chunk line with the stock the HAT maker app, and print `<start> <end> <id:seq>`.
 ///
 /// `_permit` is the gate's answer ([`gate`]): the stock app is not started without one.
 pub fn send_chunks(

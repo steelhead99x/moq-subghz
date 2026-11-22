@@ -96,7 +96,7 @@ struct Args {
     /// Per-object JSON lines log
     #[arg(long)]
     log: Option<String>,
-    /// Radio link. `fsk` is the SX1276 in FSK mode: the Pi HAT, or the RP2040-based device or a file when
+    /// Radio link. `fsk` is the SX1276 in FSK mode: the board HAT, or the RP2040-based device or a file when
     /// `--rp2040` or `--loopback` is given. `fsk-emu`, `css-emu` and `s1g-emu` are modeled
     /// channels (no radio is driven, results are MODELED).
     #[arg(long, value_enum, default_value_t = LinkKind::Fsk)]
@@ -268,7 +268,7 @@ fn random_salt() -> [u8; seal::SALT_LEN] {
 
 #[allow(deprecated)]
 fn local_clock(us: u64) -> String {
-    // wall clock in the Pi's local time zone
+    // wall clock in the board's local time zone
     let t = (us / 1_000_000) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&t, &mut tm) };
@@ -318,7 +318,7 @@ fn open_rp2040(
     Rp2040Tx::open(permit, port, freq_hz, prof, power, frame_toa_us)
 }
 
-/// Open the Pi's SX1276 for transmitting. The permit is the proof that the gate said yes.
+/// Open the board's SX1276 for transmitting. The permit is the proof that the gate said yes.
 #[cfg(target_os = "linux")]
 fn open_hat(
     permit: &TxPermit,

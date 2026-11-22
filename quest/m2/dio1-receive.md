@@ -1,8 +1,8 @@
-# [L] Interrupt-driven receive on the Pi
+# [L] Interrupt-driven receive on the board
 
 ## Goal
 
-With a board that wires DIO1, the Pi receives long frames on FIFO-level interrupts instead of
+With a board that wires DIO1, the board receives long frames on FIFO-level interrupts instead of
 spinning a core.
 
 ## Waiting

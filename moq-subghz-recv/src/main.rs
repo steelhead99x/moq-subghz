@@ -25,7 +25,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// What `--link` selects. `fsk` is the real receive path (RP2040-based device port, Pi HAT or a replay file);
+/// What `--link` selects. `fsk` is the real receive path (RP2040-based device port, board HAT or a replay file);
 /// the `-emu` kinds read a MODELED channel from `--emu-udp` and drive no radio.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 enum LinkKind {
@@ -68,7 +68,7 @@ struct Args {
     /// RP2040-based device serial port (macOS: /dev/cu.usbmodemXXXX)
     #[arg(long)]
     port: Option<String>,
-    /// Receive on the local SX1276 (Pi HAT) instead of an RP2040-based device port (reverse direction)
+    /// Receive on the local SX1276 (board HAT) instead of an RP2040-based device port (reverse direction)
     #[arg(long)]
     radio: bool,
     /// Replay a file of `R` lines instead of a port (offline test)
@@ -384,7 +384,7 @@ fn clock_check(host: &str) -> Result<()> {
     Ok(())
 }
 
-/// The gate's answer for opening a radio to receive (an RP2040-based device port or the Pi's SX1276). The
+/// The gate's answer for opening a radio to receive (an RP2040-based device port or the board's SX1276). The
 /// radio opens take the permit this returns, so they do not compile without one.
 fn receive_permit(station: &Station, a: &Args, bitrate: u32, fdev: u32) -> Result<RxPermit> {
     let (profile, encryption) = (

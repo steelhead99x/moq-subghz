@@ -1,5 +1,5 @@
 //! `demo-051`: the 6 minute guided demo of the RP2040-based device.
-//! All over the air: a preflight of the stick and the Pi, 45 s of live FSK video, one small
+//! All over the air: a preflight of the stick and the board, 45 s of live FSK video, one small
 //! picture three 2015 ways at SF7/500, and the chunked picture at SF7/125.
 
 use crate::cell::Cell;
@@ -93,7 +93,7 @@ fn ok(h: &mut dyn Host, p: Plan) -> Result<()> {
 }
 
 pub fn run(h: &mut dyn Host, c: &Cfg, out: &Path, play: bool) -> Result<()> {
-    // The transmit gate comes first: nothing below may touch the stick or the Pi (the preflight
+    // The transmit gate comes first: nothing below may touch the stick or the board (the preflight
     // writes to the serial port) on a run that is going to be refused.
     c.gate(h, &[])?;
     let say = |s: &str| println!("\n== {s}");

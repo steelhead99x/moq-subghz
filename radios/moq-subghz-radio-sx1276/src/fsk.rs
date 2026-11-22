@@ -1,4 +1,4 @@
-//! SX1276 on the the HAT maker HAT in FSK mode. The HAT glue is in `moq-subghz-pi`.
+//! SX1276 on the SX1276 GPS HAT in FSK mode. The HAT glue is in `moq-subghz-pi`.
 //! Moved from `moq-subghz-send/src/radio.rs` and `moq-subghz-recv/src/radio.rs`.
 
 use anyhow::{bail, Result};

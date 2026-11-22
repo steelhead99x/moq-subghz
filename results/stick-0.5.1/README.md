@@ -1,7 +1,7 @@
 # moq-subghz on the RP2040-based device, `rp2040-sx1276-fw` 0.5.1: the full over-the-air benchmark
 
 Everything marked **measured** came off the air on 2026-11-20 (about 01:00 to 02:20 Pacific), between the
-same two radios as the [factory baseline](../factory-firmware/README.md): a Raspberry Pi 2 B with a the HAT maker
+same two radios as the [factory baseline](../factory-firmware/README.md): a ARM single-board computer with a the HAT maker
 SX1276 GPS HAT sending, an RP2040-based device receiving. Everything marked **calculated** is from the SX1276
 datasheet airtime formula. This test uses this project's firmware (`firmware/rp2040-sx1276-fw-0.5.1.uf2`) and Rust
 tools at both ends. The factory test used neither.
@@ -19,7 +19,7 @@ fresh run of the current tools.
 * **Same radio settings as the factory test (SF7, 125 kHz), about 8 times the speed.** Timed the same way for both
   (first packet heard to complete picture), the 320x240 picture takes 13.7 s here against 114 s for the factory
   software, and the 160x120 picture 3.7 s against 30 s. Same chip, same
-  packet size class, same bench. The factory pair spends most of its time in the the HAT maker app's per packet
+  packet size class, same bench. The factory pair spends most of its time in the HAT maker app's per packet
   start-up, not on the air (see below).
 * **Wider channels are faster.** SF7/500 sends the 320x240 picture in 3.4 s (20 kbit/s of picture data).
 * **chirp spread spectrum (CSS) mode lost 0.16% of frames** (8 of 4932) in this test. The factory pair lost 8.8% on pass 1.
@@ -31,7 +31,7 @@ fresh run of the current tools.
 
 | | |
 |---|---|
-| sender | Raspberry Pi 2 B, SX1276 GPS HAT (SX1276), `moq-subghz-send` and `css2015-send` (static armv7 builds of this repo's `main` at 0687416) |
+| sender | ARM single-board computer, SX1276 GPS HAT (SX1276), `moq-subghz-send` and `css2015-send` (static armv7 builds of this repo's `main` at 0687416) |
 | receiver | RP2040-based device, `rp2040-sx1276-fw` 0.5.1 (`firmware/rp2040-sx1276-fw-0.5.1.uf2`), on a Linux host, `moq-subghz-recv` and `css2015-log` |
 | carrier | FSK 915.0 MHz. CSS mode profiles: `sf7-125` 902.3 MHz, the others 903.0 MHz (see [css-2015](../css-2015/README.md)) |
 | power | +5 dBm register setting (FSK also at +2 dBm). Not measured with a power meter. |
@@ -125,7 +125,7 @@ generous to moq-subghz.
 
 Measured, from the table: moq-subghz chunked at SF7/125 is 8.1 times faster for the small picture and 8.4 times
 faster for the large one. Where the time goes (calculated from the factory README): one factory packet is 389 ms on air
-and takes 1.34 s from the Pi, so the sender is on the air about 30% of the time. Here the sender is on the air
+and takes 1.34 s from the board, so the sender is on the air about 30% of the time. Here the sender is on the air
 58 to 95% of the time (`duty_pct` in `css/*/send.txt`, calculated airtime over wall time). The packets are also bigger (255 B of raw bytes against 120 B of JPEG
 sent as 250 characters of hex text), which is most of the rest.
 
@@ -195,7 +195,7 @@ The full benchmark (about 65 minutes): `moq-subghz-bench bench-051 --i-have-an-a
 
 | subcommand | what |
 |---|---|
-| `css2015-run` | one picture run: logger here, sender on the Pi, then the exact loss from a replay |
+| `css2015-run` | one picture run: logger here, sender on the board, then the exact loss from a replay |
 | `bench-051` | the whole matrix (FSK runs, then 3 repeats of the 24 picture runs) |
 | `demo-051` | the short demo |
 | `analyze` | builds the CSVs and charts from the runs (ffmpeg for the SSDV PSNR) |
@@ -213,7 +213,7 @@ To read a run again without the radio: `gunzip -k css/RUN/raw.log.gz`, then
 | `compare.csv` | factory against 0.5.1 at SF7/125 |
 | `fsk.csv`, `fsk/` | the 8 live video runs, and their logs |
 | `fsk-v5-ab.csv`, `fsk-v5-ab/` | the 3 runs on the previous firmware |
-| `css/` | per run: `images.csv`, `rx.csv` (every frame: time, RSSI, SNR, chunk, status), `tx.csv` (the Pi's per frame log), `raw.log.gz`, the rebuilt picture |
+| `css/` | per run: `images.csv`, `rx.csv` (every frame: time, RSSI, SNR, chunk, status), `tx.csv` (the board's per frame log), `raw.log.gz`, the rebuilt picture |
 | `demo/` | one run of `demo-051`: a 45 s clip, a still, and the pictures |
 | `gallery/` | contact sheets of the rebuilt pictures |
 
@@ -221,7 +221,7 @@ To read a run again without the radio: `gunzip -k css/RUN/raw.log.gz`, then
 
 * One bench, one antenna pair, a short distance. No range test, no interference test, no obstacles. The signal is strong, which is why loss is so low in CSS mode.
 * Output power was not measured; +5 dBm is the register setting.
-* "Latency" for pictures is time to a complete picture. There is no per frame clock link between the Pi and the host for the picture runs.
+* "Latency" for pictures is time to a complete picture. There is no per frame clock link between the board and the host for the picture runs.
 * Pass 1 loss is read from chunk order. A lost whole pass would not show in it, and none happened.
 * The factory and moq-subghz CSS mode tests were on different carriers (915.0 and 902.3 MHz) and the signal differed by about 12 dB.
 * The cause of the FSK loss is open.

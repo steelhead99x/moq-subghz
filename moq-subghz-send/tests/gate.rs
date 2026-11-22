@@ -2,7 +2,7 @@
 //!
 //! Every case names a serial port that does not exist. If the gate lets a run through, the next
 //! thing the tool does is open that port, and the error says so (`open /nonexistent...`). No
-//! test opens a real port or key a radio. The Pi HAT path is only tried without `--transmit`, to
+//! test opens a real port or key a radio. The board HAT path is only tried without `--transmit`, to
 //! see the refusal.
 
 use moq_subghz_licence::testing::{self, TempDir};

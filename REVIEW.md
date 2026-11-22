@@ -8,7 +8,7 @@ Fixed describe the code on `main`.
 Review of the `video-demo` tree for a public release: `moq-subghz-wire`, `moq-subghz-send`,
 `moq-subghz-recv`, `moq-subghz-report`, `vendor/sx1276`, `firmware/rp2040-sx1276-fw`, and `scripts/`.
 
-No radio hardware is attached to this environment. Nothing here was checked on a Pi or a
+No radio hardware is attached to this environment. Nothing here was checked on a board or a
 RP2040-based device, and the 330 s numbers in `results/video/` were not regenerated. Changes that
 would alter on-air framing, FEC, pacing, or loss accounting were left in place and listed
 below. What was fixed is covered by unit tests (`cargo test --all-targets` on the
@@ -109,7 +109,7 @@ Fixed 2026-11-21. More than the 64-byte FSK FIFO still to read at PayloadReady i
 (default on, as measured) can be turned off so a CRC-failed packet raises PayloadReady with
 CrcOk clear and is dropped whole; the long-mode readers (`rp2040-sx1276-fw` with `long=1`,
 `moq-subghz-recv --radio`) turn it off, which closes the splice. This is the receive path
-that produced the Pi-side loss numbers, so they need measuring again. `FskLongRx::payload`
+that produced the board-side loss numbers, so they need measuring again. `FskLongRx::payload`
 no longer panics when no packet is stored.
 
 ### Nonce uniqueness is a caller contract. Fixed with per-run subkeys.
@@ -204,7 +204,7 @@ reverse path 4 s. Folding them together would be a new harness, not a cleanup.
 `moq-subghz-wire/src/lib.rs` had both `pub mod seal` (AEAD) and `pub fn seal` (CRC-16).
 The CRC function is now `write_crc`, which says what it does.
 
-### The Pi GPIO glue was copied twice. Fixed.
+### The board GPIO glue was copied twice. Fixed.
 
 `moq-subghz-send/src/radio.rs` and `moq-subghz-recv/src/radio.rs` duplicated `CdevIrq` and
 `Radio::open`. Both now come from `moq-subghz-pi` (`CdevIrq`, `Hat`, `open_hat`, `sx_err`), moved verbatim:

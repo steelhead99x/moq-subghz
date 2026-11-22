@@ -38,11 +38,11 @@ runs lost about 3.5 to 4.6%. The cause of the extra loss is not found.
 
 ## SX1276 FSK
 
-* **State: Measured.** Live H.264 (320x240, 15 fps) from a Raspberry Pi 2 B with a the HAT maker HAT to a
+* **State: Measured.** Live H.264 (320x240, 15 fps) from a ARM single-board computer with the SX1276 GPS HAT to a
   RP2040-based device on a laptop. Chip: Semtech SX1276 ([product page](https://www.semtech.com/products/wireless-rf/lora-connect/sx1276)).
 * 300 kbit/s is inside the datasheet's tested range; 350 kbit/s is outside it and worked on the units
   tested.
-* The Pi side cannot be told when data arrives (DIO1 is not wired on the HAT), so receiving on the Pi
+* The board side cannot be told when data arrives (DIO1 is not wired on the HAT), so receiving on the board
   polls and uses a core, and the reverse direction loses 8 to 15% of frames.
 * Details: [DETAILS.md](DETAILS.md), [HOWTO.md](../HOWTO.md).
 
@@ -99,7 +99,7 @@ runs lost about 3.5 to 4.6%. The cause of the extra loss is not found.
 evolution plan, which is not yet published in this repo.
 
 Today the radio code is not behind a trait: `moq-subghz-send` and `moq-subghz-recv` choose between
-the Pi HAT, the RP2040-based device serial port, and a replay file inside their own `main.rs`. The plan:
+the board HAT, the RP2040-based device serial port, and a replay file inside their own `main.rs`. The plan:
 
 ```
 moq-subghz-wire        unchanged: frames, objects, XOR parity, sealing

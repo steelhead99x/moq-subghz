@@ -8,24 +8,24 @@ Do not read a board here as "supported" unless it says Measured.
 
 | hardware | role | state | notes |
 |---|---|---|---|
-| Raspberry Pi 2 Model B + SX1276 GPS HAT (915 MHz) | sender | **Measured** | the host and radio of every published run |
+| ARM single-board computer (2015 class) + SX1276 GPS HAT (915 MHz) | sender | **Measured** | the host and radio of every published run |
 | the board maker RP2040-based device (RP2040 + SX1276) | receiver | **Measured** | runs this repo's Rust firmware, `firmware/rp2040-sx1276-fw` |
-| Raspberry Pi 4, Pi 5 | host | **Not started** | untested. HOWTO says any Pi with a 40-pin header should work, which has not been tried here. Pi 5 GPIO access differs, treat it as unknown |
-| Raspberry Pi Zero, Zero 2 W | host | **Not started** | CPU budget unknown. The Pi receive path already uses a whole core polling, which a single-core Zero would feel. Measure, do not extrapolate |
+| Newer ARM single-board computers | host | **Not started** | untested. HOWTO says any board with a 40-pin header should work, which has not been tried here. Pi 5 GPIO access differs, treat it as unknown |
+| Small ARM single-board computers | host | **Not started** | CPU budget unknown. The board receive path already uses a whole core polling, which a single-core Zero would feel. Measure, do not extrapolate |
 | ESP32-S3 board | node, 2.4 GHz candidate | **Not started** | no firmware in this repo. A private workshop has an unverified skeleton, never flashed |
 | ESP32-C6 | node, 2.4 GHz candidate | **Not started** | no firmware anywhere yet |
 | LR1110 tracker node (P2P mesh networks) | slow data lane, range reference | **Planned** | would be read through its serial API by a host. The repo would never flash it |
 | SX1262, LR1121 boards | other sub-GHz radios | **Planned** | needs a new driver, nothing written |
 | 802.11ah sub-GHz Wi-Fi (802.11ah) modules, in general | 802.11ah link | **Modeled** | no module chosen, no pins, no driver |
 
-## Raspberry Pi hosts
+## ARM single-board computer hosts
 
-* **Pi 2 B** is what was measured: an armv7 board, static musl binaries built from this repo, ffmpeg on
-  the Pi. Pinouts for the the HAT maker HAT are in the [HOWTO](../HOWTO.md#1-hardware).
-* Pi 4, Pi 5 and Pi Zero are listed in the plan as hosts that need their own profiles and CPU-budget
+* **board 2 B** is what was measured: an armv7 board, static musl binaries built from this repo, ffmpeg on
+  the board. Pinouts for the SX1276 GPS HAT are in the [HOWTO](../HOWTO.md#1-hardware).
+* Newer boards are listed in the plan as hosts that need their own profiles and CPU-budget
   runs. Until then, treat them as untried. Product documentation:
-  [Raspberry Pi hardware docs](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html).
-* A Pi Zero (the original) is armv6, and CI builds armv7 only today.
+  [ARM single-board computer hardware docs]((vendor link removed)).
+* An ARM single-board computer Zero (the original) is armv6, and CI builds armv7 only today.
 
 ## RP2040-based device (RP2040 + SX1276)
 

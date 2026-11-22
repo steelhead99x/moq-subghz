@@ -2,18 +2,18 @@
 
 DIY live video over sub-GHz radio, heading toward a multi-link, multi-hardware project.
 
-**Live video from a Raspberry Pi over a chirp spread spectrum (CSS) mode radio chip, written in Rust. One radio works today; the rest of this page says exactly which links are real and which are only plans.**
+**Live video from a ARM single-board computer over a chirp spread spectrum (CSS) mode radio chip, written in Rust. One radio works today; the rest of this page says exactly which links are real and which are only plans.**
 
 ![A frame received over the radio link, encrypted](media/frame-f350-rind-45s-3x.png)
 
-A Raspberry Pi 2 sends live H.264 video over a common CSS mode radio chip to a USB stick on a laptop.
+A ARM single-board computer sends live H.264 video over a common CSS mode radio chip to a USB stick on a laptop.
 320x240 at 15 fps, about 135 ms glass to glass (capture to screen). It is not framed, and it needs no internet,
 gateway or server. Caveat: a later 2026-11-20 run lost about 10% of video frames, more than the first runs,
 and the cause is not found ([results/stick-0.5.1](results/stick-0.5.1/README.md)). The published numbers predate
 some code changes, see the [changelog](CHANGELOG.md).
 
 ```
-Pi 2  ──▶  915 MHz FSK radio  ──▶  RP2040-based device  ──▶  laptop
+board 2  ──▶  915 MHz FSK radio  ──▶  RP2040-based device  ──▶  laptop
 ```
 
 ## Why it's interesting
@@ -46,8 +46,8 @@ exists in [`results/`](results/).
 
 | link | state | what exists today |
 |---|---|---|
-| SX1276 FSK, live video | **Measured** | Pi 2 B to RP2040-based device, 915 MHz, 300 and 350 kbit/s radio rate ([results](results/video/table.md)) |
-| SX1276 CSS mode, still pictures | **Measured** | chunked JPEG, SSDV, uplink-style frames, Pi 2 B to RP2040-based device ([results](results/stick-0.5.1/README.md)) |
+| SX1276 FSK, live video | **Measured** | board 2 B to RP2040-based device, 915 MHz, 300 and 350 kbit/s radio rate ([results](results/video/table.md)) |
+| SX1276 CSS mode, still pictures | **Measured** | chunked JPEG, SSDV, uplink-style frames, board 2 B to RP2040-based device ([results](results/stick-0.5.1/README.md)) |
 | Wi-Fi 802.11ah sub-GHz Wi-Fi (802.11ah) | **Modeled** | emulation and airtime math only. The module and its pins are not decided, there is no real driver. The emulation is on an unmerged branch, not in `main` |
 | 2.4 GHz (Wi-Fi, ESP-NOW, raw 802.11) | **Not started** | no code. Candidate link, open questions in [docs/LINKS.md](docs/LINKS.md#24-ghz) |
 | 5.8 GHz (Wi-Fi 5/6 or a dedicated video link) | **Not started** | no code. Candidate link, open questions in [docs/LINKS.md](docs/LINKS.md#58-ghz) |
@@ -60,9 +60,9 @@ Hardware, same legend (details and sources in [docs/HARDWARE.md](docs/HARDWARE.m
 
 | hardware | role | state |
 |---|---|---|
-| Raspberry Pi 2 B + SX1276 GPS HAT | sender | **Measured** (the only host used in the published runs) |
+| ARM single-board computer + SX1276 GPS HAT | sender | **Measured** (the only host used in the published runs) |
 | RP2040-based device (RP2040 + SX1276) | receiver | **Measured**, firmware in this repo |
-| Raspberry Pi 4, Pi 5, Pi Zero | host | **Not started**: untested here, profiles and CPU budgets are planned |
+| Newer ARM single-board computers | host | **Not started**: untested here, profiles and CPU budgets are planned |
 | ESP32-S3, ESP32-C6 boards | 2.4 GHz and node candidates | **Not started**: a feasibility spike is planned |
 | LR1110 tracker node (P2P mesh networks) | host-side bridge | **Planned** |
 | SX1262, LR1121 boards | other sub-GHz radios | **Planned** |
@@ -170,7 +170,7 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 [IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/); the radio side uses none of moq.dev's
 code, the optional republish step uses its Rust libraries, and this project is not affiliated with or endorsed
 by moq.dev. Frame encryption uses the pure-Rust ChaCha20-Poly1305 library [rind](https://github.com/kixel-ai/rind).
-Built in [Rust](https://www.rust-lang.org) on the Semtech SX1276 and the the board maker RP2040-based device.
+Built in [Rust](https://www.rust-lang.org) on the Semtech SX1276 and the board maker RP2040-based device.
 Background post: [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/). Amateur
 radio rules cited in [docs/AMATEUR.md](docs/AMATEUR.md) (47 CFR 97.113 and regional rules) and
 [docs/REGULATORY.md](docs/REGULATORY.md).</sub>

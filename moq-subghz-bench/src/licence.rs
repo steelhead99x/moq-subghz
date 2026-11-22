@@ -1,7 +1,7 @@
 //! Which licence mode each end of a run uses, and whether the run files carry the licence.
 //!
 //! The project's programs pick licensed mode on their own when a licence file sits at
-//! `MOQ_SUBGHZ_LICENCE` or `$XDG_CONFIG_HOME/moq-subghz/licence.toml`. On the Pi that happens
+//! `MOQ_SUBGHZ_LICENCE` or `$XDG_CONFIG_HOME/moq-subghz/licence.toml`. On the board that happens
 //! out of sight, so the bench never leaves it to them: every program it starts gets either
 //! `--licence-file PATH` or `--no-licence`, and `--redact-licence` unless `--show-licence` is
 //! given. [`Lic::describe`] says which, and the commands print it before they run anything.
@@ -17,7 +17,7 @@ pub struct LicenceOpts {
     /// Licence file on THIS machine, for the programs that run here. Selects licensed mode for them
     #[arg(long, value_name = "PATH", conflicts_with = "no_licence")]
     pub licence_file: Option<PathBuf>,
-    /// Licence file on the Pi, for the programs that run there. Selects licensed mode for them
+    /// Licence file on the board, for the programs that run there. Selects licensed mode for them
     #[arg(long, value_name = "PATH", conflicts_with = "no_licence")]
     pub pi_licence_file: Option<String>,
     /// Say so: run every program unlicensed and let none of them look for a licence file. This is
@@ -131,7 +131,7 @@ impl Lic {
         format!(
             "licence mode of this run:\n{}\n{}\n  licence ID and name in the run files: {}",
             end("programs here", &self.local, "this machine"),
-            end("programs on the Pi", &self.pi, "the Pi"),
+            end("programs on the board", &self.pi, "the board"),
             if self.redact {
                 "redacted (--redact-licence)"
             } else {
@@ -216,7 +216,7 @@ mod tests {
         let d = l.describe();
         assert!(d.contains("programs here: UNLICENSED"), "{d}");
         assert!(
-            d.contains("programs on the Pi: LICENSED with the licence file /p/lic.toml"),
+            d.contains("programs on the board: LICENSED with the licence file /p/lic.toml"),
             "{d}"
         );
         assert!(d.contains("redacted"));

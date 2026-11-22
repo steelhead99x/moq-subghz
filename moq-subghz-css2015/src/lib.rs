@@ -1,7 +1,7 @@
 //! A 2015-style CSS mode image test for the moq-subghz bench: what a small team could have sent
-//! over CSS mode and framed with the Pi HAT and an RP2040-based device, and how to log it.
+//! over CSS mode and framed with the board HAT and an RP2040-based device, and how to log it.
 //!
-//! The sender (`css2015-send`) runs on the Pi. The logger (`css2015-log`) runs on the
+//! The sender (`css2015-send`) runs on the board. The logger (`css2015-log`) runs on the
 //! host the stick is plugged into.
 
 pub mod chunk;

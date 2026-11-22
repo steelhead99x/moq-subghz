@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Which key file a run's receiver reads: the laptop's copy or the Pi's.
+/// Which key file a run's receiver reads: the laptop's copy or the board's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Key {
     Laptop,
@@ -22,7 +22,7 @@ pub enum Key {
 /// One run of a matrix, as data, so the plan can be checked without running anything.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Step {
-    /// Pi to laptop (`run`)
+    /// board to laptop (`run`)
     Fwd {
         name: String,
         profile: String,
@@ -173,7 +173,7 @@ pub fn plan_051(part: Part, reps: u32, fsk_secs: u32, pkey: &str) -> Vec<Step> {
     v
 }
 
-/// Where the key files are: the laptop's path and the path of the same file on the Pi.
+/// Where the key files are: the laptop's path and the path of the same file on the board.
 #[derive(Clone, Debug)]
 pub struct Keys {
     pub lkey: String,
@@ -311,7 +311,7 @@ pub fn clock_line(h: &mut dyn Host, c: &Cfg, t_us: u128) -> Result<Option<String
     Ok(Some(format!("{{\"t_us\":{t_us},\"c\":{out}}}")))
 }
 
-/// Log the Pi-minus-laptop clock offset every 5 s until `stop` says so.
+/// Log the board-minus-laptop clock offset every 5 s until `stop` says so.
 pub fn clock_log(c: &Cfg, stop: &dyn Fn() -> bool) -> Result<()> {
     std::fs::create_dir_all(&c.runs)?;
     let path = c.runs.join("clock_log.jsonl");

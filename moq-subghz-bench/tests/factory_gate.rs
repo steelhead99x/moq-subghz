@@ -1,4 +1,4 @@
-//! The Pi side of the factory bench (`factory-send`) runs the licence gate itself, before it
+//! The board side of the factory bench (`factory-send`) runs the licence gate itself, before it
 //! reads the chunk file or starts the stock app. Every case here is a refusal: nothing is
 //! transmitted and no radio or serial port is touched.
 

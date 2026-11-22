@@ -1,6 +1,6 @@
 # Example output
 
-Received over the SX1276 FSK link (Pi 2 to RP2040-based device/Mac) at 350k, rind encryption on (run `f350_on` in `results/video/table.md`).
+Received over the SX1276 FSK link (board 2 to RP2040-based device/Mac) at 350k, rind encryption on (run `f350_on` in `results/video/table.md`).
 
 - `moq-subghz-f350-rind-60s.mp4`: 60 s of the live stream as decoded on the receiver, 320x240 at 15 fps.
 - `frame-f350-rind-45s-3x.png`: frame at 45 s, upscaled 3x.

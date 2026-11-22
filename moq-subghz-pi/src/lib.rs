@@ -1,4 +1,4 @@
-//! Pi glue for the SX1276 backends (`moq-subghz-radio-sx1276`): the the HAT maker HAT's SX1276
+//! Pi glue for the SX1276 backends (`moq-subghz-radio-sx1276`): the SX1276 GPS HAT's SX1276
 //! over spidev and GPIO cdev, in FSK mode. Linux only; empty elsewhere.
 #![cfg(target_os = "linux")]
 

@@ -1,7 +1,7 @@
 # results/video: rind off/on benchmark, 2026-11-17
 
 Eight 330 s runs, 10:43-11:32 PT, back to back, in this order: f300_off, f300_on, r300_off,
-r300_on, f350_off, f350_on, r350_off, r350_on. `f` = Pi 2 -> RP2040-based device/Mac, `r` = Mac -> RP2040-based device -> Pi 2.
+r300_on, f350_off, f350_on, r350_off, r350_on. `f` = board 2 -> RP2040-based device/Mac, `r` = Mac -> RP2040-based device -> board 2.
 
 Fixed settings: 915.0 MHz, +5 dBm, 320x240, 15 fps, GOP 15, x264 ultrafast/zerolatency at 180 kbit/s,
 FEC k=8, 96 B minimum frame, max object age 1000 ms. RP2040-based device firmware v5
@@ -35,7 +35,7 @@ The results are in [table.md](table.md). The README shows the four forward runs 
   their decoded counts and g2g leave out the first second. Receivers since PR #24 keep every frame,
   which raises g2g p95 by including the slow startup frames; steady-state latency measured the same.
 * **stalls**: gaps over 250 ms between delivered frames (obj) and between decoded frames (dec).
-* **Pi CPU**: percent of one Cortex-A7 core (the Pi 2 has four). For Pi to laptop runs this is the
+* **Pi CPU**: percent of one Cortex-A7 core (the board 2 has four). For board to laptop runs this is the
   sender plus its ffmpeg. For laptop to Pi it's the receiver, which keeps checking the radio
   because the HAT can't signal that data has arrived, plus the ffmpeg decoder.
 * **bytes/obj**: what encryption adds per frame, and everything sent on air beyond the H.264
@@ -43,7 +43,7 @@ The results are in [table.md](table.md). The README shows the four forward runs 
 
 ## What got it here
 
-Fixes made along the way. All Pi to laptop at 300 kbit/s, 330 s runs.
+Fixes made along the way. All board to laptop at 300 kbit/s, 330 s runs.
 
 | change | before | after |
 |---|---|---|
@@ -53,7 +53,7 @@ Fixes made along the way. All Pi to laptop at 300 kbit/s, 330 s runs.
 | stick firmware v3 to v4 (faster hex output), FEC k=8 | 1.5% video frame loss, 6 GOPs cut | 0.28%, 1 GOP cut |
 | stick firmware v3 to v4, no FEC | 6.2% video frame loss, 22 GOPs cut | 4.8%, 22 GOPs cut |
 | stick firmware v4 to v5 (per-packet TX timeout), laptop to Pi | stream corrupt after 60 s | 330 s runs as in the table |
-| x264 instead of the Pi's hardware encoder | ~275 ms encoder delay | ~20-24 ms |
+| x264 instead of the board's hardware encoder | ~275 ms encoder delay | ~20-24 ms |
 
 ## Exact commands
 
@@ -61,10 +61,10 @@ Machine-specific paths from the bench machine are written here as variables. Set
 your own ssh host, serial device, and key file (mode 0600, never commit it):
 
 ```sh
-export PI=pi                     # ssh host of the Pi
+export PI=pi                     # ssh host of the board
 export PORT=/dev/cu.usbmodemXXX  # macOS RP2040-based device port; Linux is typically /dev/ttyACM0
 export LKEY="$HOME/moq-subghz-key.hex"
-export PKEY="$LKEY"              # path of that same file on the Pi
+export PKEY="$LKEY"              # path of that same file on the board
 ( umask 077; openssl rand -hex 32 > "$LKEY" )
 scp "$LKEY" "$PI:moq-subghz-key.hex"
 ```
@@ -84,7 +84,7 @@ moq-subghz-recv --port "$PORT" --profile 300000:100000:6 --secs 340 --out runs/f
 Mac -> Pi (`moq-subghz-bench rev`), e.g. r350_off (12 B preamble at 300k, 14 B at 350k):
 
 ```sh
-moq-subghz-recv --clock-check "$PI"                       # X = Pi minus laptop; the Pi receiver gets -X
+moq-subghz-recv --clock-check "$PI"                       # X = Pi minus laptop; the board receiver gets -X
 ssh "$PI" "cd ~/moq-subghz && ./moq-subghz-recv --radio --profile 350000:100000:14:x --secs 340 \
     --out /tmp/r350_off --decode --raw-log --clock-offset-ms=-$X"
 moq-subghz-send --rp2040 "$PORT" --profile 350000:100000:14:x --secs 330 \
@@ -105,8 +105,8 @@ cargo run --release -p moq-subghz-report -- --clock-log clock_log.jsonl \
 
 | file | what |
 |---|---|
-| `summary.json` | receiver summary (loss, latency with the start offset, stalls, rind, CPU on the Pi for `r` runs) |
-| `send_summary.json` | sender summary (video bitrate, frames, airtime, overhead per object, seal time, CPU on the Pi for `f` runs) |
+| `summary.json` | receiver summary (loss, latency with the start offset, stalls, rind, CPU on the board for `r` runs) |
+| `send_summary.json` | sender summary (video bitrate, frames, airtime, overhead per object, seal time, CPU on the board for `f` runs) |
 | `objects.jsonl.gz` | one line per object received: time, group, object, frame, size, FEC repairs, gate decision, latency |
 | `decoded.jsonl.gz` | one line per decoded frame: time, barcode capture time, glass-to-glass latency |
 | `send.jsonl.gz` | one line per object sent: enqueue time, capture time, encoder delay, frames |

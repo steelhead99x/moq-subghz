@@ -1,5 +1,5 @@
 //! Pi side of the 2015-style CSS mode test: send a JPEG as chunks, as SSDV packets or as
-//! framed uplinks over the the HAT maker HAT's SX1276 in CSS mode.
+//! framed uplinks over the SX1276 GPS HAT's SX1276 in CSS mode.
 //!
 //! `--dry-run` prints the frames and the calculated airtime and touches no hardware;
 //! `--loopback FILE` writes the frames as stick `R` lines for an offline run of the logger.
@@ -295,5 +295,5 @@ fn transmit<'a>(
     _: usize,
     _: &Station,
 ) -> Result<()> {
-    bail!("transmitting needs the Pi (Linux, SPI); use --dry-run here")
+    bail!("transmitting needs the board (Linux, SPI); use --dry-run here")
 }

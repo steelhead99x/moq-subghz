@@ -1,7 +1,7 @@
 # Factory firmware and factory software, still pictures over chirp spread spectrum (CSS) mode
 
 This is the baseline for the post: what the two radios do **as they were sold**, with nothing
-of this project's firmware or Rust code in the path. A small JPEG goes from a Raspberry Pi to a
+of this project's firmware or Rust code in the path. A small JPEG goes from a ARM single-board computer to a
 RP2040-based device over the air, in text chunks, the way someone with the vendors' own example
 programs would have done it.
 
@@ -16,15 +16,15 @@ needs a fresh run.
 
 ## What ran at each end
 
-| | sender (Raspberry Pi 2 B) | receiver (RP2040-based device, RP2040 + SX1276) |
+| | sender (ARM single-board computer) | receiver (RP2040-based device, RP2040 + SX1276) |
 |---|---|---|
-| radio | SX1276 GPS HAT (SX1276) | onboard RFM95W (SX1276) |
+| radio | SX1276 GPS HAT (SX1276) | onboard sub-GHz CSS transceiver module (SX1276) |
 | software | the HAT maker's official sample app `hat_app`, from [upstream repository](https://github.com/dragino/rpi-lora-tranceiver) commit `f6e1a55` (2018-05-11), built with g++ 14.2 and WiringPi v3.20 | the board maker stock receiver, `factory-receiver-rp2040.uf2` from [release v3.1.0.1](https://github.com/ElectronicCats/CatWAN_USB_Stick/releases/tag/v3.1.0.1) (sketch `factory-receiver.ino`, Sandeep Mistry's an SX127x library) |
 | in this repo | [`firmware/vendor/sx1276-gps-hat/`](../../firmware/vendor/sx1276-gps-hat/README.md) | [`firmware/vendor/rp2040-factory-receiver/`](../../firmware/vendor/rp2040-factory-receiver/README.md) |
 
-Pi OS: Debian 13 (Raspberry Pi OS), kernel 6.18.60. None of this project's firmware (`rp2040-sx1276-fw`)
+board OS: Debian 13 (Debian-based OS), kernel 6.18.60. None of this project's firmware (`rp2040-sx1276-fw`)
 and none of this project's Rust tools ran in these tests. The stick's flash content before this
-test was byte for byte the the board maker image (see the vendor README).
+test was byte for byte the board maker image (see the vendor README).
 
 ### The the HAT maker app was changed in four constants
 
@@ -53,7 +53,7 @@ prints text. So, like a 2015 hobbyist with a shell loop:
 * The JPEG is cut into 120 byte pieces. Each piece goes out as a text line
   `A:<number>/<total>:<hex>`, 250 characters at most, so nothing binary crosses the stock
   serial print.
-* A loop on the Pi starts the stock app once per piece (`timeout 1.3 ./hat_app sender "<line>"`).
+* A loop on the board starts the stock app once per piece (`timeout 1.3 ./hat_app sender "<line>"`).
   The app resets the radio, sends, and the timeout ends it after the packet has left the air.
   That is about 1.34 s per packet, mostly the app's own start-up and reset waits
   (`moq-subghz-bench factory-send`).
@@ -71,7 +71,7 @@ Loss here means "sent and not printed".
 
 Settings for all runs: 915.0 MHz, SF7, 125 kHz, CR 4/5, +5 dBm register setting, short range on the bench.
 Raw data: [`results.csv`](results.csv) and one folder per run under [`data/`](data/): the chunk
-lists, the Pi's per packet send log, the stick's raw serial bytes, the parsed packets, and the
+lists, the board's per packet send log, the stick's raw serial bytes, the parsed packets, and the
 reassembled JPEG.
 
 Pass 1 sends every piece once. "Passes" counts sends until the picture was complete.
@@ -121,9 +121,9 @@ for this project's own sender and logger, not these factory programs, and were n
 ## Run it again
 
 1. Stick on the stock image (`firmware/vendor/rp2040-factory-receiver/`), plugged into the host. Pi with the HAT, antennas on both.
-2. On the Pi: `firmware/vendor/sx1276-gps-hat/fetch-and-build.sh`, then build `moq-subghz-bench` for the Pi (`cargo build --release -p moq-subghz-bench --target armv7-unknown-linux-musleabihf`), copy it to
+2. On the board: `firmware/vendor/sx1276-gps-hat/fetch-and-build.sh`, then build `moq-subghz-bench` for the board (`cargo build --release -p moq-subghz-bench --target armv7-unknown-linux-musleabihf`), copy it to
    `~/factory-bench/` and make the built app available at `~/factory-bench/gps-hat/hat_app`.
-3. On the host (repo root, `ssh pi` reaches the Pi): `target/release/moq-subghz-bench factory-bench --i-have-an-antenna --dev /dev/ttyACM0 --label try1 --jpeg results/css-2015/frames/f160x120-q20.jpg --out results/factory-firmware/data`.
+3. On the host (repo root, `ssh pi` reaches the board): `target/release/moq-subghz-bench factory-bench --i-have-an-antenna --dev /dev/ttyACM0 --label try1 --jpeg results/css-2015/frames/f160x120-q20.jpg --out results/factory-firmware/data`.
    Add `--limit 20 --passes 1` for the 30 s smoke test. `--dev` is the stick's serial port; there is no default. `--dry-run` prints the commands. The published runs were 3 of each picture (`--passes 4`), run one after another.
 
 The Rust port does the same and is gated: `moq-subghz-bench factory-bench --label try1 --jpeg ... --dev /dev/ttyACM0 --i-have-an-antenna --transmit --freq-mhz 915.0 --power-dbm 5`.

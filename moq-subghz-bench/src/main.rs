@@ -39,11 +39,11 @@ enum Cmd {
         #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
         repo_root: PathBuf,
     },
-    /// Factory-vs-factory picture test: the stock the HAT maker app on the Pi, the stock receiver on the stick
+    /// Factory-vs-factory picture test: the stock the HAT maker app on the board, the stock receiver on the stick
     FactoryBench(factory::Opts),
     /// Raw logger for the stock receiver sketch on the stick (opens only --dev)
     StickCap(stickcap::Opts),
-    /// The Pi side of factory-bench: send each chunk with the stock the HAT maker app
+    /// The board side of factory-bench: send each chunk with the stock the HAT maker app
     FactorySend {
         /// Text file with one chunk per line
         chunks: PathBuf,
@@ -66,9 +66,9 @@ enum Cmd {
         #[command(flatten)]
         gate: moq_subghz_licence::GateArgs,
     },
-    /// One Pi-to-laptop run: receiver here, sender on the Pi
+    /// One Pi-to-laptop run: receiver here, sender on the board
     Run(RunArgs),
-    /// One laptop-to-Pi run: receiver on the Pi, sender here
+    /// One laptop-to-Pi run: receiver on the board, sender here
     Rev(RunArgs),
     /// The matched rind off/on matrix of the README, 8 runs
     Bench {
@@ -100,7 +100,7 @@ enum Cmd {
         #[arg(long)]
         no_play: bool,
     },
-    /// One css2015 picture run: logger here, sender on the Pi, exact loss from a replay
+    /// One css2015 picture run: logger here, sender on the board, exact loss from a replay
     Css2015Run {
         #[command(flatten)]
         env: orch::Env,
@@ -126,7 +126,7 @@ enum Cmd {
         #[arg(long)]
         play: bool,
     },
-    /// Log the Pi-minus-laptop clock offset every 5 s until RUNS/clocklog.stop exists
+    /// Log the board-minus-laptop clock offset every 5 s until RUNS/clocklog.stop exists
     Clocklog {
         #[command(flatten)]
         env: orch::Env,
@@ -192,7 +192,7 @@ struct KeyArgs {
     /// Key file on this machine
     #[arg(long, env = "LKEY")]
     lkey: Option<String>,
-    /// Path of the same key on the Pi
+    /// Path of the same key on the board
     #[arg(long, env = "PKEY")]
     pkey: Option<String>,
 }
