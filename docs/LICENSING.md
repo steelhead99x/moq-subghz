@@ -43,9 +43,9 @@ the `moq-subghz-licence` crate and how the tools use it.
 * `css2015-log` listens only. It runs the same receive gate before opening the stick, with
   `--licence-file`, `--rx-amateur` and `--amateur` (`--transmit` has no effect).
 * **Not covered:** anything you type into a raw serial session; and the **shipped RP2040-based device firmware images**.
-  `firmware/rp2040-sx1276-fw-v5.uf2` and `firmware/rp2040-sx1276-fw-0.5.1.uf2` still accept any carrier and up
-  to +17 dBm on their `L` and `F` commands. The source refuses those, but no new image has been
-  built, flashed and run, so a stick on the shipped images ignores all of this. The checks are in
+  `firmware/rp2040-sx1276-fw-0.5.1.uf2` (built from the 0.5.1 source as released) still accepts any carrier and up
+  to +17 dBm on its `L` and `F` commands. `firmware/rp2040-sx1276-fw-v5.uf2` was rebuilt from the current source, which
+  refuses those, but that image has not been flashed or run, and a stick on the 0.5.1 image ignores all of this. The checks are in
   the host tools only.
 * **Amateur transmit is not available.** The scheduler and the identification frame exist, but no
   tool sends station ID frames yet, so a transmit permit that would need them is refused

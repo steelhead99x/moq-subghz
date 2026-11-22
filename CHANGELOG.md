@@ -12,7 +12,7 @@ stay. The LoRa-class modulation is called chirp spread spectrum (CSS) mode, IEEE
 | Old | New |
 |---|---|
 | crate and bins `moq-subghz-lora2015`, `lora2015-send`, `lora2015-log` | `moq-subghz-css2015`, `css2015-send`, `css2015-log` |
-| `firmware/catwan-fw`, `catwan-fw-v5.uf2`, `catwan-fw-0.5.1.uf2` | `firmware/rp2040-sx1276-fw`, `rp2040-sx1276-fw-v5.uf2`, `rp2040-sx1276-fw-0.5.1.uf2` (v5 same bytes; 0.5.1 rebuilt, see below) |
+| `firmware/catwan-fw`, `catwan-fw-v5.uf2`, `catwan-fw-0.5.1.uf2` | `firmware/rp2040-sx1276-fw`, `rp2040-sx1276-fw-v5.uf2`, `rp2040-sx1276-fw-0.5.1.uf2` (both rebuilt, see below) |
 | `firmware/vendor/dragino-lora-gps-hat`, `.../electronic-cats-catwan-rp2040` | `firmware/vendor/sx1276-gps-hat`, `firmware/vendor/rp2040-factory-receiver` |
 | `docs/HALOW.md` (moved: now `docs/S1G-EMULATION.md`) | `docs/S1G-EMULATION.md` |
 | `results/lora-2015/`, `results/stick-0.5.1/lora/`, `lora.csv`, `lora-summary.csv`, run names `lorawan-*` | `results/css-2015/`, `results/stick-0.5.1/css/`, `css.csv`, `css-summary.csv`, `framed-*` |
@@ -41,10 +41,7 @@ with `moq-subghz-bench elf2uf2`, with only those two strings changed. An unmodif
 image in 47 bytes out of 110592, so the build is not bit-reproducible. The image is therefore NOT byte-identical to
 the one used in earlier runs. History: the old image had sha256
 `608bc4dd10e7b211440d87faf33933ccdcdcc63c1c40b6e3317438818b40528f`; the new one has
-`08ec0cdb576fe4c482e6638fb36452e2f5193f2a1b943789b0a739b1ccf9b999`. `rp2040-sx1276-fw-v5.uf2` (sha256
-`fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317`) is unchanged: the source it was built from
-cannot be reproduced here (a build of the matching commit gives a different size), so it still carries the old
-product string and banner. The host tools accept both banners. Nothing was flashed.
+`08ec0cdb576fe4c482e6638fb36452e2f5193f2a1b943789b0a739b1ccf9b999`. `rp2040-sx1276-fw-v5.uf2` was ALSO rebuilt, from the CURRENT source (band and power checks added; Rust 1.90.0, `--locked`, thumbv6m; it reports 0.5.1). It is NOT the image behind the earlier measured v5 runs, which stay labelled as measured with the old image. History: old sha256 `fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317`; new `d9d56afe9eae1b3fff3bcc242ca49bd0233cb31ce89c56b4f87f19eff5fd1b0e`. The new v5 file has not been flashed or run. The host tools accept both banners. Nothing was flashed.
 
 ### CI and hygiene
 

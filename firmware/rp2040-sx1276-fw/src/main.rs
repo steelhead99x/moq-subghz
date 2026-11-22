@@ -22,8 +22,8 @@
 //! or within 0.3 MHz of 925.0, power outside 2..=5 dBm, and for `L` a bandwidth, spreading
 //! factor or coding rate the radio doesn't have: the same limits the host tools hold
 //! themselves to. A bad `Q` frame is answered `ERR tx bad-hex`, and USB input waits while
-//! the queue is full instead of dropping a frame. The shipped `firmware/rp2040-sx1276-fw-v5.uf2`
-//! (0.5.0, measured) and `rp2040-sx1276-fw-0.5.1.uf2` predate these checks; they take a new image
+//! the queue is full instead of dropping a frame. The earlier measured v5 image (0.5.0) and the shipped
+//! `rp2040-sx1276-fw-0.5.1.uf2` (built from the 0.5.1 source as released) predate these checks; they take a new image
 //! and a reflash.
 #![no_std]
 #![no_main]

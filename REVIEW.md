@@ -18,7 +18,7 @@ Host build, clippy, and tests were run with rustc 1.90.0. `moq-subghz-send` and
 `moq-subghz-recv` were also built for `armv7-unknown-linux-musleabihf` (rust-lld, static)
 and `armv7-unknown-linux-gnueabihf` (`arm-linux-gnueabihf-gcc`, dynamic). The firmware
 was built and clippy-clean for `thumbv6m-none-eabi`. `firmware/rp2040-sx1276-fw-v5.uf2` was
-not replaced.
+not replaced at that time (it has since been rebuilt from the current source; see CHANGELOG).
 
 ## Critical
 
@@ -42,7 +42,7 @@ Fixed in source (2026-11-21): `L` and `F` refuse a carrier outside 902-928 MHz o
 0.3 MHz of 925.0 and power outside 2..=5 dBm, and `L` refuses a bandwidth, SF or coding
 rate it used to replace silently. The same change makes a `Q` line wait for a queue slot
 (one USB read with several short `Q` lines used to drop the later ones) and reports a bad
-frame as `ERR tx`. The shipped `rp2040-sx1276-fw-v5.uf2` (measured) and `rp2040-sx1276-fw-0.5.1.uf2`
+frame as `ERR tx`. The image measured earlier (old v5, old sha256 `fe86cc05...`) and `rp2040-sx1276-fw-0.5.1.uf2`
 predate it: until a new image is built, flashed and run on the stick, a stick on those
 images still accepts anything.
 

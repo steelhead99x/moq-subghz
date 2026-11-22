@@ -5,7 +5,7 @@ r300_on, f350_off, f350_on, r350_off, r350_on. `f` = board 2 -> RP2040-based dev
 
 Fixed settings: 915.0 MHz, +5 dBm, 320x240, 15 fps, GOP 15, x264 ultrafast/zerolatency at 180 kbit/s,
 FEC k=8, 96 B minimum frame, max object age 1000 ms. RP2040-based device firmware v5
-(`firmware/rp2040-sx1276-fw-v5.uf2`, sha256 fe86cc05...). rind main d2dc35bd796aaadc42df56aee0f1526cdee94b66,
+(the earlier v5 image, sha256 fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317; the file of that name in the repo was later rebuilt from current source). rind main d2dc35bd796aaadc42df56aee0f1526cdee94b66,
 ChaCha20-Poly1305. Antennas ~1 m apart, indoors.
 
 **Wire version: these are historical runs.** They were recorded with frame format version 3. The

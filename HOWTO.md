@@ -77,9 +77,9 @@ The only thing the board needs besides these two files is ffmpeg.
 
 ## 4. Flash the USB stick
 
-The stick needs this repo's firmware. A prebuilt image is at `firmware/rp2040-sx1276-fw-0.5.1.uf2`. The runs in `results/video/` used the
-earlier `firmware/rp2040-sx1276-fw-v5.uf2` (0.5.0), which answers `I` with `sx_version=0x00` until the first `L` or
-`F` command; 0.5.1 fixes that and is otherwise the same.
+The stick needs this repo's firmware. A prebuilt image is at `firmware/rp2040-sx1276-fw-0.5.1.uf2`. The runs in `results/video/` used an
+earlier image of the same name, `rp2040-sx1276-fw-v5.uf2` (0.5.0, old sha256 `fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317`), which answers `I` with `sx_version=0x00` until the first `L` or
+`F` command; 0.5.1 fixes that and is otherwise the same. That measured image is no longer in the repo: the file `firmware/rp2040-sx1276-fw-v5.uf2` was rebuilt from the current source (band and power checks added, reports 0.5.1) and is NOT the image behind those runs.
 
 1. **Back up the stick first.** Hold its BOOT button while plugging it in. Then, with
    [picotool](https://github.com/raspberrypi/picotool):

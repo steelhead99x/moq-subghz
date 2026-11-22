@@ -99,7 +99,7 @@ cycle, usually 1%, so a 400 ms frame must be followed by about 40 s of silence. 
 ## What you need
 
 * The board with the SX1276 GPS HAT, an antenna on it, and the 915 MHz stick on the Mac with its antenna.
-* The stick on `rp2040-sx1276-fw` v5 (`firmware/rp2040-sx1276-fw-v5.uf2`), the image the other runs used, or 0.5.1
+* The stick on `rp2040-sx1276-fw` v5 (`firmware/rp2040-sx1276-fw-v5.uf2`), the image the other runs used (the file of that name was later rebuilt from current source; see CHANGELOG), or 0.5.1
   (`firmware/rp2040-sx1276-fw-0.5.1.uf2`), which only fixes the radio start-up (see the CHANGELOG).
   On v5 the logger's first `I` can read `sx_version=0x00` right after power-up; the radio is
   fine, and 0.5.1 does not have this.

@@ -1,7 +1,7 @@
 Bench check of the radio start-up fix, 2026-11-20. RP2040-based device on a Linux host, serial commands.
 ARM single-board computer with the SX1276 GPS HAT sent with the HAT maker's stock sample app (915 MHz, SF7, 125 kHz, sync 0x12, +5 dBm setting).
 
-== 0.5.0 (rp2040-sx1276-fw-v5.uf2), right after flashing ==
+== 0.5.0 (the earlier v5 image, old sha256 fe86cc05057067ea03bfdcb8122c9bb2a571da88991229148afe5fec145cb317; the file rp2040-sx1276-fw-v5.uf2 in this repo was later rebuilt from current source and is NOT this image), right after flashing ==
 > I
 I rp2040-sx1276-fw 0.5.0 sx_version=0x00 t_us=17874325
 > I
