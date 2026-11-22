@@ -16,11 +16,16 @@ pub enum Baud {
     B115200,
 }
 
-/// Open `dev` non-blocking and raw at `baud`.
+/// Open `dev` non-blocking and raw at `baud`, for reading and writing.
 pub fn open(dev: &Path, baud: Baud) -> Result<File> {
+    open_with(dev, baud, true)
+}
+
+/// [`open`], read only when `write` is false (a logger never writes to the stick).
+pub fn open_with(dev: &Path, baud: Baud, write: bool) -> Result<File> {
     let f = OpenOptions::new()
         .read(true)
-        .write(true)
+        .write(write)
         .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
         .open(dev)
         .with_context(|| format!("open {}", dev.display()))?;

@@ -1,7 +1,6 @@
 //! `factory-bench`: the factory-vs-factory picture test of `results/factory-firmware/`. The Pi
 //! runs the stock Dragino app, once per text chunk of a JPEG, and the stock Electronic Cats
-//! receiver on the stick prints what it hears. A port of `factory_bench.py` and
-//! `factory-send.sh`; the stick capture is the `stick-cap` subcommand.
+//! receiver on the stick prints what it hears.  The stick capture is the `stick-cap` subcommand.
 //!
 //! This transmits, so it needs `--i-have-an-antenna` and the serial port of the stick as `--dev`.
 
@@ -403,24 +402,17 @@ pub fn cap_plan(o: &Opts, exe: &str) -> Plan {
 pub fn pass_plan(o: &Opts, pass: usize) -> [Plan; 2] {
     let local = o.out.join(&o.label).join(format!("pass{pass}.chunks.txt"));
     [
-        Plan::new(
-            "scp",
-            [
-                "-q".to_string(),
-                local.display().to_string(),
-                format!("{}:factory-bench/chunks.txt", o.pi),
-            ],
+        crate::orch::scp_plan(
+            local.display().to_string(),
+            format!("{}:factory-bench/chunks.txt", crate::orch::scp_host(&o.pi)),
         ),
-        Plan::new(
-            "ssh",
-            [
-                o.pi.clone(),
-                format!(
-                    "{} factory-send --i-have-an-antenna --app-dir {} factory-bench/chunks.txt",
-                    shq(&o.pi_tool),
-                    shq(&o.pi_app_dir)
-                ),
-            ],
+        crate::orch::ssh_plan(
+            &o.pi,
+            format!(
+                "{} factory-send --i-have-an-antenna --app-dir {} factory-bench/chunks.txt",
+                shq(&o.pi_tool),
+                shq(&o.pi_app_dir)
+            ),
         ),
     ]
 }
@@ -436,13 +428,38 @@ pub fn shq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Most chunks of a picture: the counters are three digits (`007/123`).
+pub const MAX_CHUNKS: usize = 999;
+/// Longest packet the LoRa radio takes.
+pub const MAX_PACKET: usize = 255;
+
+/// Refuse a picture whose chunks the receiver cannot parse or the radio cannot send, before
+/// anything is transmitted.
+pub fn check_chunks(chunks: &[String]) -> Result<()> {
+    let n = chunks.len();
+    if n == 0 {
+        bail!("the picture is empty: nothing to send");
+    }
+    if n > MAX_CHUNKS {
+        bail!("{n} chunks is above the {MAX_CHUNKS} the three digit counters allow: use a larger --chunk or a smaller picture");
+    }
+    let longest = chunks.iter().map(String::len).max().unwrap_or(0);
+    if longest > MAX_PACKET {
+        bail!("a packet of {longest} bytes is above the {MAX_PACKET} the radio takes: use a smaller --chunk");
+    }
+    Ok(())
+}
+
 pub fn run(o: &Opts) -> Result<()> {
+    crate::orch::valid_name(&o.label).context("--label")?;
+    crate::orch::validate_host(&o.pi)?;
     let exe = std::env::current_exe()?.display().to_string();
-    let jpeg = fs::read(&o.jpeg).with_context(|| format!("read {}", o.jpeg.display()))?;
+    let jpeg = crate::cell::read_capped(&o.jpeg, crate::cell::MAX_PICTURE)?;
     if o.chunk == 0 || !o.id.is_ascii_alphabetic() {
         bail!("--chunk must be above 0 and --id a letter");
     }
     let chunks = make_chunks(&jpeg, o.id, o.chunk);
+    check_chunks(&chunks)?;
     let n = chunks.len();
     if o.limit > n {
         bail!("--limit {} is above the {n} chunks of the picture", o.limit);
@@ -564,7 +581,7 @@ fn bench(
 /// The Pi side: send each chunk line with the stock Dragino app, and print `<start> <end> <id:seq>`.
 pub fn send_chunks(chunks: &Path, app_dir: &Path, app_timeout: Duration) -> Result<()> {
     use std::process::{Command, Stdio};
-    let text = fs::read_to_string(chunks).with_context(|| format!("read {}", chunks.display()))?;
+    let text = crate::cell::read_text(chunks, crate::cell::MAX_TEXT)?;
     let epoch = || {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -675,10 +692,10 @@ mod tests {
         let p = pass_plan(&o, 1);
         assert_eq!(
             p[0].shell(),
-            "scp -q out/x/pass1.chunks.txt pi:factory-bench/chunks.txt"
+            "scp -q -o BatchMode=yes -- out/x/pass1.chunks.txt pi:factory-bench/chunks.txt"
         );
         assert!(p[1].shell().starts_with(
-            "ssh pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna"
+            "ssh -o BatchMode=yes -- pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna"
         ));
         assert_eq!(
             cap_plan(&o, "bench").shell(),
@@ -787,5 +804,66 @@ mod parity {
             pretty(&json!({"a": [1, 2]})).unwrap(),
             "{\n \"a\": [\n  1,\n  2\n ]\n}"
         );
+    }
+
+    #[test]
+    fn chunk_counts_over_999_or_packets_over_255_are_refused_before_transmitting() {
+        let few = make_chunks(&vec![7u8; 999 * 120], 'A', 120);
+        assert_eq!(few.len(), 999);
+        check_chunks(&few).unwrap();
+        let many = make_chunks(&vec![7u8; 999 * 120 + 1], 'A', 120);
+        assert_eq!(many.len(), 1000);
+        assert!(check_chunks(&many).unwrap_err().to_string().contains("999"));
+        let one_byte = make_chunks(&vec![7u8; 1000], 'A', 1);
+        assert!(check_chunks(&one_byte).is_err());
+        let fat = make_chunks(&vec![7u8; 400], 'A', 200);
+        assert!(check_chunks(&fat).unwrap_err().to_string().contains("255"));
+        assert!(check_chunks(&make_chunks(&[], 'A', 120)).is_err());
+        // The edge that is accepted: 255 bytes is `A:000/001:` plus 245 hex digits
+        check_chunks(&["x".repeat(255)]).unwrap();
+        assert!(check_chunks(&["x".repeat(256)]).is_err());
+    }
+
+    #[test]
+    fn a_hostile_label_or_host_stops_run_before_it_reads_or_runs_anything() {
+        let o = |label: &str, pi: &str| Opts {
+            label: label.into(),
+            jpeg: "/nonexistent.jpg".into(),
+            id: 'A',
+            passes: 3,
+            chunk: 120,
+            limit: 0,
+            out: "/nonexistent/out".into(),
+            pi: pi.into(),
+            dev: "/dev/null".into(),
+            pi_tool: "t".into(),
+            pi_app_dir: "d".into(),
+            i_have_an_antenna: true,
+            dry_run: true,
+        };
+        for label in ["../../x", "/abs", "a/b", "a..b", "", &"l".repeat(65)] {
+            let e = run(&o(label, "pi")).unwrap_err().to_string();
+            assert!(e.contains("--label"), "{label:?}: {e}");
+        }
+        for pi in ["-oProxyCommand=x", "a;b", "$(x)", "a\nb"] {
+            let e = run(&o("ok", pi)).unwrap_err().to_string();
+            assert!(e.contains("--pi"), "{pi:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn parse_chunk_never_panics_on_random_bytes() {
+        let mut rng = crate::testutil::Rng(42);
+        let seed = b"A:000/002:0102aabb";
+        for _ in 0..5000 {
+            let v = if rng.below(2) == 0 {
+                rng.mutate(seed)
+            } else {
+                (0..rng.below(40)).map(|_| rng.next() as u8).collect()
+            };
+            if let Some(c) = parse_chunk(&v, None) {
+                let _ = c.bytes();
+            }
+        }
     }
 }

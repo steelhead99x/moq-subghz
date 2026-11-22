@@ -1,4 +1,4 @@
-//! Bench and analysis tools for moq-subghz: the Rust replacement for the `scripts/` harness.
+//! Bench and analysis tools for moq-subghz: the bench harness and its analysis.
 
 mod analyze;
 mod cell;
@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Build the CSVs and charts of results/stick-0.5.1 from the raw runs (scripts/analyze-051.py)
+    /// Build the CSVs and charts of results/stick-0.5.1 from the raw runs
     Analyze {
         /// Directory of the raw runs
         runs: PathBuf,
@@ -56,11 +56,11 @@ enum Cmd {
         #[arg(long, default_value_t = 1300)]
         timeout_ms: u64,
     },
-    /// One Pi-to-laptop run: receiver here, sender on the Pi (scripts/run2.sh)
+    /// One Pi-to-laptop run: receiver here, sender on the Pi
     Run(RunArgs),
-    /// One laptop-to-Pi run: receiver on the Pi, sender here (scripts/rev.sh)
+    /// One laptop-to-Pi run: receiver on the Pi, sender here
     Rev(RunArgs),
-    /// The matched rind off/on matrix of the README, 8 runs (scripts/bench.sh)
+    /// The matched rind off/on matrix of the README, 8 runs
     Bench {
         #[command(flatten)]
         env: orch::Env,
@@ -72,7 +72,7 @@ enum Cmd {
         #[arg(long)]
         no_play: bool,
     },
-    /// The whole results/stick-0.5.1 matrix (scripts/bench-051.sh)
+    /// The whole results/stick-0.5.1 matrix
     #[command(name = "bench-051")]
     Bench051 {
         #[command(flatten)]
@@ -90,7 +90,7 @@ enum Cmd {
         #[arg(long)]
         no_play: bool,
     },
-    /// One lora2015 picture run: logger here, sender on the Pi, exact loss from a replay (scripts/lora2015-run.sh)
+    /// One lora2015 picture run: logger here, sender on the Pi, exact loss from a replay
     Lora2015Run {
         #[command(flatten)]
         env: orch::Env,
@@ -105,7 +105,7 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// The 6 minute guided demo of the stick (scripts/demo-051.sh)
+    /// The 6 minute guided demo of the stick
     #[command(name = "demo-051")]
     Demo051 {
         #[command(flatten)]
@@ -116,19 +116,19 @@ enum Cmd {
         #[arg(long)]
         play: bool,
     },
-    /// Log the Pi-minus-laptop clock offset every 5 s until RUNS/clocklog.stop exists (scripts/clocklog.sh)
+    /// Log the Pi-minus-laptop clock offset every 5 s until RUNS/clocklog.stop exists
     Clocklog {
         #[command(flatten)]
         env: orch::Env,
     },
-    /// Copy the data worth keeping from a bench-051 runs directory (scripts/package-051.sh)
+    /// Copy the data worth keeping from a bench-051 runs directory
     #[command(name = "package-051")]
     Package051 {
         runs: PathBuf,
         demo: PathBuf,
         out: PathBuf,
     },
-    /// Print the calculated airtime table of results/lora-2015/README.md (scripts/lora2015-table.sh)
+    /// Print the calculated airtime table of results/lora-2015/README.md
     Lora2015Table {
         /// Directory of the built binaries (default: the directory of this one)
         #[arg(long, env = "BIN")]
@@ -136,12 +136,12 @@ enum Cmd {
         #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
         repo_root: PathBuf,
     },
-    /// Rebuild the test pictures of results/lora-2015/frames (scripts/lora2015-frames.sh)
+    /// Rebuild the test pictures of results/lora-2015/frames
     Lora2015Frames {
         #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
         repo_root: PathBuf,
     },
-    /// ELF to UF2 for the RP2040 (firmware/catwan-fw/elf2uf2.py)
+    /// ELF to UF2 for the RP2040
     Elf2uf2 { elf: PathBuf, uf2: PathBuf },
 }
 
@@ -302,7 +302,14 @@ fn real_main() -> Result<()> {
             let out = out.unwrap_or_else(|| c.runs.join("demo"));
             demo::run(&mut *h, &c, &out, play)
         }
-        Cmd::Clocklog { env } => matrix::clocklog_until_file(&env.cfg()?),
+        Cmd::Clocklog { env } => {
+            let c = env.cfg()?;
+            if env.dry_run {
+                // One plan, nothing written: no stop file removed, no directory made, no loop.
+                return matrix::clocklog_dry(&mut exec::Dry::new(), &c);
+            }
+            matrix::clocklog_until_file(&c)
+        }
         Cmd::Package051 { runs, demo, out } => package::run(&runs, &demo, &out),
         Cmd::Lora2015Table { bin, repo_root } => {
             let bin = match bin {
@@ -350,9 +357,7 @@ fn real_main() -> Result<()> {
             factory::send_chunks(&chunks, &app_dir, Duration::from_millis(timeout_ms))
         }
         Cmd::Elf2uf2 { elf, uf2 } => {
-            let (bytes, line) = uf2::convert(
-                &std::fs::read(&elf).with_context(|| format!("read {}", elf.display()))?,
-            )?;
+            let (bytes, line) = uf2::convert(&cell::read_capped(&elf, cell::MAX_ELF)?)?;
             std::fs::write(&uf2, bytes)?;
             println!("{line}");
             Ok(())

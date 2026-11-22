@@ -1,9 +1,11 @@
 //! `analyze`: turn the raw runs of the stick 0.5.1 bench into the tables and charts of
-//! `results/stick-0.5.1/`. A port of `scripts/analyze-051.py`; the output is byte-identical to the
-//! committed files. Everything computed from files is "measured"; columns ending `_calc` are the
+//! `results/stick-0.5.1/`. The committed files were written by a Python
+//! analyzer, and this reproduces them byte for byte. Everything computed from files is "measured"; columns ending `_calc` are the
 //! datasheet formula.
 
-use crate::cell::{field, mean, num, read_dict, rng, round_to, write_csv, Cell};
+use crate::cell::{
+    field, mean, num, read_dict, read_text, read_text_opt, rng, round_to, write_csv, Cell, MAX_TEXT,
+};
 use anyhow::{Context, Result};
 use base64::Engine;
 use serde_json::Value;
@@ -88,7 +90,10 @@ fn as_f(v: &Value, what: &str) -> Result<f64> {
 /// `round(k * v, nd)`: an integer stays an integer, as in Python.
 fn scaled_round(v: &Value, k: i64, nd: usize, what: &str) -> Result<Cell> {
     if let Some(i) = v.as_i64() {
-        return Ok(Cell::Int(k * i));
+        return k
+            .checked_mul(i)
+            .map(Cell::Int)
+            .with_context(|| format!("{what}: {i} is too large"));
     }
     Ok(Cell::Float(round_to(k as f64 * as_f(v, what)?, nd)))
 }
@@ -141,28 +146,60 @@ const FSK_COLS: [&str; 28] = [
     "auth_fail",
 ];
 
+/// What a run did on the air, from the receiver's and the sender's summaries.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RunKind {
+    /// The sender never put a frame on the air (it failed to start): not a result.
+    NeverStarted,
+    /// Frames were sent and none were received: a total loss, a result in its own right.
+    TotalLoss,
+    /// At least one good frame was received.
+    Received,
+}
+
+/// Classify a run. `send` is the sender's summary (an empty object when there is none).
+pub fn run_kind(recv: &Value, send: &Value) -> RunKind {
+    if truthy(get(recv, "radio_frames_ok")) {
+        RunKind::Received
+    } else if truthy(get(send, "frames_tx")) {
+        RunKind::TotalLoss
+    } else {
+        RunKind::NeverStarted
+    }
+}
+
 /// The rows of `fsk.csv`: one per `f300-*` run that put radio frames on the air.
 pub fn fsk_rows(runs: &Path) -> Result<Vec<Vec<Cell>>> {
     let mut rows = Vec::new();
     for n in names(runs, |n, p| n.starts_with("f300-") && p.is_dir())? {
         let dir = runs.join(&n);
-        let s: Value = match fs::read_to_string(dir.join("summary.json")) {
-            Ok(t) => serde_json::from_str(&t).with_context(|| format!("{n}/summary.json"))?,
+        let s: Value = match read_text_opt(&dir.join("summary.json"), MAX_TEXT)? {
+            Some(t) => serde_json::from_str(&t).with_context(|| format!("{n}/summary.json"))?,
             // No summary: the receiver never wrote one, the run did not happen.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e).with_context(|| format!("{n}/summary.json")),
+            None => continue,
         };
-        if !truthy(get(&s, "radio_frames_ok")) {
-            continue; // the run did not happen (sender failed)
+        let t: Value = match read_text_opt(&dir.join("send_summary.json"), MAX_TEXT)? {
+            Some(t) => {
+                serde_json::from_str(&t).with_context(|| format!("{n}/send_summary.json"))?
+            }
+            None => Value::Object(Default::default()),
+        };
+        match run_kind(&s, &t) {
+            // The sender put nothing on the air: the run did not happen.
+            RunKind::NeverStarted => continue,
+            // Sent and nothing came back: a result, kept (its radio_frames_ok is 0).
+            RunKind::TotalLoss => eprintln!("{n}: total loss (frames sent, none received)"),
+            RunKind::Received => {}
         }
-        let t: Value = match fs::read_to_string(dir.join("send_summary.json")) {
-            Ok(t) => serde_json::from_str(&t).with_context(|| format!("{n}/send_summary.json"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(Default::default()),
-            Err(e) => return Err(e).with_context(|| format!("{n}/send_summary.json")),
-        };
         let r = |k| req(&s, k, &n);
         let c = |v: &Value| Cell::from_json(v);
-        let lat = |obj: &str, k: &str| -> Result<Cell> { c(req(req(&s, obj, &n)?, k, &n)?) };
+        let lat = |obj: &str, k: &str| -> Result<Cell> {
+            match get(&s, obj) {
+                // No object was ever delivered, so there is no latency to report.
+                Value::Null if run_kind(&s, &t) == RunKind::TotalLoss => Ok(Cell::None),
+                _ => c(req(req(&s, obj, &n)?, k, &n)?),
+            }
+        };
         let vloss = r("video_frame_loss")?;
         let air = get(&t, "air_bps");
         rows.push(vec![
@@ -305,7 +342,7 @@ fn lora_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<Lor
         .iter()
         .partition(|r| matches!(r.get("status").map(String::as_str), Some("new" | "dup")));
     let sendp = runs.join(format!("{n}.send"));
-    let send = fs::read_to_string(&sendp).with_context(|| format!("read {}", sendp.display()))?;
+    let send = read_text(&sendp, MAX_TEXT)?;
     let sent = int(
         after(&send, "sent frames=", |c| c.is_ascii_digit())
             .with_context(|| format!("{}: no `sent frames=`", sendp.display()))?,
@@ -366,7 +403,12 @@ fn lora_run(runs: &Path, n: &str, inp: &Inputs, psnr: Psnr) -> Result<Option<Lor
         _ => None,
     };
     let loss_exact = num(field(im, "loss_exact_pct", &images)?);
-    let pass1_loss = round_to(100.0 * (expect - p1) as f64 / expect as f64, 1);
+    // `expect` comes from an untrusted CSV: no overflow, no division by zero.
+    let pass1_loss = if expect > 0 {
+        round_to(100.0 * expect.saturating_sub(p1) as f64 / expect as f64, 1)
+    } else {
+        0.0
+    };
     let complete = int(field(im, "complete", &images)?, "complete", n)?;
     let (rssi_lo, rssi_hi) = rng(&rssi);
     let (snr_lo, snr_hi) = rng(&snr);
@@ -941,6 +983,43 @@ mod tests {
     }
 
     #[test]
+    fn total_loss_is_kept_and_a_run_that_never_started_is_not() {
+        let runs = Scratch::new("fsk-total");
+        let d = runs.0.join("f300-x");
+        fs::create_dir_all(&d).unwrap();
+        let recv =
+            fs::read_to_string(repo().join("results/stick-0.5.1/fsk/f300-fec8-p2-1/summary.json"))
+                .unwrap();
+        let send = fs::read_to_string(
+            repo().join("results/stick-0.5.1/fsk/f300-fec8-p2-1/send_summary.json"),
+        )
+        .unwrap();
+        let mut v: Value = serde_json::from_str(&recv).unwrap();
+        v["radio_frames_ok"] = 0.into();
+        v["obj_lat_ms"] = Value::Null;
+        v["g2g_lat_ms"] = Value::Null;
+        fs::write(d.join("summary.json"), v.to_string()).unwrap();
+        // no sender summary or frames_tx 0: never started
+        assert!(fsk_rows(&runs.0).unwrap().is_empty());
+        let mut t: Value = serde_json::from_str(&send).unwrap();
+        t["frames_tx"] = 0.into();
+        fs::write(d.join("send_summary.json"), t.to_string()).unwrap();
+        assert!(fsk_rows(&runs.0).unwrap().is_empty());
+        // frames sent, none received: kept
+        fs::write(d.join("send_summary.json"), send).unwrap();
+        let rows = fsk_rows(&runs.0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            run_kind(
+                &v,
+                &serde_json::from_str(&fs::read_to_string(d.join("send_summary.json")).unwrap())
+                    .unwrap()
+            ),
+            RunKind::TotalLoss
+        );
+    }
+
+    #[test]
     fn run_names() {
         assert_eq!(
             parse_run_name("lorawan-sf8-500-large-r12"),
@@ -995,5 +1074,89 @@ mod tests {
                 && svg.contains("12.5 s</text>")
                 && svg.contains("100 s</text>")
         );
+    }
+
+    /// A staged runs directory with one FSK run and one LoRa run, and the files to mutate.
+    fn small_stage(tag: &str) -> (Scratch, Vec<(PathBuf, Vec<u8>)>) {
+        let s = Scratch::new(tag);
+        let r = repo().join("results/stick-0.5.1");
+        let (fsk, lora) = ("f300-fec8-p5-1", "chunk-sf7-125-small-r1");
+        let fsk = fs::read_dir(r.join("fsk"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .min()
+            .unwrap_or(fsk.into());
+        let mut files = Vec::new();
+        let d = s.0.join(&fsk);
+        fs::create_dir_all(&d).unwrap();
+        for f in ["summary.json", "send_summary.json"] {
+            fs::copy(r.join("fsk").join(&fsk).join(f), d.join(f)).unwrap();
+            files.push((d.join(f), fs::read(d.join(f)).unwrap()));
+        }
+        let x = s.0.join(lora).join("exact");
+        copy_tree(&r.join("lora").join(lora), &x);
+        for f in ["images.csv", "rx.csv"] {
+            files.push((x.join(f), fs::read(x.join(f)).unwrap()));
+        }
+        let send = s.0.join(format!("{lora}.send"));
+        fs::copy(r.join("lora").join(lora).join("send.txt"), &send).unwrap();
+        files.push((send.clone(), fs::read(&send).unwrap()));
+        (s, files)
+    }
+
+    #[test]
+    fn non_finite_numbers_in_images_csv_are_an_error_or_a_blank_never_a_panic() {
+        let (s, files) = small_stage("an-nan");
+        let none = |_: &Path, _: &Path, _: Option<&str>| Ok(None);
+        let images = files.iter().find(|f| f.0.ends_with("images.csv")).unwrap();
+        let text = String::from_utf8(images.1.clone()).unwrap();
+        let head = text.lines().next().unwrap().to_string();
+        let cols: Vec<&str> = head.split(',').collect();
+        for bad in ["nan", "NaN", "inf", "-inf", "infinity", "1e999", "x", ""] {
+            for col in [
+                "seconds_to_image",
+                "air_toa_s_calc",
+                "loss_exact_pct",
+                "complete",
+            ] {
+                let at = cols.iter().position(|c| *c == col).unwrap();
+                let mut lines: Vec<String> = text.lines().map(String::from).collect();
+                let mut f: Vec<String> = lines[1].split(',').map(String::from).collect();
+                f[at] = bad.to_string();
+                lines[1] = f.join(",");
+                fs::write(&images.0, lines.join("\r\n")).unwrap();
+                let out = Scratch::new("analyze-nan-out");
+                let r =
+                    std::panic::catch_unwind(|| run(&s.0, &out.0, &Inputs::under(&repo()), &none));
+                assert!(r.is_ok(), "{col}={bad} panicked");
+            }
+        }
+    }
+
+    #[test]
+    fn mutated_inputs_never_panic() {
+        let (s, files) = small_stage("an-fuzz");
+        let none = |_: &Path, _: &Path, _: Option<&str>| Ok(None);
+        let out = Scratch::new("analyze-fuzz-out");
+        let mut rng = crate::testutil::Rng(0x9e37_79b9_7f4a_7c15);
+        for i in 0..300 {
+            for (p, orig) in &files {
+                // One or two of the files are damaged each round, the rest stay good.
+                let bytes = if rng.below(3) == 0 {
+                    rng.mutate(orig)
+                } else {
+                    orig.clone()
+                };
+                fs::write(p, bytes).unwrap();
+            }
+            let r = std::panic::catch_unwind(|| run(&s.0, &out.0, &Inputs::under(&repo()), &none));
+            assert!(r.is_ok(), "round {i} panicked");
+        }
+    }
+
+    #[test]
+    fn a_huge_integer_does_not_overflow() {
+        assert!(scaled_round(&serde_json::json!(i64::MAX), 100, 3, "x").is_err());
+        assert!(scaled_round(&serde_json::json!(5), 100, 3, "x").is_ok());
     }
 }

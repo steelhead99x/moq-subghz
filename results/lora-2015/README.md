@@ -34,7 +34,7 @@ The test pictures are in `frames/`: 320x240 at ffmpeg quality 10 and 160x120 at 
 as JPEG, and the same pictures as SSDV packets. SSDV needs sizes in multiples of 16, so its small
 picture is 160x112. SSDV re-encodes the picture with its own tables, so it comes back a little
 different from the JPEG (about 29 dB PSNR for the large one). Rebuild them with
-`scripts/lora2015-frames.sh`.
+`moq-subghz-bench lora2015-frames`.
 
 ## Radio settings
 
@@ -54,7 +54,7 @@ change silently.
 ## Airtime, calculated, not measured
 
 Time on air from the datasheet formula, which `sx1276` implements and its tests check. Values for
-the table below came from `scripts/lora2015-table.sh`, which uses `lora2015-send --dry-run`.
+the table below came from `moq-subghz-bench lora2015-table`, which uses `lora2015-send --dry-run`.
 "Best fps" is one picture per airtime with no loss, no gaps and no repeat pass. "Images per 30 s" is how many
 pictures fit in The Things Network's fair-use limit of 30 s of uplink airtime per day, which applies on
 its public network and not on this bench.
@@ -140,7 +140,7 @@ The small picture at SF7/125 takes about 3.7 s per pass, so 30 s is about 8 pass
   --secs 40 --out runs/smoke --reference results/lora-2015/frames/f160x120-q20.jpg
 # Pi, in another terminal, a few seconds after the logger prints "listening"
 ssh pi 'cd lora2015 && ./lora2015-send --mode chunk --file frames/f160x120-q20.jpg \
-  --profile sf7-125 --power 5 --passes 20 --max-secs 30 --tx-log smoke-tx.csv --i-have-an-antenna'
+  --profile sf7-125 --power 5 --passes 20 --max-secs 30 --tx-log smoke-tx.csv --i-have-an-antenna --transmit'
 ```
 
 It passes when `runs/smoke/images.csv` shows `complete` 1 and `matches_reference` 1, and
