@@ -82,6 +82,14 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * `Link::idle` returns a `Result` and `Link::take_tx_errors` is new (the stick reports `ERR tx` after `send`
   returned); both have defaults. `LinkError::Io` prints its message as is.
 
+### Wire crate
+
+* `moq-subghz-wire` has a `seal` feature (on by default, so downstream builds are unchanged). Without it
+  the crate drops `rind` and `libc` and has no dependencies; framing, FEC and the Annex-B splitter are the
+  same. CI runs `cargo test -p moq-subghz-wire --no-default-features`.
+* New `moq_subghz_wire::plan(len, k, min_frame)` returns the length of every frame the `Fragmenter` makes for an
+  object, for airtime and overhead math without data. A test checks it against the real `Fragmenter`.
+
 ### Changed on the air
 
 * **Frame format version 4.** Encrypted objects now carry a per-run salt, and each run encrypts

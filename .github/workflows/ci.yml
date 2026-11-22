@@ -26,6 +26,8 @@ jobs:
         run: cargo test --all-targets
       - name: build
         run: cargo build --release
+      - name: wire without sealing (no rind, no libc)
+        run: cargo test -p moq-subghz-wire --no-default-features
 
   sx1276:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false

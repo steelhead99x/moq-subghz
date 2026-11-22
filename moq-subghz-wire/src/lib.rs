@@ -24,6 +24,7 @@
 
 pub mod annexb;
 pub mod objstream;
+#[cfg(feature = "seal")]
 pub mod seal;
 pub mod stamp;
 
@@ -114,6 +115,7 @@ pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
             (Some(hi), Some(lo)) => out.push(hi << 4 | lo),
             _ => {
                 // what was decoded so far may be part of a key
+                #[cfg(feature = "seal")]
                 seal::wipe(&mut out);
                 return None;
             }
@@ -437,6 +439,38 @@ impl Fragmenter {
         write_crc(&mut f);
         f
     }
+}
+
+/// The frame plan for one object: the length in bytes of each frame
+/// [`Fragmenter::fragment`] makes for an object of `len` bytes at FEC block size `k` and
+/// padding `min_frame`, in the order it sends them (data frames of a block, then its parity).
+/// Pure arithmetic over the frame constants, for airtime and overhead math without data.
+pub fn plan(len: usize, k: u8, min_frame: usize) -> Result<Vec<usize>, WireError> {
+    if k > 15 {
+        return Err(WireError::BadK);
+    }
+    if len == 0 {
+        return Err(WireError::Empty);
+    }
+    if len > MAX_OBJECT {
+        return Err(WireError::TooBig(len));
+    }
+    let n = len.div_ceil(MAX_CHUNK);
+    let cs = len.div_ceil(n);
+    // chunk `i` of `n`: all are `cs` bytes except the last
+    let chunk = |i: usize| if i + 1 < n { cs } else { len - cs * (n - 1) };
+    let frame = |payload: usize| (HDR_LEN + payload).max(min_frame.min(MAX_FRAME));
+    let blk = if k == 0 { n } else { k as usize };
+    let mut out = Vec::with_capacity(n + n.div_ceil(blk));
+    for b in 0..n.div_ceil(blk) {
+        let r = b * blk..((b + 1) * blk).min(n);
+        out.extend(r.clone().map(|i| frame(chunk(i))));
+        if k > 0 {
+            // parity is as long as the block's first chunk
+            out.push(frame(chunk(r.start)));
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1732,6 +1766,46 @@ mod tests {
         assert!(parse_fsk_profile("300000:100000:6:y").is_err());
         assert!(parse_fsk_profile("300000:100000").is_err());
         assert!(parse_fsk_profile("300000:100000:65536").is_err());
+    }
+
+    #[test]
+    fn plan_matches_the_fragmenter() {
+        // every chunk-count boundary up to six frames, then a few large objects
+        let sizes = (1..=6 * MAX_CHUNK + 2)
+            .step_by(7)
+            .chain([MAX_CHUNK, MAX_CHUNK + 1, 2 * MAX_CHUNK, 2 * MAX_CHUNK + 1])
+            .chain([30_001, MAX_OBJECT]);
+        for len in sizes {
+            for k in 0..=15u8 {
+                for min_frame in [0, 96, MAX_FRAME + 40] {
+                    let mut f = Fragmenter::new(k).unwrap();
+                    f.min_frame = min_frame;
+                    let real: Vec<usize> = f
+                        .fragment(3, 2, &obj(len, 7))
+                        .unwrap()
+                        .iter()
+                        .map(Vec::len)
+                        .collect();
+                    assert_eq!(
+                        plan(len, k, min_frame).unwrap(),
+                        real,
+                        "len {len} k {k} min_frame {min_frame}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plan_refuses_what_fragment_refuses() {
+        assert_eq!(plan(0, 0, 0), Err(WireError::Empty));
+        assert_eq!(
+            plan(MAX_OBJECT + 1, 0, 0),
+            Err(WireError::TooBig(MAX_OBJECT + 1))
+        );
+        assert_eq!(plan(10, 16, 0), Err(WireError::BadK));
+        // a 3-frame object at k = 2: two data frames, parity, one data frame, parity
+        assert_eq!(plan(2 * MAX_CHUNK + 1, 2, 0).unwrap().len(), 5);
     }
 
     #[test]
