@@ -77,8 +77,10 @@ struct Args {
     #[arg(long, default_value_t = 250.0)]
     stall_ms: f64,
     /// Republish the delivered objects as a real MoQ broadcast on this relay URL, through
-    /// `moq-subghz-publish` (see docs/MOQ.md). E.g. http://localhost:4443/anon
-    #[arg(long)]
+    /// `moq-subghz-publish` (see docs/MOQ.md). E.g. http://localhost:4443/anon. Give
+    /// `--publish` with no URL to read it from MOQ_SUBGHZ_RELAY, which a token-bearing URL
+    /// needs: argv is visible to every local user, the environment is not.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
     publish: Option<String>,
     /// Broadcast name for --publish
     #[arg(long, default_value = "moq-subghz")]
@@ -153,9 +155,10 @@ impl Sink {
             }
         }
     }
-    /// Close the input, wait for the child, and return how many AUs it never got:
-    /// refused by a full channel, or failed to write once the child stopped reading.
-    fn close(&mut self, kill_after: Duration) -> u64 {
+    /// Close the input, wait for the child, and report how many AUs it never got (refused
+    /// by a full channel, or failed to write once the child stopped reading) and whether
+    /// the child exited cleanly on its own.
+    fn close(&mut self, kill_after: Duration) -> Closed {
         // Close the input and give the writer `kill_after` to drain the backlog (up to 256
         // AUs for a slow decoder), then the child `kill_after` to finish, then kill it, and
         // only then join the writer: a child that stopped reading leaves the writer blocked
@@ -165,16 +168,22 @@ impl Sink {
         while self.th.as_ref().is_some_and(|t| !t.is_finished()) && t0.elapsed() < kill_after {
             std::thread::sleep(Duration::from_millis(50));
         }
+        let mut exited_ok = true;
         if let Some(mut c) = self.child.take() {
             let t0 = Instant::now();
-            while !matches!(c.try_wait(), Ok(Some(_))) {
-                if t0.elapsed() >= kill_after {
-                    let _ = c.kill();
-                    let _ = c.wait();
-                    break;
+            exited_ok = loop {
+                match c.try_wait() {
+                    Ok(Some(st)) => break st.success(),
+                    Ok(None) if t0.elapsed() < kill_after => {
+                        std::thread::sleep(Duration::from_millis(50))
+                    }
+                    _ => {
+                        let _ = c.kill();
+                        let _ = c.wait();
+                        break false;
+                    }
                 }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            };
         }
         let mut dropped = self.refused.get();
         if let Some(t) = self.th.take() {
@@ -185,8 +194,15 @@ impl Sink {
                 }
             }
         }
-        dropped
+        Closed { dropped, exited_ok }
     }
+}
+
+/// How a sink ended.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Closed {
+    dropped: u64,
+    exited_ok: bool,
 }
 
 const AUD: [u8; 6] = [0, 0, 0, 1, 0x09, 0xf0];
@@ -317,6 +333,19 @@ fn main() -> Result<()> {
     if !(902.0..=928.0).contains(&a.freq) || (a.freq - 925.0).abs() < 0.3 {
         bail!("--freq must be inside 902-928 MHz and not 925.0");
     }
+    let publish_url = match a.publish.as_deref() {
+        None => None,
+        Some("") => Some(
+            std::env::var("MOQ_SUBGHZ_RELAY")
+                .ok()
+                .filter(|u| !u.is_empty())
+                .context("--publish with no URL reads MOQ_SUBGHZ_RELAY, which is unset")?,
+        ),
+        Some(u) if u.contains('?') => bail!(
+            "--publish URL carries a query (a token?); put it in MOQ_SUBGHZ_RELAY and pass --publish alone"
+        ),
+        Some(u) => Some(u.to_string()),
+    };
     // Both are printed into summary.json as numbers; NaN or infinity would make it invalid.
     if !(a.clock_offset_ms.is_finite() && a.stall_ms.is_finite() && a.stall_ms > 0.0) {
         bail!("--clock-offset-ms must be finite and --stall-ms finite and positive");
@@ -339,6 +368,7 @@ fn main() -> Result<()> {
 
     // ---- line source
     let (ltx, lrx) = mpsc::channel::<(u64, String)>();
+    let mut replay_th: Option<std::thread::JoinHandle<std::io::Result<()>>> = None;
     let mut port_w = None;
     if let Some(port) = &a.port {
         let f = open_serial(port)?;
@@ -397,6 +427,8 @@ fn main() -> Result<()> {
                 fdev_hz: fdev,
                 preamble_bytes: pre,
                 unchecked,
+                // fsk_poll_long drains the FIFO mid-packet: keep failed packets whole
+                crc_auto_clear: false,
                 ..Default::default()
             };
             cfg.validate()
@@ -431,13 +463,13 @@ fn main() -> Result<()> {
     } else if let Some(rp) = &a.replay {
         let mut f = BufReader::new(File::open(rp)?);
         let paced = a.paced;
-        std::thread::spawn(move || {
+        replay_th = Some(std::thread::spawn(move || -> std::io::Result<()> {
             let t0 = Instant::now();
             loop {
-                let l = match read_line_limited(&mut f, MAX_SERIAL_LINE) {
-                    Ok(Some(Line::Data(buf))) => String::from_utf8_lossy(&buf).trim().to_string(),
-                    Ok(Some(Line::TooLong)) => "X line-too-long".to_string(),
-                    Ok(None) | Err(_) => break,
+                let l = match read_line_limited(&mut f, MAX_SERIAL_LINE)? {
+                    Some(Line::Data(buf)) => String::from_utf8_lossy(&buf).trim().to_string(),
+                    Some(Line::TooLong) => "X line-too-long".to_string(),
+                    None => return Ok(()),
                 };
                 if l.is_empty() {
                     continue;
@@ -451,10 +483,10 @@ fn main() -> Result<()> {
                     }
                 }
                 if ltx.send((unix_us(), l)).is_err() {
-                    break;
+                    return Ok(());
                 }
             }
-        });
+        }));
     } else {
         bail!("need --port or --replay");
     }
@@ -515,10 +547,12 @@ fn main() -> Result<()> {
     };
     // Same objects the decoder gets, one record each. stderr stays on the terminal so
     // the publisher's connection errors are visible.
-    let mut publish = match &a.publish {
+    let mut publish = match &publish_url {
         Some(url) => {
+            // The URL goes in the child's environment, never its argv.
             let mut c = Command::new(&a.publish_bin)
-                .args(["--url", url, "--name", &a.publish_name, "--size", &a.size])
+                .args(["--name", &a.publish_name, "--size", &a.size])
+                .env("MOQ_SUBGHZ_RELAY", url)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .spawn()
@@ -747,6 +781,17 @@ fn main() -> Result<()> {
     if let Some(e) = re.finish() {
         handle(e, unix_us())?;
     }
+    // A replay reader that stopped on an error must not pass for a clean end of file. One
+    // still running was cut off by --secs, which is not an error.
+    let input_error = match replay_th
+        .take()
+        .filter(|t| t.is_finished())
+        .map(|t| t.join())
+    {
+        Some(Ok(Err(e))) => Some(e.to_string()),
+        Some(Err(_)) => Some("the replay reader panicked".to_string()),
+        _ => None,
+    };
     let mut stats_line = String::new();
     if a.radio {
         // stop the RX thread and put the SX1276 back to sleep (it clears the flag when done)
@@ -777,11 +822,15 @@ fn main() -> Result<()> {
     if let Some(r) = raw.as_mut() {
         r.flush()?;
     }
-    let play_dropped = play.as_mut().map(|s| s.close(Duration::from_secs(3)));
-    let publish_dropped = publish.as_mut().map(|s| s.close(Duration::from_secs(5)));
+    let play_dropped = play
+        .as_mut()
+        .map(|s| s.close(Duration::from_secs(3)).dropped);
+    let publish_closed = publish.as_mut().map(|s| s.close(Duration::from_secs(5)));
+    let publish_dropped = publish_closed.map(|c| c.dropped);
+    let publish_failed = publish_closed.is_some_and(|c| c.dropped > 0 || !c.exited_ok);
     let mut decode_dropped = None;
     let (mut dtimes, dlat_t, unread) = if let Some(mut s) = dec.take() {
-        decode_dropped = Some(s.close(Duration::from_secs(5)));
+        decode_dropped = Some(s.close(Duration::from_secs(5)).dropped);
         dec_th.take().unwrap().join().unwrap()
     } else {
         (Vec::new(), Vec::new(), 0)
@@ -820,7 +869,7 @@ fn main() -> Result<()> {
         1.0 - frames_delivered as f64 / frames_expected as f64
     };
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad, re.frames_late, re.frames_stray, re.frames_stale,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
@@ -838,10 +887,19 @@ fn main() -> Result<()> {
         100.0 * cpu_s(libc::RUSAGE_SELF) / wall, 100.0 * cpu_s(libc::RUSAGE_CHILDREN) / wall,
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         opt(play_dropped), opt(decode_dropped), opt(publish_dropped),
+        publish_closed.map_or("null".to_string(), |_| (!publish_failed).to_string()),
+        input_error.as_ref().map_or("null".to_string(), |e| format!("\"{}\"", json_escape(e))),
     );
     std::fs::write(format!("{}/summary.json", a.out), &s)?;
     println!("{s}");
-    if port_closed {
+    // The recording is written either way; a failed input or publish still fails the run.
+    if let Some(e) = &input_error {
+        eprintln!("reading the input failed: {e}");
+    }
+    if publish_failed {
+        eprintln!("publishing failed: the publisher exited with an error or missed objects");
+    }
+    if port_closed || input_error.is_some() || publish_failed {
         std::process::exit(1);
     }
     Ok(())
@@ -866,6 +924,7 @@ mod tests {
         let mut c = Command::new(cmd)
             .args(args)
             .stdin(Stdio::piped())
+            .stdout(Stdio::null())
             .spawn()
             .unwrap();
         let si = c.stdin.take().unwrap();
@@ -880,8 +939,12 @@ mod tests {
         for _ in 0..300 {
             s.send(&au);
         }
-        let dropped = s.close(Duration::from_millis(100));
-        assert!(dropped >= 300 - 256 - 2, "{dropped}");
+        let c = s.close(Duration::from_millis(100));
+        assert!(c.dropped >= 300 - 256 - 2, "{c:?}");
+        assert!(
+            !c.exited_ok,
+            "a child killed at the deadline did not exit cleanly"
+        );
     }
 
     #[test]
@@ -891,7 +954,18 @@ mod tests {
         for _ in 0..10 {
             s.send(b"au");
         }
-        assert_eq!(s.close(Duration::from_millis(100)), 10);
+        assert_eq!(s.close(Duration::from_millis(100)).dropped, 10);
+    }
+
+    #[test]
+    fn sink_reports_a_child_that_exited_with_an_error() {
+        let mut s = child("false", &[]);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!s.close(Duration::from_millis(100)).exited_ok);
+        let mut ok = child("cat", &[]);
+        ok.send(b"x");
+        let c = ok.close(Duration::from_secs(2));
+        assert_eq!((c.dropped, c.exited_ok), (0, true));
     }
 
     #[test]

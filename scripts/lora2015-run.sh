@@ -19,10 +19,18 @@ mkdir -p "$RUNS/$N"
 LP=$!
 sleep 3
 remote_args=''; [ $# -gt 0 ] && remote_args=$(printf '%q ' "$@")
-ssh "$PI" "cd ~/lora2015 && ./lora2015-send --mode $MODE --file frames/$FILE --profile $PROF --power 5 --passes $PASSES --tx-log /tmp/$N.tx.csv --i-have-an-antenna ${remote_args}2>&1 | tail -n 3" > "$RUNS/$N.send"
-wait $LP
+# Output to a file on the Pi, not a pipe, so ssh exits with the sender's own status.
+ssh "$PI" "cd ~/lora2015 && ./lora2015-send --mode $MODE --file frames/$FILE --profile $PROF --power 5 --passes $PASSES --tx-log /tmp/$N.tx.csv --i-have-an-antenna ${remote_args}> /tmp/$N.send.out 2>&1; st=\$?; tail -n 3 /tmp/$N.send.out; rm -f /tmp/$N.send.out; exit \$st" > "$RUNS/$N.send"
+send_st=$?
+wait $LP; log_st=$?
 scp -q "$PI:/tmp/$N.tx.csv" "$RUNS/$N.tx.csv"; ssh "$PI" "rm -f /tmp/$N.tx.csv"
 SENT=$(sed -n 's/.*sent frames=\([0-9]*\).*/\1/p' "$RUNS/$N.send")
+exact_st=1
 # shellcheck disable=SC2086
-[ -n "$SENT" ] && "$BIN/lora2015-log" --replay "$RUNS/$N/raw.log" --mode "$MODE" --profile "$PROF" --sent-frames "$SENT" --out "$RUNS/$N/exact" $REF > "$RUNS/$N.exact.out" 2>&1
+[ -n "$SENT" ] && "$BIN/lora2015-log" --replay "$RUNS/$N/raw.log" --mode "$MODE" --profile "$PROF" --sent-frames "$SENT" --out "$RUNS/$N/exact" $REF > "$RUNS/$N.exact.out" 2>&1 && exact_st=0
+fail() { echo "FAILED $N: $*" >&2; exit 1; }
+[ "$send_st" -eq 0 ] || fail "sender exited $send_st (see $RUNS/$N.send)"
+[ "$log_st" -eq 0 ] || fail "logger exited $log_st (see $RUNS/$N.log.out)"
+[ -n "$SENT" ] || fail "no sent-frame count in $RUNS/$N.send"
+[ "$exact_st" -eq 0 ] && [ -s "$RUNS/$N/exact/images.csv" ] || fail "exact replay failed (see $RUNS/$N.exact.out)"
 echo "DONE $N sent=$SENT $(grep -m1 'sent frames' "$RUNS/$N.send")"

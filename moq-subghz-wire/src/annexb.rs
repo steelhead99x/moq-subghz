@@ -57,9 +57,10 @@ impl AuSplitter {
         out
     }
 
-    /// ffmpeg flushes one packet per write, so once the pipe goes quiet the pending
-    /// access unit is complete; emit it now instead of waiting for the next AUD.
-    pub fn flush(&mut self) -> Option<Vec<u8>> {
+    /// The last access unit, once the encoder's output has ended. A pause on the pipe is
+    /// not an end: a pipe keeps bytes, not write boundaries, so only the next AUD or EOF
+    /// closes a picture.
+    pub fn finish(&mut self) -> Option<Vec<u8>> {
         if has_vcl(&self.buf) {
             Some(std::mem::take(&mut self.buf))
         } else {
@@ -87,7 +88,24 @@ mod tests {
         }
         assert_eq!(got, vec![a1.clone(), a2]);
         assert!(is_key(&a1));
-        assert!(s.flush().is_none()); // AUD only
+        assert!(s.finish().is_none()); // AUD only
+    }
+
+    #[test]
+    fn a_picture_split_across_reads_stays_one_access_unit() {
+        let aud = [0, 0, 0, 1, 9, 0xf0];
+        let slice1 = [0, 0, 1, 0x65, 0x88, 1, 1];
+        let slice2 = [0, 0, 1, 0x65, 0x10, 2, 2];
+        let p = [0, 0, 1, 0x41, 8, 8];
+        let a1: Vec<u8> = [&aud[..], &slice1, &slice2].concat();
+        let a2: Vec<u8> = [&aud[..], &p].concat();
+        let mut s = AuSplitter::default();
+        // the encoder's write of a1 arrives in two reads, with a pause after slice1
+        let cut = aud.len() + slice1.len();
+        assert!(s.push(&a1[..cut]).is_empty());
+        assert!(s.push(&a1[cut..]).is_empty());
+        assert_eq!(s.push(&a2), vec![a1]);
+        assert_eq!(s.finish(), Some(a2));
     }
 
     #[test]
@@ -95,13 +113,13 @@ mod tests {
         let mut s = AuSplitter::default();
         let junk = vec![0u8; crate::MAX_OBJECT + 8];
         assert!(s.push(&junk).is_empty());
-        assert!(s.flush().is_none());
+        assert!(s.finish().is_none());
         // resyncs at the next real access unit
         let aud = [0, 0, 0, 1, 9, 0xf0];
         let p = [0, 0, 1, 0x41, 8, 8];
         let au: Vec<u8> = [&aud[..], &p].concat();
         let mut got = s.push(&au);
-        got.extend(s.flush());
+        got.extend(s.finish());
         assert_eq!(got, vec![au]);
     }
 }

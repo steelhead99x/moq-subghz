@@ -1,8 +1,10 @@
 //! Host side of the 2015-style LoRa test: listen on a CatWAN stick (`catwan-fw` v5), rebuild
 //! the images and write the numbers.
 //!
-//! Output directory: `rx.csv` (every frame), `images.csv` (every image), `raw.log` (the
-//! stick's lines as received, live runs only), the rebuilt JPEGs, and for SSDV the packet files.
+//! Output directory: `rx.csv` (every frame), `images.csv` (every image), `run.csv` (the run
+//! against the sender's frame count), `raw.log` (the stick's lines as received, live runs
+//! only), the rebuilt JPEGs, and for SSDV the packet files. Files are named `image<id>`, with
+//! `-2`, `-3`... for a later image that reused an id.
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use moq_subghz_lora2015::log::{images_csv, Logger, Status, RX_HEADER};
@@ -156,18 +158,19 @@ fn main() -> Result<()> {
     rx_csv.flush()?;
 
     let (frames, errs) = (logger.frames, logger.rx_errors);
-    let results = logger.finish();
+    let (results, run) = logger.finish();
     let ssdv_bin = a.ssdv_bin.clone().or_else(|| which("ssdv"));
-    for r in &results {
+    let names = file_names(&results);
+    for (r, name) in results.iter().zip(&names) {
         if let Some(j) = &r.jpeg {
-            std::fs::write(out.join(format!("image{}.jpg", r.id)), j)?;
+            std::fs::write(out.join(format!("{name}.jpg")), j)?;
         }
         if let Some(f) = &r.ssdv_file {
-            let path = out.join(format!("image{}.ssdv", r.id));
+            let path = out.join(format!("{name}.ssdv"));
             std::fs::write(&path, f)?;
             match &ssdv_bin {
                 Some(bin) => {
-                    let jpg = out.join(format!("image{}.jpg", r.id));
+                    let jpg = out.join(format!("{name}.jpg"));
                     let ok = std::process::Command::new(bin)
                         .arg("-d")
                         .arg(&path)
@@ -187,14 +190,26 @@ fn main() -> Result<()> {
         }
     }
     std::fs::write(out.join("images.csv"), images_csv(&results))?;
+    let pct = |v: Option<f64>| v.map(|x| format!("{x:.1}")).unwrap_or_default();
+    std::fs::write(
+        out.join("run.csv"),
+        format!(
+            "frames_heard,frames_good,frames_sent,loss_exact_pct\n{},{},{},{}\n",
+            run.frames,
+            run.good,
+            run.sent.map(|s| s.to_string()).unwrap_or_default(),
+            pct(run.loss_exact_pct)
+        ),
+    )?;
     println!(
-        "{frames} frames, {errs} receive errors, {} image(s)",
-        results.len()
+        "{frames} frames, {errs} receive errors, {} image(s){}",
+        results.len(),
+        run.loss_exact_pct
+            .map_or(String::new(), |l| format!(", {l:.1}% of sent frames lost"))
     );
-    for r in &results {
+    for (r, name) in results.iter().zip(&names) {
         println!(
-            "image {}: {} of {} frames, {}{}",
-            r.id,
+            "{name}: {} of {} frames, {}{}",
             r.unique,
             r.expected.map_or("?".into(), |e| e.to_string()),
             if r.complete { "complete" } else { "incomplete" },
@@ -203,6 +218,27 @@ fn main() -> Result<()> {
     }
     println!("wrote {}", out.display());
     Ok(())
+}
+
+/// `image<id>` per image, `-2`, `-3`... for a later image that reused an id, so no output
+/// file overwrites another.
+fn file_names(rs: &[moq_subghz_lora2015::log::ImageResult]) -> Vec<String> {
+    let mut seen = std::collections::HashMap::<String, u32>::new();
+    rs.iter()
+        .map(|r| {
+            let base = match r.callsign.as_str() {
+                "" => format!("image{}", r.id),
+                c => format!("image{}-{c}", r.id),
+            };
+            let n = seen.entry(base.clone()).or_insert(0);
+            *n += 1;
+            if *n == 1 {
+                base
+            } else {
+                format!("{base}-{n}")
+            }
+        })
+        .collect()
 }
 
 fn which(name: &str) -> Option<String> {

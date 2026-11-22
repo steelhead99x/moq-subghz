@@ -179,11 +179,16 @@ In the `--out` directory:
   last frame needed, plus one frame of airtime, by the stick's clock. `effective_fps` is its
   inverse. `loss_est_pct` is guessed from gaps in the chunk numbers, pass by pass: it cannot see
   a lost tail or a whole lost pass. `loss_exact_pct` uses `--sent-frames` and is the figure to
-  quote. Columns ending `_calc` are the calculated airtime, not measured. `image_bytes_per_frame` is
+  quote; it is filled only when the run holds one image, since the sender's count covers the
+  whole run. `callsign` is the SSDV callsign (images are told apart by callsign and id). Columns ending `_calc` are the calculated airtime, not measured. `image_bytes_per_frame` is
   how much picture each frame carries (253 chunk, 240 lorawan, 237 ssdv), against 255 on the air.
+* `run.csv`: frames heard, frames delivered intact, frames sent and `loss_exact_pct` for the
+  whole run.
 * `image<N>.jpg`: the rebuilt picture, written only when it is complete (and equal to `--reference`
   if you gave one). For SSDV, `image<N>.ssdv` holds the packets (gaps stay gaps) and the `ssdv`
-  tool turns them into `image<N>.jpg`, with gray where packets are missing.
+  tool turns them into `image<N>.jpg`, with gray where packets are missing. SSDV names carry the
+  callsign (`image<N>-<CALL>`), and a later image that reused an id gets `-2`, `-3`, so nothing
+  is overwritten. A piece that conflicts with one already held starts a new image.
 * `raw.log`: the stick's lines, kept so a run can be read again with `--replay`.
 
 ## Sources

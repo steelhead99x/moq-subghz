@@ -211,6 +211,9 @@ pub struct Sx1276<SPI, RST, IRQ, D> {
     dio_mapping1: Option<u8>,
     high_frequency: bool,
     config: LoRaConfig,
+    /// The FSK config keeps CRC-failed packets ([`fsk::FskConfig::crc_auto_clear`] off),
+    /// so reads must check CrcOk.
+    fsk_crc_check: bool,
     buf: [u8; FIFO_SIZE + 1],
 }
 
@@ -235,6 +238,7 @@ where
             dio_mapping1: None,
             high_frequency: true,
             config: LoRaConfig::default(),
+            fsk_crc_check: false,
             buf: [0; FIFO_SIZE + 1],
         }
     }
@@ -406,7 +410,21 @@ where
         )?;
         // TxStartCondition = FifoNotEmpty, FifoThreshold = 32 (refill point for >64-byte packets).
         self.write_raw(fsk::reg::FIFO_THRESH, 0x80 | fsk::FIFO_THRESHOLD)?;
-        self.write_raw(fsk::reg::BITRATE_FRAC, frac)
+        self.write_raw(fsk::reg::BITRATE_FRAC, frac)?;
+        self.fsk_crc_check = cfg.checks_crc_on_read();
+        Ok(())
+    }
+
+    /// Read and drop whatever the FIFO still holds (at most 300 bytes); true if any.
+    fn fsk_drain(&mut self) -> R<bool, SPI::Error> {
+        let mut any = false;
+        let mut guard = 0;
+        while self.read_raw(fsk::reg::IRQ_FLAGS2)? & fsk::irq2::FIFO_EMPTY == 0 && guard < 300 {
+            self.read_raw(0x00)?;
+            any = true;
+            guard += 1;
+        }
+        Ok(any)
     }
 
     /// Burst write starting at a raw address (for FSK-page registers).
@@ -483,13 +501,14 @@ where
         if f2 & fsk::irq2::PAYLOAD_READY == 0 {
             return Ok(None);
         }
+        if self.fsk_crc_check && f2 & fsk::irq2::CRC_OK == 0 {
+            self.fsk_drain()?;
+            return Err(Error::Crc);
+        }
         let rssi = self.read_raw(fsk::reg::RSSI_VALUE)?;
         let len = self.read_raw(0x00)? as usize;
         if len == 0 || len >= fsk::FSK_FIFO_SIZE || len > buf.len() {
-            // drain whatever is left
-            while self.read_raw(fsk::reg::IRQ_FLAGS2)? & fsk::irq2::FIFO_EMPTY == 0 {
-                self.read_raw(0x00)?;
-            }
+            self.fsk_drain()?;
             return Err(Error::PayloadSize);
         }
         self.read_raw_burst(0x00, &mut buf[..len])?;
@@ -552,7 +571,10 @@ where
     /// kbit/s): drains 32 bytes whenever FifoLevel is set and the rest on PayloadReady.
     /// `now_us` is any free-running microsecond clock; a partial packet with no FIFO
     /// progress for `stall_us` (the chip silently clears the FIFO on a CRC failure) is
-    /// abandoned and reported as [`Error::Crc`]. On success the payload is
+    /// abandoned and reported as [`Error::Crc`]. With
+    /// [`fsk::FskConfig::crc_auto_clear`] off, a failed packet is reported as
+    /// [`Error::Crc`] at PayloadReady instead, so it can't splice onto the next one. Any
+    /// error leaves `st` ready for a fresh packet. On success the payload is
     /// `st.payload()`.
     pub fn fsk_poll_long(
         &mut self,
@@ -560,27 +582,43 @@ where
         now_us: u32,
         stall_us: u32,
     ) -> R<Option<PacketInfo>, SPI::Error> {
+        let r = self.fsk_poll_long_step(st, now_us, stall_us);
+        if r.is_err() {
+            // whatever failed, a half-read packet must not carry into the next one
+            st.got = 0;
+        }
+        r
+    }
+
+    fn fsk_poll_long_step(
+        &mut self,
+        st: &mut FskLongRx,
+        now_us: u32,
+        stall_us: u32,
+    ) -> R<Option<PacketInfo>, SPI::Error> {
         let f2 = self.read_raw(fsk::reg::IRQ_FLAGS2)?;
         if f2 & fsk::irq2::PAYLOAD_READY != 0 {
+            if self.fsk_crc_check && f2 & fsk::irq2::CRC_OK == 0 {
+                self.fsk_drain()?;
+                return Err(Error::Crc);
+            }
             if st.got == 0 {
                 st.rssi = self.read_raw(fsk::reg::RSSI_VALUE)?;
                 st.raw[0] = self.read_raw(0x00)?;
                 st.got = 1;
             }
             let total = st.raw[0] as usize + 1;
-            let mut err = total == 1 || st.got > total;
-            if !err && st.got < total {
+            // The FIFO holds 64 bytes. More than that still to read means the packet was
+            // first seen at PayloadReady and its head is gone: an error, not a burst read.
+            let need = total.saturating_sub(st.got);
+            let mut err = total == 1 || st.got > total || need > fsk::FSK_FIFO_SIZE;
+            if !err && need > 0 {
                 let (g, t) = (st.got, total);
                 self.read_raw_burst(0x00, &mut st.raw[g..t])?;
                 st.got = t;
             }
             // anything still in the FIFO means we lost sync with the byte stream
-            let mut guard = 0;
-            while self.read_raw(fsk::reg::IRQ_FLAGS2)? & fsk::irq2::FIFO_EMPTY == 0 && guard < 300 {
-                self.read_raw(0x00)?;
-                err = true;
-                guard += 1;
-            }
+            err |= self.fsk_drain()?;
             let len = total - 1;
             st.got = 0;
             if err {

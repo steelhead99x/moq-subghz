@@ -18,11 +18,13 @@
 //! first `L` or `F`, so an early `I` read 0x00.
 //! Opening the port at 1200 baud and dropping DTR also reboots into the bootloader.
 //!
-//! `L` and `F` accept 2..=17 dBm and program whatever carrier frequency they are
-//! given. The host tools (`moq-subghz-send`, `moq-subghz-recv`) refuse anything above
-//! +5 dBm and anything outside 902-928 MHz (and 925.0 MHz) before they send these
-//! commands. The measured image is `firmware/catwan-fw-v5.uf2` (0.5.0); 0.5.1 changes
-//! only the radio start-up and adds `X`. Tightening the clamp means a new image and a reflash.
+//! `L` and `F` refuse (`Some(Refused)`, radio left in standby) a carrier outside 902-928 MHz
+//! or within 0.3 MHz of 925.0, power outside 2..=5 dBm, and for `L` a bandwidth, spreading
+//! factor or coding rate the radio doesn't have: the same limits the host tools hold
+//! themselves to. A bad `Q` frame is answered `ERR tx bad-hex`, and USB input waits while
+//! the queue is full instead of dropping a frame. The shipped `firmware/catwan-fw-v5.uf2`
+//! (0.5.0, measured) and `catwan-fw-0.5.1.uf2` predate these checks; they take a new image
+//! and a reflash.
 #![no_std]
 #![no_main]
 
@@ -45,6 +47,14 @@ use usbd_serial::SerialPort;
 pub static BOOT2_FIRMWARE: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 const XOSC_HZ: u32 = 12_000_000;
+
+/// The band and power the host tools hold themselves to, enforced here too so a raw serial
+/// session can't key the radio outside them.
+fn tx_allowed(freq_hz: u32, dbm: u32) -> bool {
+    (902_000_000..=928_000_000).contains(&freq_hz)
+        && freq_hz.abs_diff(925_000_000) >= 300_000
+        && (2..=5).contains(&dbm)
+}
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Pulse the radio RESET line and read `RegVersion` until it answers 0x12 (SX1276).
@@ -190,6 +200,8 @@ fn main() -> ! {
 
     let mut out = Out(Deque::new(), 0);
     let mut line: Vec<u8, 600> = Vec::new();
+    let mut pend = [0u8; 64];
+    let (mut pend_pos, mut pend_len) = (0usize, 0usize);
     let mut txq: Deque<Vec<u8, 255>, 12> = Deque::new();
     let mut state = State::Idle;
     let mut modem = Modem::Lora;
@@ -215,38 +227,54 @@ fn main() -> ! {
         if serial.line_coding().data_rate() == 1200 && !serial.dtr() {
             hal::rom_data::reset_to_usb_boot(1 << 25, 0);
         }
-        // input: only pull bytes when we can hold another packet
-        if !txq.is_full() {
-            let mut tmp = [0u8; 64];
-            if let Ok(n) = serial.read(&mut tmp) {
-                for &b in &tmp[..n] {
-                    if b == b'\n' || b == b'\r' {
-                        if !line.is_empty() {
-                            // execute
-                            let mut it = line.split(|&c| c == b' ').filter(|t| !t.is_empty());
-                            let cmd = it.next().unwrap_or(b"");
-                            let mut num = || -> u32 {
-                                it.next()
-                                    .and_then(|t| core::str::from_utf8(t).ok())
-                                    .and_then(|t| t.parse().ok())
-                                    .unwrap_or(0)
+        // input: read more once the last read is used up. A Q line blocked on a full queue
+        // holds the rest of its read, so this is the only backpressure needed, and S still
+        // gets through when the queue is full but not draining.
+        if pend_pos == pend_len {
+            if let Ok(n) = serial.read(&mut pend) {
+                (pend_pos, pend_len) = (0, n);
+            }
+        }
+        while pend_pos < pend_len {
+            let b = pend[pend_pos];
+            // A Q line runs only when its packet has a slot; until then the rest of the
+            // read waits here, so a batch of short Q lines can't overrun the queue.
+            if (b == b'\n' || b == b'\r') && line.starts_with(b"Q ") && txq.is_full() {
+                break;
+            }
+            pend_pos += 1;
+            if b == b'\n' || b == b'\r' {
+                if !line.is_empty() {
+                    // execute
+                    let mut it = line.split(|&c| c == b' ').filter(|t| !t.is_empty());
+                    let cmd = it.next().unwrap_or(b"");
+                    let mut num = || -> u32 {
+                        it.next()
+                            .and_then(|t| core::str::from_utf8(t).ok())
+                            .and_then(|t| t.parse().ok())
+                            .unwrap_or(0)
+                    };
+                    s.clear();
+                    match cmd {
+                        b"L" => {
+                            let (f, sf, bw, cr, dbm, il) =
+                                (num(), num(), num(), num(), num(), num());
+                            let bwe = match bw {
+                                125_000 => Some(Bandwidth::Bw125kHz),
+                                250_000 => Some(Bandwidth::Bw250kHz),
+                                500_000 => Some(Bandwidth::Bw500kHz),
+                                _ => None,
                             };
-                            s.clear();
-                            match cmd {
-                                b"L" => {
-                                    let (f, sf, bw, cr, dbm, il) =
-                                        (num(), num(), num(), num(), num(), num());
-                                    let bwe = match bw {
-                                        125_000 => Bandwidth::Bw125kHz,
-                                        250_000 => Bandwidth::Bw250kHz,
-                                        _ => Bandwidth::Bw500kHz,
-                                    };
+                            let sfe = SpreadingFactor::from_u8(sf as u8);
+                            let cre = CodingRate::from_denominator(cr as u8);
+                            match (bwe, sfe, cre) {
+                                (Some(bandwidth), Some(spreading_factor), Some(coding_rate))
+                                    if tx_allowed(f, dbm) && il <= 255 =>
+                                {
                                     let cfg = LoRaConfig {
-                                        bandwidth: bwe,
-                                        spreading_factor: SpreadingFactor::from_u8(sf as u8)
-                                            .unwrap_or(SpreadingFactor::Sf7),
-                                        coding_rate: CodingRate::from_denominator(cr as u8)
-                                            .unwrap_or(CodingRate::Cr4_5),
+                                        bandwidth,
+                                        spreading_factor,
+                                        coding_rate,
                                         header: if il > 0 {
                                             HeaderMode::Implicit {
                                                 payload_len: il as u8,
@@ -262,113 +290,124 @@ fn main() -> ! {
                                         r0 = radio.init(f, &cfg);
                                     }
                                     let r = r0.and_then(|_| {
-                                        radio
-                                            .set_tx_power(PaOutput::PaBoost, dbm.clamp(2, 17) as i8)
+                                        radio.set_tx_power(PaOutput::PaBoost, dbm as i8)
                                     });
                                     modem = Modem::Lora;
-                                    state = State::Idle;
                                     let _ = write!(s, "OK L {} {:?}", f, r.err());
                                 }
-                                b"F" => {
-                                    let (f, br, fd, dbm, pre, lg, force) =
-                                        (num(), num(), num(), num(), num(), num(), num());
-                                    fsk_long = lg != 0;
-                                    fsk_stall = 36 * 8_000_000 / br.max(1);
-                                    let cfg = FskConfig {
-                                        bitrate_bps: br,
-                                        fdev_hz: fd,
-                                        preamble_bytes: if pre == 0 { 4 } else { pre as u16 },
-                                        unchecked: force != 0,
-                                        ..FskConfig::default()
-                                    };
-                                    let mut r0 = radio.init(f, &LoRaConfig::default());
-                                    if matches!(r0, Err(sx1276::Error::BadVersion(_))) {
-                                        let _ = bring_up!(radio, boot_timer);
-                                        r0 = radio.init(f, &LoRaConfig::default());
-                                    }
-                                    let r = r0
-                                        .and_then(|_| radio.enter_fsk_mode())
-                                        .and_then(|_| radio.set_frequency(f))
-                                        .and_then(|_| radio.write_raw(0x0C, 0x23)) // LNA max gain + HF boost
-                                        .and_then(|_| radio.configure_fsk(&cfg))
-                                        .and_then(|_| {
-                                            radio.set_tx_power(
-                                                PaOutput::PaBoost,
-                                                dbm.clamp(2, 17) as i8,
-                                            )
-                                        })
-                                        .and_then(|_| radio.standby());
-                                    modem = Modem::Fsk;
-                                    state = State::Idle;
-                                    let _ = write!(s, "OK F {} {} {} {:?}", f, br, fd, r.err());
-                                }
-                                b"R" => {
-                                    let r = if modem == Modem::Lora {
-                                        radio.start_receive(RxMode::Continuous)
-                                    } else {
-                                        radio.fsk_start_receive()
-                                    };
-                                    state = State::Rx;
-                                    rx_ok = 0;
-                                    rx_err = 0;
-                                    let _ = write!(s, "OK R {:?}", r.err());
-                                }
-                                b"Q" => {
-                                    let mut p: Vec<u8, 255> = Vec::new();
-                                    if let Some(h) = it.next() {
-                                        if unhex(h, &mut p) && !p.is_empty() {
-                                            let _ = txq.push_back(p);
-                                        }
-                                    }
-                                    if state != State::Tx {
-                                        state = State::Tx;
-                                        tx_n = 0;
-                                    }
-                                }
-                                b"S" => {
-                                    let _ = radio.standby();
-                                    state = State::Idle;
-                                    txq.clear();
-                                    tx_busy = false;
-                                    let _ = write!(
-                                        s,
-                                        "OK S rx_ok={} rx_err={} tx={} out_drop={}",
-                                        rx_ok, rx_err, tx_n, out.1
-                                    );
-                                }
-                                b"I" => {
-                                    let v = radio.version().unwrap_or(0);
-                                    let _ = write!(
-                                        s,
-                                        "I catwan-fw {} sx_version=0x{:02x} t_us={}",
-                                        VERSION,
-                                        v,
-                                        now()
-                                    );
-                                }
-                                b"X" => {
-                                    let (v, tries) = bring_up!(radio, boot_timer);
-                                    state = State::Idle;
-                                    txq.clear();
-                                    tx_busy = false;
-                                    let _ = write!(s, "X sx_version=0x{:02x} tries={}", v, tries);
-                                }
-                                b"BOOT" => hal::rom_data::reset_to_usb_boot(1 << 25, 0),
                                 _ => {
-                                    let _ = write!(s, "ERR");
+                                    let _ = radio.standby();
+                                    let _ = write!(s, "OK L {} Some(Refused)", f);
                                 }
                             }
-                            if !s.is_empty() {
-                                out.line(s.as_bytes());
-                            }
-                            line.clear();
+                            state = State::Idle;
                         }
-                    } else if line.push(b).is_err() {
-                        line.clear();
+                        b"F" => {
+                            let (f, br, fd, dbm, pre, lg, force) =
+                                (num(), num(), num(), num(), num(), num(), num());
+                            if !tx_allowed(f, dbm) {
+                                let _ = radio.standby();
+                                state = State::Idle;
+                                let _ = write!(s, "OK F {} {} {} Some(Refused)", f, br, fd);
+                                out.line(s.as_bytes());
+                                s.clear();
+                                line.clear();
+                                continue;
+                            }
+                            fsk_long = lg != 0;
+                            fsk_stall = 36 * 8_000_000 / br.max(1);
+                            let cfg = FskConfig {
+                                bitrate_bps: br,
+                                fdev_hz: fd,
+                                preamble_bytes: if pre == 0 { 4 } else { pre as u16 },
+                                unchecked: force != 0,
+                                // long mode drains the FIFO mid-packet: keep failed packets
+                                crc_auto_clear: !fsk_long,
+                                ..FskConfig::default()
+                            };
+                            let mut r0 = radio.init(f, &LoRaConfig::default());
+                            if matches!(r0, Err(sx1276::Error::BadVersion(_))) {
+                                let _ = bring_up!(radio, boot_timer);
+                                r0 = radio.init(f, &LoRaConfig::default());
+                            }
+                            let r = r0
+                                .and_then(|_| radio.enter_fsk_mode())
+                                .and_then(|_| radio.set_frequency(f))
+                                .and_then(|_| radio.write_raw(0x0C, 0x23)) // LNA max gain + HF boost
+                                .and_then(|_| radio.configure_fsk(&cfg))
+                                .and_then(|_| radio.set_tx_power(PaOutput::PaBoost, dbm as i8))
+                                .and_then(|_| radio.standby());
+                            modem = Modem::Fsk;
+                            state = State::Idle;
+                            let _ = write!(s, "OK F {} {} {} {:?}", f, br, fd, r.err());
+                        }
+                        b"R" => {
+                            let r = if modem == Modem::Lora {
+                                radio.start_receive(RxMode::Continuous)
+                            } else {
+                                radio.fsk_start_receive()
+                            };
+                            state = State::Rx;
+                            rx_ok = 0;
+                            rx_err = 0;
+                            let _ = write!(s, "OK R {:?}", r.err());
+                        }
+                        b"Q" => {
+                            let mut p: Vec<u8, 255> = Vec::new();
+                            // Every rejected frame is reported; the sender counts `ERR tx` lines.
+                            let ok = it.next().is_some_and(|h| unhex(h, &mut p)) && !p.is_empty();
+                            if !ok {
+                                let _ = write!(s, "ERR tx bad-hex");
+                            } else if txq.push_back(p).is_err() {
+                                let _ = write!(s, "ERR tx queue-full");
+                            }
+                            if state != State::Tx {
+                                state = State::Tx;
+                                tx_n = 0;
+                            }
+                        }
+                        b"S" => {
+                            let _ = radio.standby();
+                            state = State::Idle;
+                            txq.clear();
+                            tx_busy = false;
+                            let _ = write!(
+                                s,
+                                "OK S rx_ok={} rx_err={} tx={} out_drop={}",
+                                rx_ok, rx_err, tx_n, out.1
+                            );
+                        }
+                        b"I" => {
+                            let v = radio.version().unwrap_or(0);
+                            let _ = write!(
+                                s,
+                                "I catwan-fw {} sx_version=0x{:02x} t_us={}",
+                                VERSION,
+                                v,
+                                now()
+                            );
+                        }
+                        b"X" => {
+                            let (v, tries) = bring_up!(radio, boot_timer);
+                            state = State::Idle;
+                            txq.clear();
+                            tx_busy = false;
+                            let _ = write!(s, "X sx_version=0x{:02x} tries={}", v, tries);
+                        }
+                        b"BOOT" => hal::rom_data::reset_to_usb_boot(1 << 25, 0),
+                        _ => {
+                            let _ = write!(s, "ERR");
+                        }
                     }
-                    let _ = ready;
+                    if !s.is_empty() {
+                        out.line(s.as_bytes());
+                    }
+                    line.clear();
                 }
+            } else if line.push(b).is_err() {
+                line.clear();
             }
+            let _ = ready;
         }
         // radio
         match state {

@@ -887,25 +887,14 @@ fn main() -> Result<()> {
             cv.notify_one();
             Ok(())
         };
-        loop {
-            match crx.recv_timeout(Duration::from_millis(4)) {
-                Ok(chunk) => {
-                    for au in sp.push(&chunk) {
-                        handle(au)?;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(au) = sp.flush() {
-                        handle(au)?;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    if let Some(au) = sp.flush() {
-                        handle(au)?;
-                    }
-                    break;
-                }
+        // Cut only at the next AUD: a pause on the pipe can fall inside a picture.
+        while let Ok(chunk) = crx.recv() {
+            for au in sp.push(&chunk) {
+                handle(au)?;
             }
+        }
+        if let Some(au) = sp.finish() {
+            handle(au)?;
         }
     }
     let wall = t_run.elapsed().as_secs_f64();

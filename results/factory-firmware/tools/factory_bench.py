@@ -62,12 +62,21 @@ if img: open(os.path.join(d,'reassembled.jpg'),'wb').write(img)
 elif got: # partial: write what we have as chunks
     open(os.path.join(d,'partial.bin'),'wb').write(b''.join(got.get(i,b'') for i in range(n)))
 tx_wall=sum(p['tx_wall_s'] for p in passes)
+# Same window as lora2015-log's seconds_to_image: first chunk heard to the chunk that completed
+# the picture, plus one packet of airtime. end_to_end_s also counts setup and the fixed waits.
+first_t=done_t=None; held=set()
+for tm,rs,pl in parse():
+    m=re.fullmatch(rb"%s:(\d{3})/(\d{3}):([0-9a-f]*)"%a.id.encode(),pl)
+    if not m or int(m.group(2))!=n: continue
+    first_t=tm if first_t is None else first_t; held.add(int(m.group(1)))
+    if len(held)==n: done_t=tm; break
+window=round(done_t-first_t+at,2) if done_t is not None else None
 res=dict(label=a.label,jpeg=os.path.basename(a.jpeg),jpeg_bytes=len(jpeg),jpeg_sha256=hashlib.sha256(jpeg).hexdigest(),
   chunks_total=n,chunks_attempted_pass1=passes[0]['sent'],payload_bytes_per_packet_max=pkt_len,
   calc_airtime_per_packet_ms=round(at*1000,1),passes=passes,
   total_packets_sent=sum(p['sent'] for p in passes),
   pass1_loss_pct=passes[0]['loss_pct'],reassembled=complete,matches_original=ok,
-  end_to_end_s=round(t_done,2),tx_wall_total_s=round(tx_wall,2),
+  end_to_end_s=round(t_done,2),first_heard_to_complete_s=window,tx_wall_total_s=round(tx_wall,2),
   goodput_bit_s=round(len(jpeg)*8/t_done,1) if complete else None,
   onair_text_rate_bit_s=round(sum(p['sent'] for p in passes)*pkt_len*8/tx_wall,1),
   calc_airtime_total_s=round(at*sum(p['sent'] for p in passes),2))

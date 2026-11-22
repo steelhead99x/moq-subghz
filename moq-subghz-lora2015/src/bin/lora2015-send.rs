@@ -85,6 +85,9 @@ fn settings(a: &Args) -> Result<Profile> {
     }
     p.validate().map_err(anyhow::Error::msg)?;
     profile::check_power(a.power).map_err(anyhow::Error::msg)?;
+    if !(a.duty_pct.is_finite() && (0.0..100.0).contains(&a.duty_pct)) {
+        bail!("--duty-pct must be 0 (off) or above 0 and below 100");
+    }
     if a.passes == 0 {
         bail!("--passes must be at least 1");
     }

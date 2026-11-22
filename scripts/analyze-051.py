@@ -9,6 +9,7 @@ RUNS, OUT = sys.argv[1], sys.argv[2]
 HERE = os.path.dirname(os.path.abspath(__file__))
 FRAMES = os.path.join(HERE, '..', 'results', 'lora-2015', 'frames')
 FACTORY = os.path.join(HERE, '..', 'results', 'factory-firmware', 'results.csv')
+FACTORY_DATA = os.path.join(HERE, '..', 'results', 'factory-firmware', 'data')
 os.makedirs(OUT, exist_ok=True)
 
 def num(x):
@@ -120,24 +121,48 @@ if lora:
     with open(os.path.join(OUT, 'lora-summary.csv'), 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
 
-    # factory vs 0.5.1, same radio settings (SF7 / 125 kHz), same two pictures
+    # factory vs 0.5.1, same radio settings (SF7 / 125 kHz), same two pictures, timed the same
+    # way: first packet of the picture heard to the packet that completes it, plus one
+    # packet of airtime (what lora2015-log's seconds_to_image is). The factory script's own
+    # end_to_end_s also counts setup, the scp of each pass and a fixed 2 s wait after each
+    # pass, so it is kept only as a separate column.
+    def factory_window(run, airtime_s):
+        pk = re.compile(rb'([A-Za-z]):(\d{3})/(\d{3}):([0-9a-f]*)')
+        held, first, key = set(), None, None
+        import base64
+        for r in csv.DictReader(open(os.path.join(FACTORY_DATA, run, 'stick.packets.csv'))):
+            m = pk.fullmatch(base64.b64decode(r['payload_b64']))
+            if not m or len(m.group(4)) % 2: continue
+            k = (m.group(1), int(m.group(3)))
+            if key is None: key = k
+            if k != key: continue
+            t = float(r['t_mono_s'])
+            if first is None: first = t
+            held.add(int(m.group(2)))
+            if len(held) == key[1]: return round(t - first + airtime_s, 2)
+        return None
     fac = list(csv.DictReader(open(FACTORY)))
+    for r in fac:
+        r['window_s'] = factory_window(r['run'], num(r['calc_airtime_per_packet_ms']) / 1000)
     cmp_rows = []
     for size, tag in (('small', 'small-160x120'), ('large', 'large-320x240')):
         fr = [r for r in fac if r['run'].startswith(tag)]
         if fr:
             cmp_rows.append({'picture': size, 'stack': 'factory (Dragino app + stock stick)', 'runs': len(fr),
                 'all_complete': all(r['byte_identical'] == 'True' for r in fr), 'pass1_loss_pct_mean': mean([num(r['pass1_loss_pct']) for r in fr]),
-                'packets_per_picture': fr[0]['chunks'], 'seconds_to_picture_mean': mean([num(r['end_to_end_s']) for r in fr]),
-                'seconds_min': rng([num(r['end_to_end_s']) for r in fr])[0], 'seconds_max': rng([num(r['end_to_end_s']) for r in fr])[1],
-                'goodput_bit_s_mean': mean([num(r['goodput_bit_s']) for r in fr]), 'rssi_mean_dbm': mean([(num(r['rssi_min_dbm']) + num(r['rssi_max_dbm'])) / 2 for r in fr]), 'snr_mean_db': ''})
+                'packets_per_picture': fr[0]['chunks'], 'seconds_to_picture_mean': mean([r['window_s'] for r in fr]),
+                'seconds_min': rng([r['window_s'] for r in fr])[0], 'seconds_max': rng([r['window_s'] for r in fr])[1],
+                'goodput_bit_s_mean': mean([8 * num(r['jpeg_bytes']) / r['window_s'] for r in fr if r['window_s']]),
+                'rssi_mean_dbm': mean([(num(r['rssi_min_dbm']) + num(r['rssi_max_dbm'])) / 2 for r in fr]), 'snr_mean_db': '',
+                'factory_end_to_end_s_mean': mean([num(r['end_to_end_s']) for r in fr])})
         for mode in ('chunk', 'lorawan', 'ssdv'):
             g = groups.get((size, 'sf7-125', mode))
             if not g: continue
             cmp_rows.append({'picture': size, 'stack': f'moq-subghz 0.5.1 {mode}', 'runs': len(g), 'all_complete': all(r['complete'] for r in g),
                 'pass1_loss_pct_mean': mean([r['pass1_loss_pct'] for r in g]), 'packets_per_picture': g[0]['frames_expected'],
                 'seconds_to_picture_mean': mean([r['seconds_to_image'] for r in g]), 'seconds_min': rng([r['seconds_to_image'] for r in g])[0], 'seconds_max': rng([r['seconds_to_image'] for r in g])[1],
-                'goodput_bit_s_mean': mean([r['goodput_bit_s'] for r in g]), 'rssi_mean_dbm': mean([r['rssi_mean_dbm'] for r in g]), 'snr_mean_db': mean([r['snr_mean_db'] for r in g])})
+                'goodput_bit_s_mean': mean([r['goodput_bit_s'] for r in g]), 'rssi_mean_dbm': mean([r['rssi_mean_dbm'] for r in g]), 'snr_mean_db': mean([r['snr_mean_db'] for r in g]),
+                'factory_end_to_end_s_mean': ''})
     with open(os.path.join(OUT, 'compare.csv'), 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(cmp_rows[0])); w.writeheader(); w.writerows(cmp_rows)
 
@@ -156,5 +181,5 @@ if lora:
             if r['size'] == size and r['mode'] == 'chunk' and r['profile'] != 'sf7-125':
                 items.append((f"moq-subghz chunk {r['profile'].upper().replace('-', '/')}", r['seconds_to_image_mean'], '#9bbb59'))
         pic = '160x120 JPEG (2346 bytes)' if size == 'small' else '320x240 JPEG (8618 bytes)'
-        bars(os.path.join(OUT, f'time-to-picture-{size}.svg'), f'Seconds to a complete {pic}, measured, mean of runs', items, 's')
+        bars(os.path.join(OUT, f'time-to-picture-{size}.svg'), f'Seconds from first packet to a complete {pic}, measured, mean', items, 's')
 print(f'fsk runs {len(fsk)}, lora runs {len(lora)}')

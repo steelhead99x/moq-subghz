@@ -88,8 +88,13 @@ enum Asm {
     Packets(ssdv::Assembly),
 }
 
+/// What tells images apart: the SSDV callsign (0 in the chunk modes, which have none) and
+/// the image id.
+type Key = (u32, u16);
+
 struct Image {
     id: u16,
+    callsign: u32,
     asm: Asm,
     first_t: u64,
     first_len: usize,
@@ -109,6 +114,8 @@ struct Image {
 pub struct ImageResult {
     /// Image id.
     pub id: u16,
+    /// SSDV callsign, as `ssdv -d` prints it; empty in the chunk modes.
+    pub callsign: String,
     /// Distinct frames in the image, when known.
     pub expected: Option<usize>,
     /// Distinct frames received.
@@ -123,7 +130,8 @@ pub struct ImageResult {
     pub seconds: Option<f64>,
     /// Loss estimated from sequence gaps, percent.
     pub loss_est_pct: Option<f64>,
-    /// Loss against the number of frames the sender says it sent, percent.
+    /// Loss against the number of frames the sender says it sent, percent. Only when the
+    /// run holds this one image: the sender's count is for the whole run.
     pub loss_exact_pct: Option<f64>,
     /// Bytes on the air for the distinct frames.
     pub air_bytes: usize,
@@ -174,7 +182,7 @@ pub struct Logger {
     profile: Profile,
     sent_frames: Option<u32>,
     reference: Option<Vec<u8>>,
-    images: BTreeMap<u16, Image>,
+    images: BTreeMap<Key, Image>,
     finished: Vec<Image>,
     /// Lines that were `R` frames.
     pub frames: u64,
@@ -214,13 +222,13 @@ impl Logger {
         Some(self.feed(host_s, &rx))
     }
 
-    fn parse(&self, frame: &[u8]) -> Result<(u16, u16, Piece), String> {
+    fn parse(&self, frame: &[u8]) -> Result<(Key, u16, Piece), String> {
         match self.mode {
             Mode::Ssdv => {
                 let pkt = ssdv::from_air(frame)?;
                 let info = ssdv::parse(&pkt)?;
                 Ok((
-                    info.image_id as u16,
+                    (info.callsign, info.image_id as u16),
                     info.packet_id,
                     Piece::Packet(Box::new(pkt), info),
                 ))
@@ -233,13 +241,13 @@ impl Logger {
         }
     }
 
-    fn pieces(data: &[u8]) -> Result<(u16, u16, Piece), String> {
+    fn pieces(data: &[u8]) -> Result<(Key, u16, Piece), String> {
         let h = chunk::Hdr::decode(data).ok_or("bad chunk header")?;
         if data.len() <= chunk::HDR_LEN {
             return Err("chunk with no data".into());
         }
         Ok((
-            h.image as u16,
+            (0, h.image as u16),
             h.seq as u16,
             Piece::Chunk(h, data[chunk::HDR_LEN..].to_vec()),
         ))
@@ -261,56 +269,36 @@ impl Logger {
         };
         match self.parse(&rx.frame) {
             Err(why) => row.status = Status::Bad(why),
-            Ok((id, idx, piece)) => {
-                row.image = Some(id);
+            Ok((key, idx, piece)) => {
+                row.image = Some(key.1);
                 row.index = Some(idx);
-                row.status = self.store(id, idx, piece, rx, toa_us);
+                row.status = self.store(key, idx, piece, rx, toa_us);
             }
         }
         row
     }
 
-    fn store(&mut self, id: u16, idx: u16, piece: Piece, rx: &Rx, toa_us: u64) -> Status {
-        // the same id with a different chunk count is a different image
-        if let (Some(img), Piece::Chunk(h, _)) = (self.images.get(&id), &piece) {
+    fn store(&mut self, key: Key, idx: u16, piece: Piece, rx: &Rx, toa_us: u64) -> Status {
+        // The same id with a different chunk count, or a piece that conflicts with one
+        // already held (the sender never repeats a piece with other bytes), is a new image
+        // that reused the id: close the old one and start again.
+        if let (Some(img), Piece::Chunk(h, _)) = (self.images.get(&key), &piece) {
             if matches!(&img.asm, Asm::Pieces(a) if a.count() != h.count as usize) {
-                let old = self.images.remove(&id).unwrap();
-                self.finished.push(old);
+                self.retire(key);
             }
         }
-        let img = self.images.entry(id).or_insert_with(|| Image {
-            id,
-            asm: match &piece {
-                Piece::Chunk(h, _) => Asm::Pieces(chunk::Assembly::new(h.count)),
-                Piece::Packet(..) => Asm::Packets(ssdv::Assembly::default()),
-            },
-            first_t: rx.t_us,
-            first_len: rx.frame.len(),
-            done_t: None,
-            order: Vec::new(),
-            good: 0,
-            dups: 0,
-            air_bytes: 0,
-            payload_per_frame: 0,
-            toa_us: 0,
-            rssi: 0.0,
-            snr: 0.0,
-        });
-        let fresh = match (&mut img.asm, piece) {
-            (Asm::Pieces(a), Piece::Chunk(h, data)) => match a.push(h.seq, &data) {
-                Ok(chunk::Push::New) => {
-                    img.payload_per_frame = img.payload_per_frame.max(data.len());
-                    true
+        let fresh = match self.push(key, &piece, rx) {
+            Ok(f) => f,
+            Err(_) if self.images.get(&key).is_some_and(|i| i.good > 0) => {
+                self.retire(key);
+                match self.push(key, &piece, rx) {
+                    Ok(f) => f,
+                    Err(e) => return Status::Bad(e),
                 }
-                Ok(chunk::Push::Duplicate) => false,
-                Err(e) => return Status::Bad(e),
-            },
-            (Asm::Packets(a), Piece::Packet(pkt, info)) => {
-                img.payload_per_frame = ssdv::PAYLOAD_LEN;
-                a.push(*pkt, info)
             }
-            _ => return Status::Bad("frame kind changed inside an image".into()),
+            Err(e) => return Status::Bad(e),
         };
+        let img = self.images.get_mut(&key).expect("push created it");
         img.good += 1;
         img.order.push(idx);
         img.rssi += rx.rssi as f64;
@@ -331,14 +319,71 @@ impl Logger {
         Status::New
     }
 
-    /// Close the run and compute each image's numbers.
-    pub fn finish(mut self) -> Vec<ImageResult> {
-        let mut all = std::mem::take(&mut self.finished);
-        all.extend(std::mem::take(&mut self.images).into_values());
-        all.iter().map(|i| self.result(i)).collect()
+    fn retire(&mut self, key: Key) {
+        if let Some(old) = self.images.remove(&key) {
+            self.finished.push(old);
+        }
     }
 
-    fn result(&self, img: &Image) -> ImageResult {
+    /// Put a piece into its image, creating the image if needed. `Ok(true)` for a new
+    /// piece, `Ok(false)` for a repeat, `Err` for a conflict or a kind change.
+    fn push(&mut self, key: Key, piece: &Piece, rx: &Rx) -> Result<bool, String> {
+        let img = self.images.entry(key).or_insert_with(|| Image {
+            id: key.1,
+            callsign: key.0,
+            asm: match piece {
+                Piece::Chunk(h, _) => Asm::Pieces(chunk::Assembly::new(h.count)),
+                Piece::Packet(..) => Asm::Packets(ssdv::Assembly::default()),
+            },
+            first_t: rx.t_us,
+            first_len: rx.frame.len(),
+            done_t: None,
+            order: Vec::new(),
+            good: 0,
+            dups: 0,
+            air_bytes: 0,
+            payload_per_frame: 0,
+            toa_us: 0,
+            rssi: 0.0,
+            snr: 0.0,
+        });
+        match (&mut img.asm, piece) {
+            (Asm::Pieces(a), Piece::Chunk(h, data)) => {
+                let fresh = a.push(h.seq, data)? == chunk::Push::New;
+                if fresh {
+                    img.payload_per_frame = img.payload_per_frame.max(data.len());
+                }
+                Ok(fresh)
+            }
+            (Asm::Packets(a), Piece::Packet(pkt, info)) => {
+                let fresh = a.push(**pkt, *info)?;
+                img.payload_per_frame = ssdv::PAYLOAD_LEN;
+                Ok(fresh)
+            }
+            _ => Err("frame kind changed inside an image".into()),
+        }
+    }
+
+    /// Close the run and compute each image's numbers, and the run's.
+    pub fn finish(mut self) -> (Vec<ImageResult>, RunResult) {
+        let mut all = std::mem::take(&mut self.finished);
+        all.extend(std::mem::take(&mut self.images).into_values());
+        let good: u64 = all.iter().map(|i| i.good as u64).sum();
+        let one_image = all.len() == 1;
+        let images = all.iter().map(|i| self.result(i, one_image)).collect();
+        let run = RunResult {
+            frames: self.frames,
+            good,
+            sent: self.sent_frames,
+            loss_exact_pct: self
+                .sent_frames
+                .filter(|&s| s > 0)
+                .map(|s| 100.0 * (1.0 - (good as f64 / s as f64).min(1.0))),
+        };
+        (images, run)
+    }
+
+    fn result(&self, img: &Image, one_image: bool) -> ImageResult {
         let (expected, unique, jpeg, ssdv_file) = match &img.asm {
             Asm::Pieces(a) => (
                 Some(a.count()),
@@ -363,6 +408,11 @@ impl Logger {
         let n = img.good.max(1) as f64;
         ImageResult {
             id: img.id,
+            callsign: if img.callsign == 0 {
+                String::new()
+            } else {
+                ssdv::callsign_string(img.callsign)
+            },
             expected,
             unique,
             good: img.good,
@@ -375,7 +425,7 @@ impl Logger {
             loss_est_pct: (exp > 0).then(|| 100.0 * lost as f64 / exp as f64),
             loss_exact_pct: self
                 .sent_frames
-                .filter(|&s| s > 0)
+                .filter(|&s| s > 0 && one_image)
                 .map(|s| 100.0 * (1.0 - (img.good as f64 / s as f64).min(1.0))),
             air_bytes: img.air_bytes,
             image_bytes: jpeg.as_ref().map(|j| j.len()),
@@ -390,13 +440,26 @@ impl Logger {
     }
 }
 
+/// The whole run against the sender's frame count.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunResult {
+    /// Frames heard (`R` lines).
+    pub frames: u64,
+    /// Frames that parsed and were stored, repeats included.
+    pub good: u64,
+    /// Frames the sender reports sending, when given.
+    pub sent: Option<u32>,
+    /// Frames sent but not delivered intact, percent.
+    pub loss_exact_pct: Option<f64>,
+}
+
 enum Piece {
     Chunk(chunk::Hdr, Vec<u8>),
     Packet(Box<[u8; ssdv::PKT_LEN]>, ssdv::Info),
 }
 
 /// Header of `images.csv`.
-pub const IMAGES_HEADER: &str = "image,complete,frames_expected,frames_unique,frames_good,repeats,seconds_to_image,effective_fps,loss_est_pct,loss_exact_pct,image_bytes,air_bytes_unique,image_bytes_per_frame,air_toa_s_calc,calc_fps_if_no_loss,effective_image_bps,rssi_mean_dbm,snr_mean_db,matches_reference";
+pub const IMAGES_HEADER: &str = "image,complete,frames_expected,frames_unique,frames_good,repeats,seconds_to_image,effective_fps,loss_est_pct,loss_exact_pct,image_bytes,air_bytes_unique,image_bytes_per_frame,air_toa_s_calc,calc_fps_if_no_loss,effective_image_bps,rssi_mean_dbm,snr_mean_db,matches_reference,callsign";
 
 /// `images.csv`: one line per image, calculated columns marked `_calc`.
 pub fn images_csv(rs: &[ImageResult]) -> String {
@@ -409,7 +472,7 @@ pub fn images_csv(rs: &[ImageResult]) -> String {
         let calc = (r.complete).then_some(r.toa_s_calc);
         let _ = writeln!(
             s,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{:.2},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{:.2},{},{}",
             r.id,
             r.complete as u8,
             u(r.expected),
@@ -436,6 +499,7 @@ pub fn images_csv(rs: &[ImageResult]) -> String {
             r.matches_reference
                 .map(|m| (m as u8).to_string())
                 .unwrap_or_default(),
+            r.callsign,
         );
     }
     s
@@ -516,7 +580,7 @@ mod tests {
                 "row {n}"
             );
         }
-        let r = &l.finish()[0];
+        let r = &l.finish().0[0];
         assert!(r.complete);
         assert_eq!((r.unique, r.good, r.dups, r.expected), (4, 6, 2, Some(4)));
         assert_eq!(r.matches_reference, Some(true));
@@ -539,7 +603,7 @@ mod tests {
         for i in [0, 1, 3] {
             l.feed(0.0, &rx(i as u64, f[i].clone()));
         }
-        let r = &l.finish()[0];
+        let r = &l.finish().0[0];
         assert!(!r.complete);
         assert!(r.jpeg.is_none() && r.seconds.is_none() && r.image_bytes.is_none());
         let csv = images_csv(std::slice::from_ref(r));
@@ -556,7 +620,7 @@ mod tests {
         for (i, fr) in frames(Mode::Chunk, &j).into_iter().enumerate() {
             l.feed(0.0, &rx(i as u64, fr));
         }
-        let r = &l.finish()[0];
+        let r = &l.finish().0[0];
         assert_eq!(r.matches_reference, Some(false));
         assert!(r.jpeg.is_none(), "a mismatching image is not saved as good");
     }
@@ -575,7 +639,7 @@ mod tests {
         for (i, fr) in f.iter().enumerate() {
             l.feed(0.0, &rx(i as u64 * 10, fr.clone()));
         }
-        let r = &l.finish()[0];
+        let r = &l.finish().0[0];
         assert!(r.complete);
         assert_eq!(r.matches_reference, Some(true));
         assert_eq!(r.payload_per_frame, 240);
@@ -591,7 +655,7 @@ mod tests {
         for (i, fr) in frames(Mode::Chunk, &b).into_iter().enumerate() {
             l.feed(0.0, &rx(100 + i as u64, fr));
         }
-        let rs = l.finish();
+        let (rs, _) = l.finish();
         assert_eq!(rs.len(), 2);
         assert!(rs.iter().all(|r| r.complete));
     }
@@ -607,7 +671,7 @@ mod tests {
         for i in [0usize, 1, 3, 0, 2, 3] {
             l.feed(0.0, &rx(i as u64 * 1000, f[i].clone()));
         }
-        let r = &l.finish()[0];
+        let r = &l.finish().0[0];
         assert!(r.complete);
         assert_eq!((r.id, r.expected, r.unique, r.dups), (7, Some(4), 4, 2));
         assert_eq!(r.ssdv_file.as_ref().unwrap(), &file);
@@ -618,10 +682,68 @@ mod tests {
         for i in [0usize, 2, 3] {
             l.feed(0.0, &rx(i as u64, f[i].clone()));
         }
-        let r = &l.finish()[0];
+        let r = &l.finish().0[0];
         assert!(!r.complete);
         assert_eq!(r.ssdv_file.as_ref().unwrap().len(), 3 * 256);
         assert_eq!(r.loss_est_pct, Some(25.0));
+    }
+
+    #[test]
+    fn same_id_and_count_with_other_bytes_starts_a_new_image() {
+        let a = jpeg(1000);
+        let mut b = jpeg(900);
+        b[2..898].iter_mut().for_each(|x| *x ^= 0x5A); // other bytes from the first chunk on
+        let (fa, fb) = (frames(Mode::Chunk, &a), frames(Mode::Chunk, &b));
+        assert_eq!(fa.len(), fb.len());
+        let mut l = logger(Mode::Chunk, Some(8), None);
+        for fr in fa.into_iter().chain(fb) {
+            assert_eq!(l.feed(0.0, &rx(0, fr)).status, Status::New);
+        }
+        let (rs, run) = l.finish();
+        assert_eq!(rs.len(), 2);
+        assert_eq!(rs[0].jpeg.as_deref(), Some(&a[..]));
+        assert_eq!(rs[1].jpeg.as_deref(), Some(&b[..]));
+        assert_eq!(run.loss_exact_pct, Some(0.0));
+    }
+
+    #[test]
+    fn exact_loss_is_per_run_when_a_run_holds_several_images() {
+        // two clean images in one run, 4 + 2 frames, sender sent 6: no loss
+        let (a, b) = (jpeg(1000), jpeg(300));
+        let mut l = logger(Mode::Chunk, Some(6), None);
+        for (i, fr) in frames(Mode::Chunk, &a).into_iter().enumerate() {
+            l.feed(0.0, &rx(i as u64, fr));
+        }
+        for (i, fr) in frames(Mode::Chunk, &b).into_iter().enumerate() {
+            l.feed(0.0, &rx(100 + i as u64, fr));
+        }
+        let (rs, run) = l.finish();
+        assert_eq!(rs.len(), 2);
+        assert!(rs.iter().all(|r| r.loss_exact_pct.is_none()));
+        assert_eq!(
+            (run.good, run.sent, run.loss_exact_pct),
+            (6, Some(6), Some(0.0))
+        );
+    }
+
+    #[test]
+    fn ssdv_images_with_one_id_but_two_callsigns_stay_apart() {
+        let mk = |call: u32, id: u16, eoi: bool| {
+            let mut p = ssdv::tests_support::packet(7, id, eoi);
+            p[2..6].copy_from_slice(&call.to_be_bytes());
+            let c = ssdv::crc32(&p[1..ssdv::PKT_LEN - 4]).to_be_bytes();
+            p[ssdv::PKT_LEN - 4..].copy_from_slice(&c);
+            ssdv::to_air(&p).unwrap().to_vec()
+        };
+        let mut l = logger(Mode::Ssdv, None, None);
+        for (call, id, eoi) in [(1, 0, false), (1, 1, true), (2, 0, false), (2, 2, true)] {
+            assert_eq!(l.feed(0.0, &rx(0, mk(call, id, eoi))).status, Status::New);
+        }
+        let (rs, _) = l.finish();
+        assert_eq!(rs.len(), 2);
+        assert!(rs[0].complete, "callsign 1 has packets 0 and 1");
+        assert!(!rs[1].complete, "callsign 2 is missing packet 1");
+        assert_ne!(rs[0].callsign, rs[1].callsign);
     }
 
     #[test]
@@ -639,7 +761,7 @@ mod tests {
             l.feed(0.0, &rx(0, vec![0, 0])).status,
             Status::Bad(_)
         ));
-        assert!(l.finish().is_empty());
+        assert!(l.finish().0.is_empty());
     }
 
     #[test]
@@ -675,7 +797,7 @@ mod tests {
         for (i, fr) in frames(Mode::Chunk, &j).into_iter().enumerate() {
             l.feed(0.0, &rx(i as u64 * 1000, fr));
         }
-        let csv = images_csv(&l.finish());
+        let csv = images_csv(&l.finish().0);
         let cols = csv.lines().nth(1).unwrap().split(',').count();
         assert_eq!(cols, IMAGES_HEADER.split(',').count());
     }
