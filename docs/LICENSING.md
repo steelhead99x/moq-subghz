@@ -5,7 +5,7 @@ the `moq-subghz-licence` crate and how the tools use it.
 
 ## What is enforced, and where
 
-* `moq-subghz-send`, `moq-subghz-recv` and `lora2015-send` run the gate before they open a real
+* `moq-subghz-send`, `moq-subghz-recv`, `lora2015-send` and `lora2015-log` run the gate before they open a real
   radio (a CatWAN port or the Pi's SX1276). Transmitting needs the gate to return a permit, which
   needs `--transmit` as well as `--i-have-an-antenna`. Without `--transmit` the senders never
   transmit; the receivers never transmit at all. The existing frequency (902-928 MHz, not within
@@ -15,8 +15,9 @@ the `moq-subghz-licence` crate and how the tools use it.
   refused.
 * The no-radio paths (`--loopback`, `--replay`, the `-emu` links) drive no radio and need no
   permit. They still load the licence file if you give one, so a bad file is an error.
-* **Not covered:** `lora2015-log` (it only listens, and has no licence flags yet); anything you
-  type into a raw serial session; and the **shipped CatWAN firmware images**.
+* `lora2015-log` listens only. It runs the same receive gate before opening the stick, with
+  `--licence-file`, `--rx-amateur` and `--amateur` (`--transmit` has no effect).
+* **Not covered:** anything you type into a raw serial session; and the **shipped CatWAN firmware images**.
   `firmware/catwan-fw-v5.uf2` and `firmware/catwan-fw-0.5.1.uf2` still accept any carrier and up
   to +17 dBm on their `L` and `F` commands. The source refuses those, but no new image has been
   built, flashed and run, so a stick on the shipped images ignores all of this. The checks are in
@@ -52,7 +53,7 @@ entered without real config. The example file holds fake placeholders that the l
 | `--transmit` | allow transmitting. Default off: the tools never transmit. `moq-subghz-recv` has no transmit path and ignores it |
 | `--rx-amateur` | receive-only use of an amateur band in unlicensed mode |
 | `--redact-licence` | write `[redacted]` instead of the ID and name in logs and reports |
-| `--amateur` (`moq-subghz-recv`) | use the amateur 33 cm profile on 902-928 MHz |
+| `--amateur` (`moq-subghz-recv`, `lora2015-log`) | use the amateur 33 cm profile on 902-928 MHz |
 
 ## Amateur profiles
 

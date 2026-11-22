@@ -7,6 +7,7 @@
 //! `-2`, `-3`... for a later image that reused an id.
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use moq_subghz_licence::{Auth, Encryption, GateArgs, Profile as GateProfile, Tuning};
 use moq_subghz_lora2015::log::{images_csv, Logger, Status, RX_HEADER};
 use moq_subghz_lora2015::plan::Mode;
 use moq_subghz_lora2015::profile::{self, Profile};
@@ -58,6 +59,14 @@ struct Args {
     /// The ssdv tool, to turn rebuilt packets into a JPEG (default: `ssdv` on PATH, if any)
     #[arg(long)]
     ssdv_bin: Option<String>,
+    /// Treat 902-928 MHz as the amateur 33 cm band (amateur profile). Receive only: needs
+    /// licensed mode (`--licence-file`) or `--rx-amateur`
+    #[arg(long)]
+    amateur: bool,
+    /// Licensed or unlicensed mode and the receive rules (see docs/LICENSING.md). This tool
+    /// never transmits; `--transmit` has no effect here.
+    #[command(flatten)]
+    gate: GateArgs,
 }
 
 fn main() -> Result<()> {
@@ -73,6 +82,8 @@ fn main() -> Result<()> {
     if !(a.secs.is_finite() && a.secs > 0.0) {
         bail!("--secs must be positive");
     }
+    // The licence file, if any, is loaded for every source; only a live port needs a permit.
+    let station = a.gate.station().context("licence")?;
     let reference = match &a.reference {
         Some(f) => Some(std::fs::read(f).with_context(|| format!("read {f}"))?),
         None => None,
@@ -119,6 +130,18 @@ fn main() -> Result<()> {
 
     match (&a.port, &a.replay) {
         (Some(port), None) => {
+            let _permit = station
+                .check_start(
+                    Tuning::occupied(u64::from(p.freq_hz), u64::from(p.bw_hz)),
+                    if a.amateur {
+                        GateProfile::AMATEUR
+                    } else {
+                        GateProfile::ISM
+                    },
+                    Encryption::None,
+                    Auth::None,
+                )
+                .map_err(|e| anyhow::anyhow!("refusing to open the stick: {e}"))?;
             let mut s = Serial::open(port)?;
             let b = stick::start(&mut s, &p).map_err(anyhow::Error::msg)?;
             eprintln!(
