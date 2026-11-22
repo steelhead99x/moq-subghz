@@ -241,7 +241,12 @@ fn main() {
     if let Err(e) = real_main() {
         // The message already says `FAILED <run>: <why>` where a run failed.
         eprintln!("{e:#}");
-        std::process::exit(1);
+        // 130: stopped by a signal, as a shell reports Ctrl-C
+        std::process::exit(if e.downcast_ref::<factory::Cancelled>().is_some() {
+            130
+        } else {
+            1
+        });
     }
 }
 

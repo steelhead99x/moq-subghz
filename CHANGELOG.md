@@ -22,6 +22,11 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   the Pi confirms the receiver stopped (a dropped ssh is checked before any copy), and an unknown
   pid state keeps the scratch directory with a warning. `forward` and `lora` kill and reap their
   capture process on every early exit.
+* `factory-send` also checks for a cancel while it drains the app's stderr and before each chunk
+  (no timing row, exit 130). The reverse cleanup signals a receiver only if its pid and start time
+  match what the run recorded, so a reused pid is never touched. The LoRa runner removes the Pi's
+  per frame log only after the copy succeeded and its size matches, and otherwise keeps it and
+  says where it is.
 * `factory-send` fails the run when the stock app exits non-zero before its timeout (no timing row)
   and marks a zero exit before it.
 

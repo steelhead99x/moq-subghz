@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// A chunk line `<id>:<seq>/<total>:<hex>` as the stick printed it.
@@ -767,7 +768,7 @@ pub fn send_chunks(
     chunks: &Path,
     app_dir: &Path,
     app_timeout: Duration,
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &AtomicBool,
     out: &mut impl std::io::Write,
 ) -> Result<()> {
     use std::io::Read;
@@ -781,6 +782,10 @@ pub fn send_chunks(
             .unwrap_or(0.0)
     };
     for line in text.lines() {
+        // No chunk starts after a cancellation.
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Cancelled.into());
+        }
         let s = epoch();
         let mut child = Command::new("./dragino_lora_app")
             .args(["sender", line])
@@ -812,9 +817,9 @@ pub fn send_chunks(
         // The same cut-off as `timeout 1.3`.
         let t0 = Instant::now();
         let early = loop {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            if cancel.load(Ordering::Relaxed) {
                 // `child` drops here: the whole group is ended and reaped.
-                bail!("cancelled by a signal: the stock app's process group was ended");
+                return Err(Cancelled.into());
             }
             if let Some(st) = child.0.try_wait()? {
                 break Some(st);
@@ -827,15 +832,27 @@ pub fn send_chunks(
         };
         // Anything the app started stays in its process group: end it, so nothing outlives the
         // chunk, and bound the stderr drain by the same deadline (a grandchild may hold the pipe).
-        let drained = done_rx
-            .recv_timeout(app_timeout.saturating_sub(t0.elapsed()))
-            .is_ok();
+        let drain_by = t0 + app_timeout;
+        let drained = loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(Cancelled.into());
+            }
+            let left = drain_by.saturating_duration_since(Instant::now());
+            match done_rx.recv_timeout(left.min(Duration::from_millis(20))) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !left.is_zero() => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break false,
+                _ => break true,
+            }
+        };
         child.end_now();
         if !drained {
             let _ = done_rx.recv_timeout(Duration::from_millis(50));
         }
         let tail = String::from_utf8_lossy(&tail.lock().map(|t| t.clone()).unwrap_or_default())
             .into_owned();
+        if cancel.load(Ordering::Relaxed) {
+            return Err(Cancelled.into());
+        }
         let head: Vec<&str> = line.splitn(3, ':').take(2).collect();
         let id = head.join(":");
         let mut note = "";
@@ -889,14 +906,26 @@ impl Drop for TxGroup {
     }
 }
 
-static CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// The worker was stopped by SIGINT, SIGTERM or SIGHUP: its group is ended and the process exits 130.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled by a signal: the stock app's process group was ended")
+    }
+}
+
+impl std::error::Error for Cancelled {}
 
 extern "C" fn on_signal(_: libc::c_int) {
-    CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+    CANCEL.store(true, Ordering::Relaxed);
 }
 
 /// A flag that SIGINT, SIGTERM and SIGHUP set, for the worker to stop and clean up on.
-pub fn cancel_flag() -> &'static std::sync::atomic::AtomicBool {
+pub fn cancel_flag() -> &'static AtomicBool {
     for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: the handler only stores to an atomic; the sigaction struct is zeroed then filled.
         unsafe {
@@ -1049,7 +1078,7 @@ mod tests {
         .unwrap();
         let t = Instant::now(); // after the lock: waiting for a sibling is not the worker's time
         let mut out = Vec::new();
-        let no = std::sync::atomic::AtomicBool::new(false);
+        let no = AtomicBool::new(false);
         let r = send_chunks(
             &permit,
             &list,
@@ -1121,14 +1150,14 @@ mod tests {
             },
         )
         .unwrap();
-        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let cancel = AtomicBool::new(false);
         let t = Instant::now();
         let mut out = Vec::new();
         let r = std::thread::scope(|sc| {
             sc.spawn(|| {
                 pid_of(&d.0.join("gpid"));
                 pid_of(&d.0.join("pid"));
-                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                cancel.store(true, Ordering::Relaxed);
             });
             send_chunks(
                 &permit,
@@ -1151,6 +1180,72 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!runs(grandchild));
+    }
+
+    /// Run the worker with `cancel` raised by `raise` once the stand-in app has started.
+    fn cancelled_run(
+        tag: &str,
+        body: &str,
+        preset: bool,
+    ) -> (Result<()>, String, Duration, crate::testutil::Scratch) {
+        let _one = one_at_a_time();
+        let (d, list) = fake_app(tag, body);
+        let st = LicenceOpts::default().gate_args(true).station().unwrap();
+        let permit = gate(
+            &st,
+            Declared {
+                freq_mhz: 915.0,
+                power_dbm: 5,
+            },
+        )
+        .unwrap();
+        let cancel = AtomicBool::new(preset);
+        let mut out = Vec::new();
+        let t = Instant::now();
+        let r = std::thread::scope(|sc| {
+            if !preset {
+                sc.spawn(|| {
+                    pid_of(&d.0.join("started"));
+                    std::thread::sleep(Duration::from_millis(100));
+                    cancel.store(true, Ordering::Relaxed);
+                });
+            }
+            send_chunks(
+                &permit,
+                &list,
+                &d.0,
+                Duration::from_secs(10),
+                &cancel,
+                &mut out,
+            )
+        });
+        (r, String::from_utf8(out).unwrap(), t.elapsed(), d)
+    }
+
+    #[test]
+    fn a_cancel_during_the_stderr_drain_is_nonzero_with_no_row_and_prompt() {
+        // the app exits 0 at once but a grandchild keeps stderr open: the drain waits, and a
+        // cancel then must not turn into a timing row and success
+        let (r, out, took, _d) = cancelled_run(
+            "fs-cancel-drain",
+            "echo 1 > started; sleep 20 & exit 0",
+            false,
+        );
+        let e = r.unwrap_err();
+        assert!(e.downcast_ref::<Cancelled>().is_some(), "{e}");
+        assert_eq!(out, "", "no timing row for the interrupted chunk");
+        assert!(took < Duration::from_secs(2), "{took:?}");
+    }
+
+    #[test]
+    fn a_cancel_before_a_chunk_stops_it_from_starting() {
+        let (r, out, _, d) = cancelled_run("fs-cancel-pre", "echo 1 > started; exit 0", true);
+        assert!(r.unwrap_err().downcast_ref::<Cancelled>().is_some());
+        assert_eq!(out, "");
+        assert!(
+            !d.0.join("started").exists(),
+            "a chunk started after the cancel"
+        );
     }
 
     #[test]

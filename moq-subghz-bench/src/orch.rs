@@ -537,20 +537,28 @@ impl Drop for Cleanup<'_> {
 }
 
 /// The remote command that confirms the receiver this run started is no longer running. It reads
-/// the pid the run itself wrote to `dir/rx.pid` (waiting up to 3 s for a receiver that has not
-/// written it yet), and exits 4 (uncertain) if that file is missing, unreadable or not a number.
-/// A pid with no process, or one whose `/proc` command line is not the receiver, counts as
-/// stopped and nothing is signalled. A live receiver gets TERM and up to 10 s, then KILL, and is
-/// confirmed gone with `kill -0` (a zombie is gone); exit 3 if it is still there. Exit 0 means
-/// stopped. It removes nothing: the caller removes the directory only after a 0.
+/// the pid and start time the run itself wrote to `dir/rx.pid` (waiting up to 3 s for a receiver
+/// that has not written them yet), and exits 4 (uncertain) if the file is missing, unreadable or
+/// not two numbers. A pid with no process counts as stopped. A process whose start time (field 22
+/// of `/proc/PID/stat`, compared as the exact string) is not the recorded one is another process
+/// that reused the pid: it is not signalled and the receiver counts as stopped, with a note. One
+/// whose `/proc` command line is not the receiver counts as stopped too. A live receiver gets TERM
+/// and up to 10 s, then KILL, and is confirmed gone with `kill -0` (a zombie is gone); exit 3 if it
+/// is still there. Exit 0 means stopped. It removes nothing: the caller removes the directory only
+/// after a 0.
 pub fn stop_script(dir: &str) -> String {
     r#"d=@DIR@
 alive() { kill -0 "$1" 2>/dev/null && ! grep -q ') Z' "/proc/$1/stat" 2>/dev/null; }
+start_of() { s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; s=${s##*) }; set -- $s; shift 19; echo "$1"; }
 i=0; while [ ! -s "$d/rx.pid" ] && [ $i -lt 15 ]; do sleep 0.2; i=$((i+1)); done
 if [ ! -e "$d/rx.pid" ]; then echo "uncertain: $d/rx.pid does not exist" >&2; exit 4; fi
-if ! p=$(cat "$d/rx.pid" 2>/dev/null); then echo "uncertain: $d/rx.pid is unreadable" >&2; exit 4; fi
+if ! rec=$(cat "$d/rx.pid" 2>/dev/null); then echo "uncertain: $d/rx.pid is unreadable" >&2; exit 4; fi
+set -- $rec; p=$1; t=$2
 case $p in ''|*[!0-9]*) echo "uncertain: $d/rx.pid does not hold a pid" >&2; exit 4;; esac
+case $t in ''|*[!0-9]*) echo "uncertain: $d/rx.pid does not hold a start time" >&2; exit 4;; esac
 if [ -e "/proc/$p" ]; then
+if ! now=$(start_of "$p"); then echo "note: pid $p is gone" >&2; exit 0; fi
+if [ "$now" != "$t" ]; then echo "note: pid $p now belongs to another process (start time $now, recorded $t); not signalled, the receiver is already gone" >&2; exit 0; fi
 if ! c=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null); then echo "uncertain: cannot read /proc/$p/cmdline" >&2; exit 4; fi
 case $c in *moq-subghz-recv*)
 kill -TERM "$p" 2>/dev/null; i=0; while alive "$p" && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
@@ -568,7 +576,9 @@ fn stop_receiver(h: &mut dyn Host, c: &Cfg, dir: &str) -> Option<String> {
     let why = match h.run(&c.ssh(stop_script(dir))) {
         Ok(d) if d.code == 0 => return None,
         Ok(d) if d.code == 3 => "the receiver is still running".to_string(),
-        Ok(d) if d.code == 4 => "its pid file is missing, unreadable or not a pid".to_string(),
+        Ok(d) if d.code == 4 => {
+            "its pid file is missing, unreadable or not a pid and start time".to_string()
+        }
         Ok(d) => format!("the check exited {}", d.code),
         Err(e) => format!("{e:#}"),
     };
@@ -576,6 +586,22 @@ fn stop_receiver(h: &mut dyn Host, c: &Cfg, dir: &str) -> Option<String> {
         "WARNING: could not confirm the receiver on {} stopped ({why}); its scratch directory {dir} was KEPT. Check the process and remove the directory by hand.",
         c.pi
     ))
+}
+
+/// Why the Pi's copy of the per frame log must be kept: the transfer failed, or the local copy is
+/// not the size of the remote one (`remote_wc` is the Pi's `wc -c` output). `None`: safe to remove.
+fn keep_reason(scp_st: i32, wc_st: i32, remote_wc: &str, local: Option<u64>) -> Option<String> {
+    if scp_st != 0 {
+        return Some(format!("the copy exited {scp_st}"));
+    }
+    let remote = (wc_st == 0)
+        .then(|| remote_wc.trim().parse::<u64>().ok())
+        .flatten();
+    match (remote, local) {
+        (Some(r), Some(l)) if r == l => None,
+        (Some(r), Some(l)) => Some(format!("the Pi's file is {r} bytes but the copy is {l}")),
+        _ => Some("the size of the Pi's file or of the copy could not be read".into()),
+    }
 }
 
 /// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here.
@@ -613,9 +639,11 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     for w in c.lic_flags(Side::Pi, &rxw).into_iter().chain(rxw) {
         rxa += &format!(" {}", shq(&w));
     }
-    // The receiver records its own pid (the shell execs into it), so a cleanup can confirm it stopped.
+    // The receiver records its own pid and its start time (field 22 of /proc/PID/stat, which exec
+    // does not change) in the run's scratch directory, so a cleanup can tell it from a process
+    // that reused the pid.
     let script = format!(
-        "cd ~/{} && echo $$ > {} && exec {rxa}",
+        "cd ~/{} && s=$(cat /proc/$$/stat) && s=${{s##*) }} && set -- $s && shift 19 && echo \"$$ $1\" > {} && exec {rxa}",
         shq(&c.pi_dir),
         shq(&format!("{scratch}/rx.pid"))
     );
@@ -929,7 +957,24 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
             c.run_file(n, ".tx.csv").display().to_string(),
         ))?
         .code;
-    g.h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?;
+    // The Pi's copy is the only one until the local copy is known good: remove it only then.
+    let remote_tx = format!("{scratch}/tx.csv");
+    let keep = if g.h.dry() {
+        None
+    } else {
+        let wc = g.h.run(&c.ssh(format!("wc -c < {}", shq(&remote_tx))))?;
+        let local = fs::metadata(c.run_file(n, ".tx.csv")).ok().map(|m| m.len());
+        keep_reason(tx_st, wc.code, &wc.stdout, local)
+    };
+    match &keep {
+        None => {
+            g.h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?;
+        }
+        Some(why) => eprintln!(
+            "WARNING: the per frame log was NOT removed from the Pi: {why}. It is at {}:{remote_tx} (scratch directory {scratch}); copy it by hand.",
+            c.pi
+        ),
+    }
     let sent = after_digits(
         &fs::read_to_string(c.run_file(n, ".send")).unwrap_or_default(),
         "sent frames=",
@@ -985,7 +1030,13 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
             c.run_file(n, ".send").display()
         ));
     };
-    if tx_st != 0 || fs::metadata(c.run_file(n, ".tx.csv")).map_or(true, |m| m.len() == 0) {
+    if let Some(why) = keep {
+        return fail(format!(
+            "no per frame log (tx.csv) copied from the Pi ({why}); it is kept at {}:{remote_tx}",
+            c.pi
+        ));
+    }
+    if fs::metadata(c.run_file(n, ".tx.csv")).map_or(true, |m| m.len() == 0) {
         return fail("no per frame log (tx.csv) copied from the Pi".into());
     }
     if exact_st != 0 || fs::metadata(rdir.join("exact/images.csv")).map_or(true, |m| m.len() == 0) {
@@ -1417,7 +1468,7 @@ mod tests {
         assert!(f
             .log
             .iter()
-            .any(|l| l.contains("echo $$ > /tmp/moq-bench.T/rx.pid && exec ./moq-subghz-recv")));
+            .any(|l| l.contains("> /tmp/moq-bench.T/rx.pid && exec ./moq-subghz-recv")));
     }
 
     #[test]
@@ -1514,6 +1565,18 @@ mod tests {
         String::from_utf8(o.stdout).unwrap().trim().parse().unwrap()
     }
 
+    /// Field 22 of /proc/PID/stat, as the stop script reads it.
+    fn start_time(pid: i32) -> String {
+        let s = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        s.rsplit_once(") ")
+            .unwrap()
+            .1
+            .split(' ')
+            .nth(19)
+            .unwrap()
+            .to_string()
+    }
+
     fn alive(pid: i32) -> bool {
         fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z"))
     }
@@ -1525,7 +1588,13 @@ mod tests {
             4,
             "no pid file (after its 3 s wait)"
         );
-        assert_eq!(stop_on("stop-nan", Some("12ab\n")).0, 4);
+        assert_eq!(stop_on("stop-nan", Some("12ab 5\n")).0, 4);
+        assert_eq!(
+            stop_on("stop-nostart", Some("1234\n")).0,
+            4,
+            "a pid alone is not enough"
+        );
+        assert_eq!(stop_on("stop-nanstart", Some("1234 x\n")).0, 4);
         assert_eq!(stop_on("stop-empty", Some("")).0, 4);
         assert_eq!(stop_on("stop-neg", Some("-1")).0, 4);
         if unsafe { libc::geteuid() } != 0 {
@@ -1546,7 +1615,10 @@ mod tests {
     fn the_stop_script_kills_only_the_receiver_and_never_an_unrelated_pid() {
         // an unrelated process: counts as stopped (the receiver is gone) and is NOT signalled
         let other = orphan("sleep 60");
-        let (code, _d) = stop_on("stop-other", Some(&other.to_string()));
+        let (code, _d) = stop_on(
+            "stop-other",
+            Some(&format!("{other} {}", start_time(other))),
+        );
         assert_eq!(code, 0);
         assert!(alive(other), "an unrelated process was killed");
         // SAFETY: ending the sleep we started.
@@ -1559,16 +1631,27 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(stop_on("stop-gone", Some(&gone.to_string())).0, 0);
+        assert_eq!(stop_on("stop-gone", Some(&format!("{gone} 1"))).0, 0);
         // a stand-in receiver (its command line names moq-subghz-recv): stopped
         let d = Scratch::new("stop-recv");
         let bin = d.0.join("moq-subghz-recv");
         fs::write(&bin, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
         fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let rx = orphan(&bin.display().to_string());
-        fs::write(d.0.join("rx.pid"), rx.to_string()).unwrap();
         std::thread::sleep(Duration::from_millis(200));
         assert!(alive(rx));
+        // another process reused the recorded pid: the start time differs, so it is NOT signalled
+        // (its command line even names the receiver)
+        fs::write(d.0.join("rx.pid"), format!("{rx} 1")).unwrap();
+        let st = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(stop_script(&d.0.display().to_string()))
+            .status()
+            .unwrap();
+        assert_eq!(st.code(), Some(0));
+        assert!(alive(rx), "a process with another start time was signalled");
+        // the matching pid and start time: TERMed (and KILLed if needed) as before
+        fs::write(d.0.join("rx.pid"), format!("{rx} {}", start_time(rx))).unwrap();
         let st = std::process::Command::new("sh")
             .arg("-c")
             .arg(stop_script(&d.0.display().to_string()))
@@ -1701,6 +1784,8 @@ mod tests {
             "",
             vec![(d.join("t/exact/images.csv"), "image\n0\n")],
         );
+        // the Pi's `wc -c` of tx.csv: the 8 bytes the copy rule writes
+        f.rule("wc -c", 0, "8\n", vec![]);
         f
     }
 
@@ -1755,6 +1840,51 @@ mod tests {
         assert!(pass_gap_s(&a(&["--pass-gap-ms"])).is_err());
         assert!(pass_gap_s(&a(&["--pass-gap-ms", "x"])).is_err());
         assert!(pass_gap_s(&a(&["--pass-gap-ms=1", "--pass-gap-ms=2"])).is_err());
+    }
+
+    #[test]
+    fn the_pi_copy_of_the_log_is_removed_only_after_a_good_transfer() {
+        let lora_with = |f: &mut Fake, d: &Path| {
+            let l = Lora {
+                name: "t",
+                mode: "chunk",
+                file: "f.jpg",
+                profile: "sf7-125",
+                passes: 1,
+                args: &[],
+            };
+            lora(f, &cfg(d), &l)
+        };
+        let removed = |f: &Fake| f.log.iter().any(|l| l.contains("rm -rf /tmp/moq-bench.T"));
+        // the transfer fails: the remote file stays, and the error names where it is
+        let d = Scratch::new("txfail");
+        let mut f = lora_job(&d.0);
+        f.rules[3].code = 1;
+        let e = lora_with(&mut f, &d.0).unwrap_err().to_string();
+        assert!(
+            e.contains("pi:/tmp/moq-bench.T/tx.csv") && e.contains("kept"),
+            "{e}"
+        );
+        assert!(!removed(&f), "{:?}", f.log);
+        // the copy arrives but its size is not the Pi's
+        let d = Scratch::new("txsize");
+        let mut f = lora_job(&d.0);
+        f.rules.last_mut().unwrap().stdout = "99\n".into();
+        let e = lora_with(&mut f, &d.0).unwrap_err().to_string();
+        assert!(
+            e.contains("99 bytes") && e.contains("/tmp/moq-bench.T/tx.csv"),
+            "{e}"
+        );
+        assert!(!removed(&f));
+        // a good copy of the same size: removed
+        let d = Scratch::new("txok");
+        let mut f = lora_job(&d.0);
+        lora_with(&mut f, &d.0).unwrap();
+        assert!(removed(&f));
+        assert_eq!(keep_reason(0, 0, "8\n", Some(8)), None);
+        assert!(keep_reason(0, 1, "", Some(8)).is_some());
+        assert!(keep_reason(0, 0, "x", Some(8)).is_some());
+        assert!(keep_reason(0, 0, "8", None).is_some());
     }
 
     #[test]
