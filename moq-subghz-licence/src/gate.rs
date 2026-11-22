@@ -69,6 +69,7 @@ pub struct Flags<'a> {
 pub struct RxPermit {
     mode: Mode,
     band: &'static Band,
+    tuning: Tuning,
 }
 
 impl RxPermit {
@@ -79,6 +80,17 @@ impl RxPermit {
     /// The table entry the tuned frequency fell in.
     pub fn band(&self) -> &'static Band {
         self.band
+    }
+
+    /// The span the gate checked. A radio `open` must tune inside it.
+    pub fn tuning(&self) -> Tuning {
+        self.tuning
+    }
+
+    /// True when the carrier `hz` lies inside the span the gate checked. The radio crates
+    /// refuse to open on a frequency the permit does not cover.
+    pub fn covers_hz(&self, hz: u64) -> bool {
+        (self.tuning.start_hz..=self.tuning.end_hz).contains(&hz)
     }
 }
 
@@ -104,6 +116,21 @@ impl TxPermit {
     /// The table entry the tuned frequency fell in.
     pub fn band(&self) -> &'static Band {
         self.rx.band
+    }
+
+    /// The span the gate checked. A radio `open` must tune inside it.
+    pub fn tuning(&self) -> Tuning {
+        self.rx.tuning
+    }
+
+    /// See [`RxPermit::covers_hz`].
+    pub fn covers_hz(&self, hz: u64) -> bool {
+        self.rx.covers_hz(hz)
+    }
+
+    /// The receive half of this permit, for a radio that is opened for both directions.
+    pub fn as_rx(&self) -> &RxPermit {
+        &self.rx
     }
 
     /// Send the station ID in identification frames: licensed mode and an amateur profile.
@@ -227,7 +254,7 @@ pub fn check_start(
             },
         );
     };
-    let permit = RxPermit { mode, band };
+    let permit = RxPermit { mode, band, tuning };
     match mode {
         Mode::Unlicensed => {
             if profile.kind == BandKind::Amateur {
@@ -293,6 +320,36 @@ mod tests {
     };
     fn cfg() -> LicenceConfig {
         LicenceConfig::from_parts(Region::Us, Some("K1AB"), Some("Test Person")).unwrap()
+    }
+
+    #[test]
+    fn a_permit_carries_the_span_it_was_checked_for() {
+        let f = Flags {
+            transmit: true,
+            ..Flags::default()
+        };
+        let t = Tuning::occupied(915_000_000, 500_000);
+        let p = check_transmit(Mode::Unlicensed, t, Profile::ISM, &f).unwrap();
+        assert_eq!(p.tuning(), t);
+        assert!(p.covers_hz(915_000_000));
+        assert!(p.covers_hz(914_750_000));
+        assert!(!p.covers_hz(915_250_001));
+        assert!(!p.covers_hz(868_100_000));
+        assert_eq!(p.as_rx().tuning(), t);
+    }
+
+    #[test]
+    fn the_eu_868_band_is_refused_because_the_table_has_no_such_entry() {
+        // The stock Dragino app keys 868.1 MHz. No region profile for it is enabled.
+        let f = Flags {
+            transmit: true,
+            ..Flags::default()
+        };
+        let t = Tuning::occupied(868_100_000, 125_000);
+        assert_eq!(
+            check_transmit(Mode::Unlicensed, t, Profile::ISM, &f),
+            Err(Refusal::OutOfBand)
+        );
     }
 
     #[test]

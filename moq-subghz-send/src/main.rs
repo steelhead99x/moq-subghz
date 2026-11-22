@@ -313,8 +313,7 @@ fn open_catwan(
     power: i8,
     frame_toa_us: u64,
 ) -> Result<CatwanTx> {
-    let _ = permit; // proof that the gate said yes
-    CatwanTx::open(port, freq_hz, prof, power, frame_toa_us)
+    CatwanTx::open(permit, port, freq_hz, prof, power, frame_toa_us)
 }
 
 /// Open the Pi's SX1276 for transmitting. The permit is the proof that the gate said yes.
@@ -326,8 +325,7 @@ fn open_hat(
     cfg: &sx1276::fsk::FskConfig,
     power: i8,
 ) -> Result<moq_subghz_radio_sx1276::Sx1276FskTx> {
-    let _ = permit; // proof that the gate said yes
-    moq_subghz_radio_sx1276::Sx1276FskTx::open(spi_hz, freq_hz, cfg, power)
+    moq_subghz_radio_sx1276::Sx1276FskTx::open(permit, spi_hz, freq_hz, cfg, power)
 }
 
 fn main() -> Result<()> {
@@ -863,8 +861,25 @@ fn main() -> Result<()> {
         }
     };
     let _ = rd_thread.join();
-    let (mut st, mut link, busy, mut tx_fatal) = tx_thread.join().unwrap();
+    let (st, mut link, busy, mut tx_fatal) = tx_thread.join().unwrap();
     link.idle()?;
+    // Frames the stick took but did not confirm on air before it was stopped are not sent: take
+    // them out of the MEASURED counters (frames and bytes in proportion) and report the count.
+    let tx_unconfirmed = link.unconfirmed_frames();
+    let (busy, mut st) = {
+        let mut st = st;
+        let mut busy = busy;
+        if tx_unconfirmed > 0 && st.frames > 0 {
+            let keep = st.frames.saturating_sub(tx_unconfirmed) as f64 / st.frames as f64;
+            eprintln!(
+                "{tx_unconfirmed} frame(s) were not confirmed on air; frames_tx, bytes_tx and radio_busy_pct leave them out"
+            );
+            st.frames = st.frames.saturating_sub(tx_unconfirmed);
+            st.bytes = (st.bytes as f64 * keep).round() as u64;
+            busy *= keep;
+        }
+        (busy, st)
+    };
     // Errors the stick reports while draining its queue count toward the same limit.
     st.tx_errors += link.take_tx_errors();
     if st.tx_errors > 20 && !tx_fatal {
@@ -884,7 +899,7 @@ fn main() -> Result<()> {
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{:.1},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}{emu_stats}{licence}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{:.1},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_unconfirmed_frames\":{tx_unconfirmed},\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}{emu_stats}{licence}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames, qdrops.objects, qdrops.groups,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),

@@ -126,4 +126,7 @@ for this project's own sender and logger, not these factory programs, and were n
 3. On the host (repo root, `ssh pi` reaches the Pi): `target/release/moq-subghz-bench factory-bench --i-have-an-antenna --dev /dev/ttyACM0 --label try1 --jpeg results/lora-2015/frames/f160x120-q20.jpg --out results/factory-firmware/data`.
    Add `--limit 20 --passes 1` for the 30 s smoke test. `--dev` is the stick's serial port; there is no default. `--dry-run` prints the commands. The published runs were 3 of each picture (`--passes 4`), run one after another.
 
+The Rust port does the same and is gated: `moq-subghz-bench factory-bench --label try1 --jpeg ... --dev /dev/ttyACM0 --i-have-an-antenna --transmit --freq-mhz 915.0 --power-dbm 5`.
+It refuses the unpatched stock build (868.1 MHz, +17 dBm); see [docs/LICENSING.md](../../docs/LICENSING.md).
+
 (Written by Grok Bot)

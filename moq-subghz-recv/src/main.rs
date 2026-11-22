@@ -154,7 +154,7 @@ fn unix_us() -> u64 {
         .as_micros() as u64
 }
 
-fn open_serial(path: &str) -> Result<File> {
+fn open_serial(_permit: &RxPermit, path: &str) -> Result<File> {
     let f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -383,7 +383,7 @@ fn clock_check(host: &str) -> Result<()> {
 }
 
 /// The gate's answer for opening a radio to receive (a CatWAN port or the Pi's SX1276). The
-/// radio code is only reached with the permit this returns.
+/// radio opens take the permit this returns, so they do not compile without one.
 fn receive_permit(station: &Station, a: &Args, bitrate: u32, fdev: u32) -> Result<RxPermit> {
     let (profile, encryption) = (
         if a.amateur {
@@ -514,8 +514,8 @@ fn main() -> Result<()> {
             RADIO_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
         });
     } else if let Some(port) = &a.port {
-        let _permit = receive_permit(&station, &a, br, fdev)?;
-        let f = open_serial(port)?;
+        let permit = receive_permit(&station, &a, br, fdev)?;
+        let f = open_serial(&permit, port)?;
         let mut wr = f.try_clone()?;
         let rd = f;
         std::thread::spawn(move || {
@@ -566,7 +566,7 @@ fn main() -> Result<()> {
     } else if a.radio {
         #[cfg(target_os = "linux")]
         {
-            let _permit = receive_permit(&station, &a, br, fdev)?;
+            let permit = receive_permit(&station, &a, br, fdev)?;
             let cfg = sx1276::fsk::FskConfig {
                 bitrate_bps: br,
                 fdev_hz: fdev,
@@ -578,7 +578,8 @@ fn main() -> Result<()> {
             };
             cfg.validate()
                 .map_err(|x| anyhow::anyhow!("fsk config: {x:?}"))?;
-            let mut r = Sx1276FskRx::open(8_000_000, (a.freq * 1e6).round() as u32, &cfg, 2)?;
+            let mut r =
+                Sx1276FskRx::open(&permit, 8_000_000, (a.freq * 1e6).round() as u32, &cfg, 2)?;
             eprintln!("Pi SX1276 listening (FSK {br} bit/s)");
             std::thread::spawn(move || {
                 let mut buf = [0u8; MAX_FRAME];

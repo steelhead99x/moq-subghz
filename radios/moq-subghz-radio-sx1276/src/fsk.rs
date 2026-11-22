@@ -2,6 +2,7 @@
 //! Moved from `moq-subghz-send/src/radio.rs` and `moq-subghz-recv/src/radio.rs`.
 
 use anyhow::{bail, Result};
+use moq_subghz_licence::{RxPermit, TxPermit};
 use moq_subghz_link::{
     check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport,
 };
@@ -37,7 +38,16 @@ pub struct Sx1276FskTx {
 }
 
 impl Sx1276FskTx {
-    pub fn open(spi_hz: u32, freq_hz: u32, cfg: &FskConfig, power: i8) -> Result<Self> {
+    /// Open the HAT for transmitting. `permit` is the gate's answer for this run; `freq_hz` must
+    /// lie inside the span it checked.
+    pub fn open(
+        permit: &TxPermit,
+        spi_hz: u32,
+        freq_hz: u32,
+        cfg: &FskConfig,
+        power: i8,
+    ) -> Result<Self> {
+        crate::require_covered(|hz| permit.covers_hz(hz), freq_hz)?;
         Ok(Sx1276FskTx {
             r: open_hat(spi_hz, freq_hz, cfg, power)?,
             toa_us: cfg.time_on_air_us(255),
@@ -126,7 +136,16 @@ pub struct Sx1276FskRx {
 impl Sx1276FskRx {
     /// Open the HAT and enter continuous FSK receive. `cfg.crc_auto_clear` must be off:
     /// the long-packet reader drains the FIFO mid-packet.
-    pub fn open(spi_hz: u32, freq_hz: u32, cfg: &FskConfig, power: i8) -> Result<Self> {
+    /// `permit` is the gate's receive permit for this run; `freq_hz` must lie inside the span it
+    /// checked.
+    pub fn open(
+        permit: &RxPermit,
+        spi_hz: u32,
+        freq_hz: u32,
+        cfg: &FskConfig,
+        power: i8,
+    ) -> Result<Self> {
+        crate::require_covered(|hz| permit.covers_hz(hz), freq_hz)?;
         let mut r = open_hat(spi_hz, freq_hz, cfg, power)?;
         r.fsk_start_receive().map_err(sx_err)?;
         Ok(Sx1276FskRx {

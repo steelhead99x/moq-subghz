@@ -3,6 +3,7 @@
 //! Moved from `moq-subghz-send` as it was; only the `Link` wrapper at the end is new.
 
 use anyhow::{bail, Context, Result};
+use moq_subghz_licence::TxPermit;
 use moq_subghz_link::{
     check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport,
 };
@@ -105,7 +106,7 @@ fn open_catwan(
     freq_hz: u32,
     p: &moq_subghz_wire::FskProfile,
     power: i8,
-) -> Result<(std::fs::File, Arc<AtomicU64>)> {
+) -> Result<(std::fs::File, Arc<AtomicU64>, Arc<AtomicU64>)> {
     use std::os::unix::fs::OpenOptionsExt;
     let f = open_serial(port)?;
     // Writes go through their own non-blocking open file, so the deadline doesn't make
@@ -118,6 +119,8 @@ fn open_catwan(
     let (tx, rx) = mpsc::channel::<String>();
     let errs = Arc::new(AtomicU64::new(0));
     let errs_rd = errs.clone();
+    let drained = Arc::new(AtomicU64::new(0));
+    let drained_rd = drained.clone();
     std::thread::spawn(move || {
         let mut r = std::io::BufReader::new(f);
         while let Ok(Some(line)) = read_line_limited(&mut r, MAX_SERIAL_LINE) {
@@ -127,6 +130,9 @@ fn open_catwan(
             let l = String::from_utf8_lossy(&buf);
             if l.starts_with("ERR tx") {
                 errs_rd.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(n) = parse_done(&l) {
+                drained_rd.fetch_max(n, Ordering::Relaxed);
             }
             if tx.send(l.trim().to_string()).is_err() {
                 // keep draining after setup
@@ -161,8 +167,21 @@ fn open_catwan(
         bail!("CatWAN config error: {r}");
     }
     eprintln!("CatWAN TX ready: {r}");
-    Ok((w, errs))
+    Ok((w, errs, drained))
 }
+
+/// The count in the stick's `D <t_us> <n> <burst_us>` line: frames it has put on air since its
+/// last `F`. The stick prints it when its queue empties after a frame left the air.
+fn parse_done(line: &str) -> Option<u64> {
+    let mut it = line.split_whitespace();
+    (it.next()? == "D").then_some(())?;
+    it.next()?.parse::<u64>().ok()?;
+    it.next()?.parse().ok()
+}
+
+/// The stick's queue holds 12 frames and one more is on air, so no more than this can be
+/// waiting when `idle` starts.
+const STICK_QUEUE_FRAMES: u64 = 13;
 
 /// How long dropping a [`CatwanTx`] waits to tell the stick to stop. Short: a drop may run while
 /// unwinding from a panic, and a stick that stopped reading will not be reached anyway.
@@ -187,6 +206,14 @@ pub struct CatwanTx {
     resync: bool,
     /// The stick was told to stop (`idle` succeeded), so a drop has nothing left to do.
     stopped: bool,
+    /// `Q` lines written to the stick so far.
+    queued: u64,
+    /// The stick's own count of frames it put on air (its `D` lines).
+    drained: Arc<AtomicU64>,
+    /// Longest `idle` waits for the queue to drain, per frame still waiting.
+    frame_toa_us: u64,
+    /// Frames `idle` could not confirm were sent before it stopped the stick.
+    unconfirmed: u64,
     /// The profile the stick was configured with, for the airtime of each frame.
     prof: moq_subghz_wire::FskProfile,
     caps: LinkCaps,
@@ -194,21 +221,25 @@ pub struct CatwanTx {
 
 impl CatwanTx {
     /// Open `port`, put the stick in FSK transmit at `freq_hz` and `power` dBm.
+    /// `permit` is the gate's answer for this run; `freq_hz` must lie inside the span it checked.
     /// `frame_toa_us` is the airtime of a 255 byte frame, which sets the write timeout.
     pub fn open(
+        permit: &TxPermit,
         port: &str,
         freq_hz: u32,
         p: &moq_subghz_wire::FskProfile,
         power: i8,
         frame_toa_us: u64,
     ) -> Result<Self> {
-        let (w, errs) = open_catwan(port, freq_hz, p, power)?;
-        Ok(Self::new(w, errs, *p, frame_toa_us))
+        crate::require_covered(|hz| permit.covers_hz(hz), freq_hz)?;
+        let (w, errs, drained) = open_catwan(port, freq_hz, p, power)?;
+        Ok(Self::new(w, errs, drained, *p, frame_toa_us))
     }
 
     fn new(
         w: std::fs::File,
         errs: Arc<AtomicU64>,
+        drained: Arc<AtomicU64>,
         prof: moq_subghz_wire::FskProfile,
         frame_toa_us: u64,
     ) -> Self {
@@ -219,6 +250,10 @@ impl CatwanTx {
             timeout: catwan_write_timeout(frame_toa_us),
             resync: false,
             stopped: false,
+            queued: 0,
+            drained,
+            frame_toa_us,
+            unconfirmed: 0,
             prof,
             caps: LinkCaps {
                 name: "catwan-fsk",
@@ -254,6 +289,7 @@ impl Link for CatwanTx {
         self.resync = r.is_err();
         r.map_err(|e| LinkError::Io(e.to_string()))?;
         self.stopped = false;
+        self.queued += 1;
         // whether the frame arrives is unknown here, so `delivered` and `acked` stay `None`
         let air = fsk_airtime_us(&self.prof, fr.len());
         Ok(TxReport {
@@ -268,10 +304,33 @@ impl Link for CatwanTx {
         Err(LinkError::Unsupported)
     }
 
-    /// Let the stick drain its queue, then stop it. A failure to stop it is an error, and is
-    /// also printed: the caller must not report a clean run while the stick may still transmit.
+    /// Wait for the stick to say its queue is empty (its `D` line), then stop it. The wait is
+    /// bounded by the frames still waiting times their airtime; frames the stick has not
+    /// confirmed by then are dropped by the stop and counted in [`Link::unconfirmed_frames`],
+    /// never reported as sent. A failure to stop it is an error, and is also printed: the caller
+    /// must not report a clean run while the stick may still transmit.
     fn idle(&mut self) -> Result<(), LinkError> {
-        std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
+        let pending = |s: &Self| {
+            s.queued.saturating_sub(
+                s.drained
+                    .load(Ordering::Relaxed)
+                    .saturating_add(s.errs.load(Ordering::Relaxed)),
+            )
+        };
+        let waiting = pending(self).min(STICK_QUEUE_FRAMES);
+        let limit = Duration::from_micros((waiting + 1) * self.frame_toa_us * 2)
+            + Duration::from_millis(500);
+        let t0 = Instant::now();
+        while pending(self) > 0 && t0.elapsed() < limit {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.unconfirmed = pending(self);
+        if self.unconfirmed > 0 {
+            eprintln!(
+                "CatWAN: {} queued frame(s) not confirmed sent before the stop; they are not counted as sent",
+                self.unconfirmed
+            );
+        }
         match write_deadline(&mut self.w, &catwan_line(self.resync, b"S"), self.timeout) {
             Ok(()) => {
                 self.resync = false;
@@ -284,6 +343,10 @@ impl Link for CatwanTx {
                 Err(LinkError::Io(format!("stopping the CatWAN failed: {e}")))
             }
         }
+    }
+
+    fn unconfirmed_frames(&mut self) -> u64 {
+        std::mem::take(&mut self.unconfirmed)
     }
 
     /// TX errors the CatWAN reported since the last call. They arrive asynchronously, after
@@ -309,7 +372,7 @@ impl Drop for CatwanTx {
 
 #[cfg(test)]
 mod tests {
-    use super::{catwan_line, catwan_write_timeout, write_deadline, CatwanTx};
+    use super::{catwan_line, catwan_write_timeout, parse_done, write_deadline, CatwanTx};
     use moq_subghz_link::{conformance, Link, LinkError};
     use moq_subghz_wire::FskProfile;
     use std::sync::atomic::AtomicU64;
@@ -326,7 +389,13 @@ mod tests {
     fn stick() -> (CatwanTx, std::fs::File) {
         let (w, r) = pty();
         (
-            CatwanTx::new(w, Arc::new(AtomicU64::new(0)), PROF, 7_093),
+            CatwanTx::new(
+                w,
+                Arc::new(AtomicU64::new(0)),
+                Arc::new(AtomicU64::new(0)),
+                PROF,
+                7_093,
+            ),
             r,
         )
     }
@@ -410,6 +479,77 @@ mod tests {
         let mut got = vec![0u8; want.len()];
         r.read_exact(&mut got).unwrap();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn parses_the_sticks_done_line() {
+        assert_eq!(parse_done("D 123456 7 98765"), Some(7));
+        assert_eq!(parse_done("B 123"), None);
+        assert_eq!(parse_done("D x 7 1"), None);
+        assert_eq!(parse_done("D 1"), None);
+        assert_eq!(parse_done("ERR tx"), None);
+        assert_eq!(parse_done("OK F None"), None);
+    }
+
+    fn counted_stick() -> (CatwanTx, std::fs::File, Arc<AtomicU64>) {
+        let (w, r) = pty();
+        let drained = Arc::new(AtomicU64::new(0));
+        let l = CatwanTx::new(w, Arc::new(AtomicU64::new(0)), drained.clone(), PROF, 7_093);
+        (l, r, drained)
+    }
+
+    #[test]
+    fn idle_waits_for_the_stick_to_report_the_queue_empty() {
+        use std::sync::atomic::Ordering;
+        let (mut l, _r, drained) = counted_stick();
+        for _ in 0..3 {
+            l.send(&[1, 2, 3]).unwrap();
+        }
+        let d = drained.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            d.store(3, Ordering::Relaxed);
+        });
+        let t0 = Instant::now();
+        l.idle().unwrap();
+        // it waited for the `D 3` line, well past the old fixed 300 ms only if needed
+        assert!(
+            t0.elapsed() >= Duration::from_millis(140),
+            "{:?}",
+            t0.elapsed()
+        );
+        assert_eq!(l.unconfirmed_frames(), 0);
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn idle_reports_frames_the_stick_never_confirmed() {
+        let (mut l, mut r, _drained) = counted_stick();
+        for _ in 0..4 {
+            l.send(&[9; 10]).unwrap();
+        }
+        l.idle().unwrap(); // the stop still goes out
+        assert_eq!(l.unconfirmed_frames(), 4);
+        // reported once
+        assert_eq!(l.unconfirmed_frames(), 0);
+        use std::io::Read;
+        let mut got = vec![0u8; "Q 09090909090909090909\n".len() * 4 + 2];
+        r.read_exact(&mut got).unwrap();
+        assert!(got.ends_with(b"S\n"));
+    }
+
+    #[test]
+    fn a_frame_the_stick_reported_as_an_error_is_not_left_waiting() {
+        use std::sync::atomic::Ordering;
+        let (w, _r) = pty();
+        let errs = Arc::new(AtomicU64::new(0));
+        let mut l = CatwanTx::new(w, errs.clone(), Arc::new(AtomicU64::new(0)), PROF, 7_093);
+        l.send(&[1]).unwrap();
+        errs.store(1, Ordering::Relaxed);
+        let t0 = Instant::now();
+        l.idle().unwrap();
+        assert!(t0.elapsed() < Duration::from_millis(200));
+        assert_eq!(l.unconfirmed_frames(), 0);
     }
 
     #[test]

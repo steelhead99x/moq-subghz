@@ -208,8 +208,10 @@ pub struct Serial {
 
 #[cfg(unix)]
 impl Serial {
-    /// Open `path` raw at 115200 8N1 (the stick ignores the rate, it is USB CDC).
-    pub fn open(path: &str) -> anyhow::Result<Serial> {
+    /// Open `path` raw at 115200 8N1 (the stick ignores the rate, it is USB CDC). `permit` is the
+    /// licence gate's receive permit: the port is written to (the start command), so it is not
+    /// opened without one.
+    pub fn open(_permit: &moq_subghz_licence::RxPermit, path: &str) -> anyhow::Result<Serial> {
         use anyhow::{bail, Context};
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::OpenOptionsExt;

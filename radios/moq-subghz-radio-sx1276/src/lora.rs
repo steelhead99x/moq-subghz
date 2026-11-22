@@ -2,6 +2,7 @@
 //! `transmit`; the profile, planning and pacing stay in `moq-subghz-lora2015`.
 
 use anyhow::{bail, Result};
+use moq_subghz_licence::TxPermit;
 use moq_subghz_link::{
     check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport,
 };
@@ -18,7 +19,15 @@ pub struct Sx1276LoraTx {
 impl Sx1276LoraTx {
     /// Open the HAT, configure LoRa mode at `freq_hz` and set PA_BOOST to `power` dBm. Check
     /// the modem with [`Self::modem_config`] before sending.
-    pub fn open(spi_hz: u32, freq_hz: u32, cfg: &LoRaConfig, power: i8) -> Result<Self> {
+    /// `permit` is the gate's answer for this run; `freq_hz` must lie inside the span it checked.
+    pub fn open(
+        permit: &TxPermit,
+        spi_hz: u32,
+        freq_hz: u32,
+        cfg: &LoRaConfig,
+        power: i8,
+    ) -> Result<Self> {
+        crate::require_covered(|hz| permit.covers_hz(hz), freq_hz)?;
         let mut r = open_hat_raw(spi_hz)?;
         r.init(freq_hz, cfg).map_err(sx_err)?;
         r.set_tx_power(PaOutput::PaBoost, power).map_err(sx_err)?;

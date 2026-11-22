@@ -23,6 +23,11 @@ pub struct GateArgs {
     /// never read from the command line itself.
     #[cfg_attr(feature = "cli", arg(long, value_name = "PATH"))]
     pub licence_file: Option<PathBuf>,
+    /// Run unlicensed and do not look for a licence file at all: not through
+    /// MOQ_SUBGHZ_LICENCE, not at the XDG path. For a remote or unattended run, so a licence
+    /// file that happens to sit on that machine cannot switch the mode silently.
+    #[cfg_attr(feature = "cli", arg(long, conflicts_with = "licence_file"))]
+    pub no_licence: bool,
     /// Receive-only use of an amateur band without a licence. Never allows transmitting.
     #[cfg_attr(feature = "cli", arg(long))]
     pub rx_amateur: bool,
@@ -65,12 +70,16 @@ impl GateArgs {
 
     /// [`GateArgs::station`] with the environment passed in, for tests.
     pub fn station_in(&self, env: Env<'_>) -> Result<Station, ConfigError> {
-        let path = resolve_path(
-            self.licence_file.as_deref(),
-            env.licence,
-            env.xdg_config_home,
-            env.home,
-        );
+        let path = if self.no_licence {
+            None
+        } else {
+            resolve_path(
+                self.licence_file.as_deref(),
+                env.licence,
+                env.xdg_config_home,
+                env.home,
+            )
+        };
         let licence = match path {
             Some(p) => match LicenceConfig::load(&p) {
                 Ok(l) => Some(l),
@@ -285,6 +294,39 @@ mod tests {
         };
         let s = GateArgs::default().station_in(env).unwrap();
         assert_eq!(s.mode(), Mode::Unlicensed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_licence_ignores_every_search_location() {
+        let d = dir("nolic");
+        let p = write_licence(&d);
+        let xdg = d.join("xdg");
+        std::fs::create_dir_all(xdg.join("moq-subghz")).unwrap();
+        std::fs::copy(&p, xdg.join("moq-subghz/licence.toml")).unwrap();
+        let env = Env {
+            licence: p.to_str(),
+            xdg_config_home: xdg.to_str(),
+            home: d.to_str(),
+        };
+        // Without the flag a licence file at either place selects licensed mode.
+        assert_eq!(
+            GateArgs::default().station_in(env).unwrap().mode(),
+            Mode::Licensed
+        );
+        // With it the same environment runs unlicensed, and a broken file is never opened.
+        let a = GateArgs {
+            no_licence: true,
+            ..GateArgs::default()
+        };
+        let s = a.station_in(env).unwrap();
+        assert_eq!(s.mode(), Mode::Unlicensed);
+        assert!(s.log_line().is_none());
+        let bad = Env {
+            licence: Some("/nonexistent/moq-licence.toml"),
+            ..Env::default()
+        };
+        assert_eq!(a.station_in(bad).unwrap().mode(), Mode::Unlicensed);
     }
 
     #[cfg(unix)]

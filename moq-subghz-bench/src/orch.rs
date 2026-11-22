@@ -4,11 +4,16 @@
 //!
 //! They transmit, so each needs `--i-have-an-antenna` and `--transmit` (and a licence or permit
 //! as per docs/LICENSING.md, which the sender checks). Neither flag is ever added for the user:
-//! they are forwarded only when given here, or among the sender arguments after the profile. Nothing opens a serial port here: the project's
-//! receiver and logger do, on the `--port` the user gives.
+//! they are forwarded only when given here, or among the sender arguments after the profile.
+//! The transmit check runs first, before anything is written or started. Every program is given
+//! `--licence-file` or `--no-licence` (see `licence.rs`) so a licence file on the Pi cannot pick
+//! the mode unseen. Nothing opens a serial port here: the project's receiver and logger do, on
+//! the `--port` the user gives. (`factory-send` and `factory-bench` are in `factory.rs`, with
+//! their own gate.)
 
 use crate::exec::{last_line, read, Host, Plan};
 use crate::factory::shq;
+use crate::licence::{Lic, LicenceOpts, Side};
 use anyhow::{bail, ensure, Context, Result};
 use clap::Args;
 use std::fs;
@@ -45,6 +50,8 @@ pub struct Env {
     /// Print the commands and stop (the only thing it runs is the sender's own --dry-run)
     #[arg(long)]
     pub dry_run: bool,
+    #[command(flatten)]
+    pub licence: LicenceOpts,
 }
 
 /// `Env` with its defaults filled in.
@@ -58,6 +65,8 @@ pub struct Cfg {
     pub frames: PathBuf,
     pub antenna: bool,
     pub transmit: bool,
+    /// The licence mode of each end, passed to every program started
+    pub lic: Lic,
 }
 
 impl Env {
@@ -83,6 +92,7 @@ impl Env {
                 .join("results/lora-2015/frames"),
             antenna: self.i_have_an_antenna,
             transmit: self.transmit,
+            lic: self.licence.resolve(),
         })
     }
 }
@@ -112,7 +122,7 @@ impl Cfg {
 
     /// A real run needs the user to have passed `--i-have-an-antenna` and `--transmit`, here or in
     /// the sender arguments. `--dry-run` needs neither (it transmits nothing).
-    fn gate(&self, h: &dyn Host, args: &[String]) -> Result<()> {
+    pub(crate) fn gate(&self, h: &dyn Host, args: &[String]) -> Result<()> {
         let given = |f: &str| args.iter().any(|a| a == f);
         ensure!(
             self.antenna || given("--i-have-an-antenna") || h.dry(),
@@ -123,6 +133,17 @@ impl Cfg {
             "refusing to transmit without --transmit (and a licence or permit, see docs/LICENSING.md)"
         );
         Ok(())
+    }
+
+    /// The licence mode of each end and what the run files will hold, for the user to read before
+    /// anything runs.
+    pub fn announce(&self) {
+        println!("{}", self.lic.describe());
+    }
+
+    /// The licence flags for a program on `side` whose own extra arguments are `args`.
+    fn lic_flags(&self, side: Side, args: &[String]) -> Vec<String> {
+        self.lic.flags(side, args)
     }
 
     /// The transmit flags the user gave here and did not repeat in `args`, in that order. Never
@@ -136,6 +157,14 @@ impl Cfg {
         if self.transmit && !given("--transmit") {
             v.push("--transmit".to_string());
         }
+        v
+    }
+
+    /// Everything the bench adds to a program that runs on the Pi: the transmit flags the user
+    /// gave and the licence mode.
+    fn pi_send_flags(&self, args: &[String]) -> Vec<String> {
+        let mut v = self.tx_flags(args);
+        v.extend(self.lic_flags(Side::Pi, args));
         v
     }
 
@@ -377,7 +406,9 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     if let Some(k) = r.rx_key {
         a.extend(["--key-file".into(), k.into()]);
     }
-    a.extend(words(r.rx));
+    let rxw = words(r.rx);
+    a.extend(c.lic_flags(Side::Local, &rxw));
+    a.extend(rxw);
     let rx = h.start(
         &Plan::new(c.bin("moq-subghz-recv"), a)
             .out(c.run_file(n, ".out"))
@@ -386,7 +417,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     h.sleep(Duration::from_secs(3));
     let send_st = h
         .run(
-            &c.ssh(pi_send_script(&c.pi_dir, &tmp, r, &c.tx_flags(r.args)))
+            &c.ssh(pi_send_script(&c.pi_dir, &tmp, r, &c.pi_send_flags(r.args)))
                 .out(c.run_file(n, ".send")),
         )?
         .code;
@@ -476,7 +507,8 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     if let Some(k) = r.rx_key {
         rxa += &format!(" --key-file {}", shq(k));
     }
-    for w in words(r.rx) {
+    let rxw = words(r.rx);
+    for w in c.lic_flags(Side::Pi, &rxw).into_iter().chain(rxw) {
         rxa += &format!(" {}", shq(&w));
     }
     let script = format!("cd ~/{} && {rxa}", shq(&c.pi_dir));
@@ -495,6 +527,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         c.run_file(n, ".send.jsonl").display().to_string(),
     ]);
     a.extend(c.tx_flags(r.args));
+    a.extend(c.lic_flags(Side::Local, r.args));
     a.extend(r.args.iter().cloned());
     let send = Plan::new(c.bin("moq-subghz-send"), a)
         .out(c.run_file(n, ".send"))
@@ -670,6 +703,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         ]
         .into_iter()
         .map(String::from)
+        .chain(c.lic_flags(Side::Local, r.args))
         .chain(r.args.iter().cloned()),
     )
     .local();
@@ -702,6 +736,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     a.extend(["--out".into(), rdir.display().to_string()]);
     a.extend(radio.iter().cloned());
     a.extend(reference.iter().cloned());
+    a.extend(c.lic_flags(Side::Local, &[]));
     let lg = h.start(
         &Plan::new(c.bin("lora2015-log"), a)
             .out(c.run_file(n, ".log.out"))
@@ -711,7 +746,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     let scratch = pi_scratch(h, c)?;
     let so = shq(&format!("{scratch}/send.out"));
     let args: String = c
-        .tx_flags(r.args)
+        .pi_send_flags(r.args)
         .iter()
         .chain(r.args)
         .map(|a| format!("{} ", shq(a)))
@@ -755,6 +790,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         .into();
         a.extend(radio.iter().cloned());
         a.extend(reference);
+        a.extend(c.lic_flags(Side::Local, &[]));
         exact_st = h
             .run(
                 &Plan::new(c.bin("lora2015-log"), a)
@@ -905,6 +941,7 @@ mod tests {
             frames: "frames".into(),
             antenna: true,
             transmit: true,
+            lic: Lic::default(),
         }
     }
 
@@ -960,11 +997,11 @@ mod tests {
         );
         assert_eq!(
             f.log[2],
-            format!("bin/moq-subghz-recv --port /dev/ttyTEST --profile 300000:100000:6 --secs 340 --out {r}/t --decode --raw-log --clock-offset-ms=-12.50 --key-file 'my key.hex' --x 1 > {r}/t.out 2>&1")
+            format!("bin/moq-subghz-recv --port /dev/ttyTEST --profile 300000:100000:6 --secs 340 --out {r}/t --decode --raw-log --clock-offset-ms=-12.50 --key-file 'my key.hex' --no-licence --redact-licence --x 1 > {r}/t.out 2>&1")
         );
         assert_eq!(
             f.log[3],
-            format!("ssh -o BatchMode=yes -- pi 'cd ~/moq-subghz && ./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/moq-bench.T/send.jsonl --i-have-an-antenna --transmit --fec-k 8 > /tmp/moq-bench.T/send.out 2>&1; st=$?; tail -n 1 /tmp/moq-bench.T/send.out; rm -f /tmp/moq-bench.T/send.out; exit $st' > {r}/t.send")
+            format!("ssh -o BatchMode=yes -- pi 'cd ~/moq-subghz && ./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/moq-bench.T/send.jsonl --i-have-an-antenna --transmit --no-licence --redact-licence --fec-k 8 > /tmp/moq-bench.T/send.out 2>&1; st=$?; tail -n 1 /tmp/moq-bench.T/send.out; rm -f /tmp/moq-bench.T/send.out; exit $st' > {r}/t.send")
         );
         assert_eq!(f.slept, [Duration::from_secs(3)]);
         assert_eq!(
@@ -1188,7 +1225,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            f.log[2].contains("--clock-offset-ms=12.5 --key-file '\\''my key.hex'\\'' --x 1"),
+            f.log[2].contains("--clock-offset-ms=12.5 --key-file '\\''my key.hex'\\'' --no-licence --redact-licence --x 1"),
             "{}",
             f.log[2]
         );
@@ -1196,7 +1233,8 @@ mod tests {
         assert!(f.log[3].starts_with(
             "bin/moq-subghz-send --catwan /dev/ttyTEST --profile 300000:100000:6 --secs 330 --log"
         ));
-        assert!(f.log[3].contains("--i-have-an-antenna --transmit --fec-k 8 > "));
+        assert!(f.log[3]
+            .contains("--i-have-an-antenna --transmit --no-licence --redact-licence --fec-k 8 > "));
         let (scp, rm) = (
             f.log.iter().position(|l| l.starts_with("scp")).unwrap(),
             f.log
@@ -1286,7 +1324,7 @@ mod tests {
             .iter()
             .any(|l| l.contains("--sent-frames 105") && l.contains("--reference frames/f.jpg")));
         assert!(f.log.iter().any(|l| l.contains(
-            "--power 5 --passes 3 --tx-log /tmp/moq-bench.T/tx.csv --i-have-an-antenna --transmit --dr dr3 >"
+            "--power 5 --passes 3 --tx-log /tmp/moq-bench.T/tx.csv --i-have-an-antenna --transmit --no-licence --redact-licence --dr dr3 >"
         )));
         assert_eq!(log_secs(14.0, 3), 59);
     }
@@ -1337,6 +1375,66 @@ mod tests {
         forward(&mut h, &c, &run("t", &[])).unwrap();
         reverse(&mut h, &c, &run("t", &[])).unwrap();
         assert!(!d.0.join("t").exists());
+    }
+
+    #[test]
+    fn every_program_gets_an_explicit_licence_mode_and_redaction() {
+        use crate::licence::{LicenceOpts, Mode};
+        let d = Scratch::new("lic");
+        let mut c = cfg(&d.0);
+        c.lic = LicenceOpts {
+            licence_file: Some("/here/lic.toml".into()),
+            pi_licence_file: Some("/pi/lic.toml".into()),
+            ..LicenceOpts::default()
+        }
+        .resolve();
+        assert!(matches!(c.lic.pi, Mode::File(_)));
+        let mut f = Fake::default();
+        good_forward(&mut f, &d.0);
+        forward(&mut f, &c, &run("t", &[])).unwrap();
+        // the receiver here gets the local file, the sender on the Pi gets the Pi's
+        assert!(
+            f.log[2].contains("--licence-file /here/lic.toml --redact-licence"),
+            "{}",
+            f.log[2]
+        );
+        assert!(
+            f.log[3].contains("--licence-file /pi/lic.toml --redact-licence"),
+            "{}",
+            f.log[3]
+        );
+        assert!(!f.log[2].contains("--no-licence") && !f.log[3].contains("/here/"));
+        // every program of a run carries one of the two licence options, none relies on a search
+        let d2 = Scratch::new("lic2");
+        let mut f = Fake::default();
+        good_forward(&mut f, &d2.0);
+        forward(&mut f, &cfg(&d2.0), &run("t", &[])).unwrap();
+        for l in f
+            .log
+            .iter()
+            .filter(|l| l.contains("moq-subghz-recv --port") || l.contains("moq-subghz-send"))
+        {
+            assert!(
+                l.contains("--no-licence") && l.contains("--redact-licence"),
+                "{l}"
+            );
+        }
+    }
+
+    #[test]
+    fn show_licence_is_the_only_way_to_drop_redaction() {
+        use crate::licence::LicenceOpts;
+        let d = Scratch::new("lic3");
+        let mut c = cfg(&d.0);
+        c.lic = LicenceOpts {
+            show_licence: true,
+            ..LicenceOpts::default()
+        }
+        .resolve();
+        let mut f = Fake::default();
+        good_forward(&mut f, &d.0);
+        forward(&mut f, &c, &run("t", &[])).unwrap();
+        assert!(f.log.iter().all(|l| !l.contains("--redact-licence")));
     }
 
     #[test]

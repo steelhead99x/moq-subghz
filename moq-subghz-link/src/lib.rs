@@ -171,6 +171,14 @@ pub trait Link: Send {
         Ok(())
     }
 
+    /// Frames the link handed to its radio but could not confirm went on air, as of the last
+    /// `idle` (it stops the radio, which drops what was still queued). Returns the count once
+    /// and resets it. A caller must not count these as sent. 0 for a link that knows each
+    /// frame's fate.
+    fn unconfirmed_frames(&mut self) -> u64 {
+        0
+    }
+
     /// Transmit errors the link learned of since the last call, for links that hear about them
     /// after `send` returned (the CatWAN stick reports `ERR tx` asynchronously).
     fn take_tx_errors(&mut self) -> u64 {

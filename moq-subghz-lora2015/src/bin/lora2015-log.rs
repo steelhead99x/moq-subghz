@@ -130,7 +130,7 @@ fn main() -> Result<()> {
 
     match (&a.port, &a.replay) {
         (Some(port), None) => {
-            let _permit = station
+            let permit = station
                 .check_start(
                     Tuning::occupied(u64::from(p.freq_hz), u64::from(p.bw_hz)),
                     if a.amateur {
@@ -142,7 +142,7 @@ fn main() -> Result<()> {
                     Auth::None,
                 )
                 .map_err(|e| anyhow::anyhow!("refusing to open the stick: {e}"))?;
-            let mut s = Serial::open(port)?;
+            let mut s = Serial::open(&permit, port)?;
             let b = stick::start(&mut s, &p).map_err(anyhow::Error::msg)?;
             eprintln!(
                 "stick: catwan-fw {} (SX1276 0x{:02x}); listening on {}",

@@ -89,6 +89,9 @@ fn ok(h: &mut dyn Host, p: Plan) -> Result<()> {
 }
 
 pub fn run(h: &mut dyn Host, c: &Cfg, out: &Path, play: bool) -> Result<()> {
+    // The transmit gate comes first: nothing below may touch the stick or the Pi (the preflight
+    // writes to the serial port) on a run that is going to be refused.
+    c.gate(h, &[])?;
     let say = |s: &str| println!("\n== {s}");
     let c = Cfg {
         runs: out.to_path_buf(),
@@ -241,6 +244,42 @@ mod tests {
             .to_string()
             .contains("no banner"));
         assert!(banner("I catwan-fw 0.5.1 sx_version=0x22").is_err());
+    }
+
+    fn cfg(antenna: bool, transmit: bool) -> Cfg {
+        Cfg {
+            pi: "pi".into(),
+            pi_dir: "d".into(),
+            bin: "bin".into(),
+            runs: "/nonexistent/runs".into(),
+            // opening this would fail with "open /nonexistent/...", not with a refusal
+            port: Some("/nonexistent/ttyACM9".into()),
+            frames: "f".into(),
+            antenna,
+            transmit,
+            lic: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_refused_run_touches_neither_the_stick_nor_the_pi_nor_the_disk() {
+        use crate::orch::fake::Fake;
+        for (c, want) in [
+            (cfg(true, false), "--transmit"),
+            (cfg(false, true), "--i-have-an-antenna"),
+            (cfg(false, false), "--i-have-an-antenna"),
+        ] {
+            let mut f = Fake::default();
+            let out = std::path::Path::new("/nonexistent/out");
+            let e = run(&mut f, &c, out, false).unwrap_err().to_string();
+            // the gate's refusal, not "open /nonexistent/ttyACM9" (the preflight's write of `I`)
+            // and not a failure to create the output directory
+            assert!(
+                e.contains("refusing to transmit") && e.contains(want),
+                "{e}"
+            );
+            assert!(f.log.is_empty(), "ssh ran before the gate: {:?}", f.log);
+        }
     }
 
     #[test]
