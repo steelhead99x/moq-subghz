@@ -57,9 +57,9 @@ pub fn rate_kbps(bw_mhz: u8, mcs: u8) -> Option<f64> {
 
 /// ASSUMPTION: PLCP preamble plus SIG fields, microseconds, one stream. 1 MHz: STF 160 +
 /// LTF1 160 + SIG 240 = 560 us; 2 MHz and wider ("long" preamble): STF 80 + LTF1 80 +
-/// SIG-A 80 + D-STF 40 + D-LTF 40 + SIG-B 40 = 360 us. These are the values the workshop's
-/// `airtime-model` uses; they come from the frame structure in 802.11ah-2016 as the model
-/// author read it, not from a datasheet.
+/// SIG-A 80 + D-STF 40 + D-LTF 40 + SIG-B 40 = 360 us. These come from the frame structure of
+/// 802.11ah-2016 as recalled when the model was written; they were not checked against the
+/// standard text or a datasheet, and no measurement backs them.
 pub fn preamble_us(bw_mhz: u8) -> u64 {
     if bw_mhz == 1 {
         560
@@ -70,10 +70,17 @@ pub fn preamble_us(bw_mhz: u8) -> u64 {
 
 /// Time on air of a PPDU carrying `psdu_bytes`: preamble plus whole OFDM symbols for
 /// SERVICE (16 bits) + PSDU + BCC tail (6 bits). Symbol quantisation is included.
+///
+/// ASSUMPTION: one BCC encoder, so the tail is a flat 6 bits. A PHY rate high enough to need a
+/// second encoder (6 more tail bits) is not modelled. That moves a PPDU by at most one 40 us
+/// symbol, and only when the bits land within 6 of a symbol boundary: up to about 8 percent of
+/// a full-size packet at 16 MHz MCS9 (about 520 us), far less at the narrow, slow settings.
 pub fn ppdu_us(bw_mhz: u8, mcs: u8, psdu_bytes: usize) -> Option<u64> {
     let dbps = u64::from(n_dbps(bw_mhz, mcs)?);
-    let bits = 16 + 8 * psdu_bytes as u64 + 6;
-    Some(preamble_us(bw_mhz) + bits.div_ceil(dbps) * SYMBOL_US)
+    let bits = 16u64
+        .saturating_add(8u64.saturating_mul(psdu_bytes as u64))
+        .saturating_add(6);
+    Some(preamble_us(bw_mhz).saturating_add(bits.div_ceil(dbps).saturating_mul(SYMBOL_US)))
 }
 
 #[cfg(test)]

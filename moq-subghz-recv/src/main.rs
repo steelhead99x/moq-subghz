@@ -123,6 +123,17 @@ struct Args {
     publish_bin: String,
 }
 
+/// Longest a `--paced` replay waits between two lines, microseconds. A recorded gap longer than
+/// this (an overnight pause, or a corrupt timestamp) is replayed as this long.
+const PACED_MAX_GAP_US: u64 = 2_000_000;
+
+/// When replay line time `us` is due on the replay clock, given the previous line's due time
+/// `prev`: its own timestamp, but never more than [`PACED_MAX_GAP_US`] after `prev`, so a huge
+/// timestamp cannot stall a replay for centuries. A timestamp that goes backwards is due at once.
+fn paced_due(prev: u64, us: u64) -> u64 {
+    us.min(prev.saturating_add(PACED_MAX_GAP_US)).max(prev)
+}
+
 fn unix_us() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -549,6 +560,7 @@ fn main() -> Result<()> {
         let paced = a.paced;
         replay_th = Some(std::thread::spawn(move || -> std::io::Result<()> {
             let t0 = Instant::now();
+            let mut due_us = 0u64;
             loop {
                 let l = match read_line_limited(&mut f, MAX_SERIAL_LINE)? {
                     Some(Line::Data(buf)) => String::from_utf8_lossy(&buf).trim().to_string(),
@@ -559,8 +571,9 @@ fn main() -> Result<()> {
                     continue;
                 }
                 if paced {
-                    if let Some(us) = l.split(' ').nth(1).and_then(|x| x.parse::<u64>().ok()) {
-                        let due = Duration::from_micros(us);
+                    if let Some(r) = parse_r_line(&l) {
+                        due_us = paced_due(due_us, r.t_us);
+                        let due = Duration::from_micros(due_us);
                         if let Some(w) = due.checked_sub(t0.elapsed()) {
                             std::thread::sleep(w);
                         }
@@ -828,9 +841,7 @@ fn main() -> Result<()> {
                 if l.starts_with("R ") {
                     match parse_r_line(&l) {
                         Some(r) => {
-                            if let Some(v) = r.rssi {
-                                rssi.push(v as f64);
-                            }
+                            rssi.push(f64::from(r.rssi));
                             first_frame.get_or_insert(t);
                             rx_bytes += r.frame.len() as u64;
                             last_frame = t;
@@ -1005,9 +1016,23 @@ fn cpu_s(who: i32) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{jnum, json_escape, Sink};
+    use super::{jnum, json_escape, paced_due, Sink, PACED_MAX_GAP_US};
     use std::process::{Command, Stdio};
     use std::time::Duration;
+
+    #[test]
+    fn paced_replay_caps_the_wait_for_huge_timestamps() {
+        // an ordinary recording replays at its own times
+        assert_eq!(paced_due(0, 1_000), 1_000);
+        assert_eq!(paced_due(1_000, 1_000 + 500_000), 501_000);
+        // a gap of centuries is replayed as the cap, and later lines continue from there
+        let a = paced_due(1_000, u64::MAX);
+        assert_eq!(a, 1_000 + PACED_MAX_GAP_US);
+        assert_eq!(paced_due(a, u64::MAX), a + PACED_MAX_GAP_US);
+        assert_eq!(paced_due(u64::MAX, u64::MAX), u64::MAX);
+        // time going backwards (the HAT's 32-bit clock wrapped) waits for nothing
+        assert_eq!(paced_due(5_000, 3), 5_000);
+    }
 
     fn child(cmd: &str, args: &[&str]) -> Sink {
         let mut c = Command::new(cmd)

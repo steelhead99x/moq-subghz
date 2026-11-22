@@ -81,26 +81,15 @@ pub struct Rx {
     pub frame: Vec<u8>,
 }
 
-/// Parse an `R` line. `None` for any other line or a malformed one.
+/// Parse an `R` line. `None` for any other line or a malformed one. This is
+/// [`moq_subghz_wire::parse_r_line`], so the receiver and this tool accept the same lines.
 pub fn parse_rx(line: &str) -> Option<Rx> {
-    let mut it = line.strip_prefix("R ")?.split(' ');
-    let t_us = it.next()?.parse().ok()?;
-    let rssi = it.next()?.parse().ok()?;
-    let snr_q: i32 = it.next()?.parse().ok()?;
-    let hex = it.next().unwrap_or("");
-    if it.next().is_some() || hex.len() > 510 || hex.len() % 2 != 0 || !hex.is_ascii() {
-        return None;
-    }
-    let frame = hex
-        .as_bytes()
-        .chunks(2)
-        .map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
-        .collect::<Option<Vec<u8>>>()?;
+    let r = moq_subghz_wire::parse_r_line(line)?;
     Some(Rx {
-        t_us,
-        rssi,
-        snr_db: snr_q as f32 / 4.0,
-        frame,
+        t_us: r.t_us,
+        rssi: r.rssi,
+        snr_db: r.snr as f32 / 4.0,
+        frame: r.frame,
     })
 }
 

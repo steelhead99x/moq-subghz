@@ -685,6 +685,7 @@ dependencies = [
  "libc",
  "moq-subghz-link",
  "moq-subghz-radio-sx1276",
+ "moq-subghz-wire",
  "sx1276",
 ]
 

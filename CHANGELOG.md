@@ -36,6 +36,26 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Fixed
 
+* **Link contract, uniformly.** `Link::idle` on the CatWAN and the SX1276 FSK backends returns the
+  error when the radio cannot be stopped (it was printed or dropped). The real radios stop
+  themselves on `Drop` (best effort, never transmits, never panics). `CatwanTx::send` and
+  `FileSink::send` refuse empty and oversize packets like every other backend, through
+  `moq_subghz_link::check_packet`, and `moq_subghz_link::conformance` runs the same checks against
+  the loopback, the emulation, the CatWAN stick (on a pty) and the file sink. `CatwanTx` reports
+  the computed airtime of each frame instead of 0. `Duration::MAX` no longer panics in the FSK
+  `recv`. No wire or on-air change; the golden v5 test is unchanged for its six original rows.
+* **A failed send is no longer counted as sent** in `moq-subghz-send`: `frames_tx`, `bytes_tx`
+  and `radio_busy_pct` count only what the link took.
+* **Models.** HaLow retries, overhead, MTU and timings are bounded and saturate (a huge
+  `--halow-retries` used to overflow or loop); `TxReport` gains `acked` next to `delivered`
+  (breaking for code that builds a `TxReport`); LoRa bandwidth and SF6 are checked against what
+  the SX1276 supports (new `--lora-implicit` selects the implicit header SF6 needs); the Gilbert-Elliott chain starts in its stationary distribution, so seeded
+  GE results differ from earlier runs (MODELED only). In-memory links are bounded.
+* **`R` lines have one parser.** `moq_subghz_wire::parse_r_line` is strict (every field, no extra
+  token) and `lora2015` uses it, so the receiver and the logger accept the same lines. A `--paced`
+  replay waits at most 2 s between lines.
+* **Golden v5 test** covers every FEC k from 0 to 15, sealed and unsealed, `min_frame` padding and
+  the sequence wrap, and a receive-side test with and without a loss per FEC block.
 * **The sender no longer splits a picture at a pause on ffmpeg's pipe.** A 4 ms gap inside one
   access unit made two objects in two groups and shifted capture timestamps. Access units now end
   only at the next AUD (or EOF), which adds up to one frame interval of latency. Changes what goes

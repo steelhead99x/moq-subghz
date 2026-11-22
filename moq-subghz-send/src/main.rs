@@ -624,12 +624,18 @@ fn main() -> Result<()> {
                     eprintln!("tx error: CatWAN reported {errs}");
                 }
                 match link.send(&f) {
-                    Ok(r) if modeled => {
-                        st.emu_packets += 1;
-                        st.emu_attempts += u64::from(r.attempts);
-                        st.emu_lost_packets += u64::from(r.delivered == Some(false));
+                    Ok(r) => {
+                        // only a packet the link took counts as sent: frames, bytes and the
+                        // busy time behind radio_busy_pct stay what went out, not what was tried
+                        st.frames += nfr;
+                        st.bytes += f.len() as u64;
+                        busy += t.elapsed();
+                        if modeled {
+                            st.emu_packets += 1;
+                            st.emu_attempts += u64::from(r.attempts);
+                            st.emu_lost_packets += u64::from(r.delivered == Some(false));
+                        }
                     }
-                    Ok(_) => {}
                     Err(e) => {
                         errs += 1;
                         eprintln!("tx error: {e}");
@@ -644,9 +650,6 @@ fn main() -> Result<()> {
                     stop.store(true, Ordering::Relaxed);
                     break;
                 }
-                busy += t.elapsed();
-                st.frames += nfr;
-                st.bytes += f.len() as u64;
             }
             (st, link, busy.as_secs_f64(), fatal)
         })

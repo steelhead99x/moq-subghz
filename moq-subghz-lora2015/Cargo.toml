@@ -14,6 +14,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 libc = "0.2"
 aes = "0.9.4"
+moq-subghz-wire = { path = "../moq-subghz-wire", default-features = false }
 cmac = "0.8.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
