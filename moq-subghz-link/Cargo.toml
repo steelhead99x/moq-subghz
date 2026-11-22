@@ -1,0 +1,12 @@
+[package]
+name = "moq-subghz-link"
+version = "0.0.1"
+description = "The radio link trait: send and receive one packet, with what the link can do and what a send cost"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+moq-subghz-wire = { path = "../moq-subghz-wire" }
