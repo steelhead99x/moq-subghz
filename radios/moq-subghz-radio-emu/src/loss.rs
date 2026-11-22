@@ -21,7 +21,10 @@ impl Rng {
     }
     /// Uniform integer in 0..=hi.
     pub fn upto(&mut self, hi: u64) -> u64 {
-        self.next_u64() % (hi + 1)
+        match hi.checked_add(1) {
+            Some(n) => self.next_u64() % n,
+            None => self.next_u64(),
+        }
     }
 }
 
@@ -95,10 +98,19 @@ pub struct LossState {
 }
 
 impl LossState {
-    pub fn new(model: LossModel) -> Self {
-        LossState { model, bad: false }
+    /// A chain in its stationary distribution: a Gilbert-Elliott channel starts in the bad state
+    /// with probability `p_gb / (p_gb + p_bg)`, so even a short run sees the long-run mean loss
+    /// (starting in the good state would under-count loss in a short run). Draws once from `rng`
+    /// for Gilbert-Elliott and not at all otherwise.
+    pub fn new(model: LossModel, rng: &mut Rng) -> Self {
+        let bad = match model {
+            LossModel::Ge { p_gb, p_bg, .. } => rng.unit() < p_gb / (p_gb + p_bg),
+            _ => false,
+        };
+        LossState { model, bad }
     }
-    /// True when this attempt is lost. Advances the channel state.
+    /// True when this attempt is lost. Advances the channel state. A data frame and its ACK draw
+    /// from the same chain, so one burst can take both.
     pub fn lost(&mut self, rng: &mut Rng) -> bool {
         match self.model {
             LossModel::None => false,
@@ -130,7 +142,7 @@ mod tests {
     #[test]
     fn iid_loss_rate_converges() {
         let mut r = Rng::new(1);
-        let mut s = LossState::new(LossModel::Iid(0.05));
+        let mut s = LossState::new(LossModel::Iid(0.05), &mut r);
         let n = 200_000;
         let lost = (0..n).filter(|_| s.lost(&mut r)).count() as f64 / n as f64;
         assert!((lost - 0.05).abs() < 0.003, "{lost}");
@@ -145,7 +157,7 @@ mod tests {
             loss_bad: 1.0,
         };
         let mut r = Rng::new(7);
-        let mut s = LossState::new(m);
+        let mut s = LossState::new(m, &mut r);
         let n = 400_000;
         let v: Vec<bool> = (0..n).map(|_| s.lost(&mut r)).collect();
         let mean = v.iter().filter(|x| **x).count() as f64 / n as f64;
@@ -171,7 +183,7 @@ mod tests {
             loss_bad: 1.0,
         };
         let mut r = Rng::new(11);
-        let mut s = LossState::new(m);
+        let mut s = LossState::new(m, &mut r);
         let (mut runs, mut lost_total, mut cur) = (0u64, 0u64, 0u64);
         for _ in 0..1_000_000 {
             if s.lost(&mut r) {
@@ -184,6 +196,30 @@ mod tests {
         }
         let mean_burst = lost_total as f64 / runs as f64;
         assert!((mean_burst - 10.0).abs() < 0.8, "{mean_burst}");
+    }
+
+    #[test]
+    fn ge_starts_in_the_stationary_distribution() {
+        // p_gb = p_bg: half the seeds start bad, and the first draw of a loss-only-when-bad
+        // channel is a loss about half the time, so short runs match the long-run mean.
+        let m = LossModel::Ge {
+            p_gb: 0.001,
+            p_bg: 0.001,
+            loss_good: 0.0,
+            loss_bad: 1.0,
+        };
+        let n = 20_000;
+        let first_lost = (0..n)
+            .filter(|&seed| {
+                let mut r = Rng::new(seed);
+                let mut s = LossState::new(m, &mut r);
+                s.lost(&mut r)
+            })
+            .count() as f64
+            / n as f64;
+        assert!((first_lost - m.mean_loss()).abs() < 0.02, "{first_lost}");
+        // and upto at the top of the range does not overflow
+        assert!(Rng::new(1).upto(u64::MAX) > 0);
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! No radio: frames written as CatWAN `R` lines, paced at the FSK airtime. Moved from
 //! `moq-subghz-send` (`--loopback`); the file is what `moq-subghz-recv --replay` reads.
 
-use moq_subghz_link::{Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport};
+use moq_subghz_link::{
+    check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport,
+};
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -45,6 +47,7 @@ impl Link for FileSink {
     }
 
     fn send(&mut self, fr: &[u8]) -> Result<TxReport, LinkError> {
+        check_packet(self.caps.max_payload, fr)?;
         std::thread::sleep(self.toa);
         let hex: String = fr.iter().map(|b| format!("{b:02x}")).collect();
         writeln!(self.f, "R {} 0 0 {hex}", self.t0.elapsed().as_micros()).map_err(io)?;
@@ -53,6 +56,7 @@ impl Link for FileSink {
             airtime_us: self.toa.as_micros() as u64,
             attempts: 1,
             delivered: Some(true),
+            acked: None,
             deliver_after_us: None,
         })
     }
@@ -91,7 +95,19 @@ mod tests {
             .collect();
         assert_eq!(frames[0].frame, [0x01, 0xab, 0xff]);
         assert_eq!(frames[1].frame, [0x02]);
-        assert!(frames[0].t_us.unwrap() <= frames[1].t_us.unwrap());
+        assert!(frames[0].t_us <= frames[1].t_us);
+    }
+
+    #[test]
+    fn passes_the_link_conformance_checks() {
+        let path =
+            std::env::temp_dir().join(format!("moq-subghz-filesink-conf-{}", std::process::id()));
+        let mut s = FileSink::create(path.to_str().unwrap(), Duration::ZERO).unwrap();
+        moq_subghz_link::conformance::tx(&mut s, &[1, 2, 3]);
+        // the refused sends wrote no line
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
     }
 
     #[test]

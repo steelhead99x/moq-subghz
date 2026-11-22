@@ -3,7 +3,9 @@
 //! Moved from `moq-subghz-send` as it was; only the `Link` wrapper at the end is new.
 
 use anyhow::{bail, Context, Result};
-use moq_subghz_link::{Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport};
+use moq_subghz_link::{
+    check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport,
+};
 use moq_subghz_wire::{read_line_limited, Line, MAX_SERIAL_LINE};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -162,6 +164,16 @@ fn open_catwan(
     Ok((w, errs))
 }
 
+/// How long dropping a [`CatwanTx`] waits to tell the stick to stop. Short: a drop may run while
+/// unwinding from a panic, and a stick that stopped reading will not be reached anyway.
+const DROP_STOP_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// On-air time of a `len` byte frame: preamble, 2 sync bytes, a length byte, the payload and
+/// 2 CRC bytes at the FSK bit rate. The same formula the sender uses for its pacing.
+fn fsk_airtime_us(p: &moq_subghz_wire::FskProfile, len: usize) -> u64 {
+    (u64::from(p.preamble) + 2 + 1 + len as u64 + 2) * 8_000_000 / u64::from(p.bitrate)
+}
+
 /// A CatWAN stick configured for FSK transmit.
 pub struct CatwanTx {
     w: std::fs::File,
@@ -173,6 +185,10 @@ pub struct CatwanTx {
     timeout: Duration,
     /// A write timed out, possibly mid-line; see [`catwan_line`].
     resync: bool,
+    /// The stick was told to stop (`idle` succeeded), so a drop has nothing left to do.
+    stopped: bool,
+    /// The profile the stick was configured with, for the airtime of each frame.
+    prof: moq_subghz_wire::FskProfile,
     caps: LinkCaps,
 }
 
@@ -187,12 +203,23 @@ impl CatwanTx {
         frame_toa_us: u64,
     ) -> Result<Self> {
         let (w, errs) = open_catwan(port, freq_hz, p, power)?;
-        Ok(CatwanTx {
+        Ok(Self::new(w, errs, *p, frame_toa_us))
+    }
+
+    fn new(
+        w: std::fs::File,
+        errs: Arc<AtomicU64>,
+        prof: moq_subghz_wire::FskProfile,
+        frame_toa_us: u64,
+    ) -> Self {
+        CatwanTx {
             w,
             errs,
             seen: 0,
             timeout: catwan_write_timeout(frame_toa_us),
             resync: false,
+            stopped: false,
+            prof,
             caps: LinkCaps {
                 name: "catwan-fsk",
                 kind: LinkKind::Serial,
@@ -205,7 +232,7 @@ impl CatwanTx {
                 reports_snr: false,
                 provenance: Provenance::Measured,
             },
-        })
+        }
     }
 }
 
@@ -214,7 +241,10 @@ impl Link for CatwanTx {
         &self.caps
     }
 
+    /// The stick queues the frame and does not say when it goes on air, so `airtime_us` and
+    /// `busy_us` are computed from the profile (one frame, no queue wait), not observed.
     fn send(&mut self, fr: &[u8]) -> Result<TxReport, LinkError> {
+        check_packet(self.caps.max_payload, fr)?;
         let mut body = Vec::with_capacity(2 + 2 * fr.len());
         body.extend_from_slice(b"Q ");
         for b in fr {
@@ -223,8 +253,12 @@ impl Link for CatwanTx {
         let r = write_deadline(&mut self.w, &catwan_line(self.resync, &body), self.timeout);
         self.resync = r.is_err();
         r.map_err(|e| LinkError::Io(e.to_string()))?;
-        // the stick queues the frame: when it goes on air and whether it arrives are unknown here
+        self.stopped = false;
+        // whether the frame arrives is unknown here, so `delivered` and `acked` stay `None`
+        let air = fsk_airtime_us(&self.prof, fr.len());
         Ok(TxReport {
+            busy_us: air,
+            airtime_us: air,
             attempts: 1,
             ..TxReport::default()
         })
@@ -234,14 +268,22 @@ impl Link for CatwanTx {
         Err(LinkError::Unsupported)
     }
 
-    /// Let the stick drain its queue, then stop it. A failure to stop it is printed, not returned:
-    /// the run is over either way.
+    /// Let the stick drain its queue, then stop it. A failure to stop it is an error, and is
+    /// also printed: the caller must not report a clean run while the stick may still transmit.
     fn idle(&mut self) -> Result<(), LinkError> {
         std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
-        if let Err(e) = write_deadline(&mut self.w, &catwan_line(self.resync, b"S"), self.timeout) {
-            eprintln!("stopping the CatWAN failed, it may still be transmitting: {e}");
+        match write_deadline(&mut self.w, &catwan_line(self.resync, b"S"), self.timeout) {
+            Ok(()) => {
+                self.resync = false;
+                self.stopped = true;
+                Ok(())
+            }
+            Err(e) => {
+                self.resync = true;
+                eprintln!("stopping the CatWAN failed, it may still be transmitting: {e}");
+                Err(LinkError::Io(format!("stopping the CatWAN failed: {e}")))
+            }
         }
-        Ok(())
     }
 
     /// TX errors the CatWAN reported since the last call. They arrive asynchronously, after
@@ -254,10 +296,40 @@ impl Link for CatwanTx {
     }
 }
 
+/// Best effort: tell the stick to stop (`S`, which only stops; nothing here can transmit) when
+/// `idle` did not. Never panics and never waits long; a failure has nowhere to go.
+impl Drop for CatwanTx {
+    fn drop(&mut self) {
+        if !self.stopped {
+            let t = self.timeout.min(DROP_STOP_TIMEOUT);
+            let _ = write_deadline(&mut self.w, &catwan_line(self.resync, b"S"), t);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{catwan_line, catwan_write_timeout, write_deadline};
+    use super::{catwan_line, catwan_write_timeout, write_deadline, CatwanTx};
+    use moq_subghz_link::{conformance, Link, LinkError};
+    use moq_subghz_wire::FskProfile;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    const PROF: FskProfile = FskProfile {
+        bitrate: 300_000,
+        fdev: 150_000,
+        preamble: 6,
+        unchecked: false,
+    };
+
+    fn stick() -> (CatwanTx, std::fs::File) {
+        let (w, r) = pty();
+        (
+            CatwanTx::new(w, Arc::new(AtomicU64::new(0)), PROF, 7_093),
+            r,
+        )
+    }
 
     /// A pty pair: (writer side as a non-blocking File, reader fd kept open).
     fn pty() -> (std::fs::File, std::fs::File) {
@@ -326,5 +398,58 @@ mod tests {
             catwan_write_timeout(1_800_000),
             Duration::from_millis(5_400)
         ); // 1.2 kbit/s
+    }
+
+    #[test]
+    fn passes_the_link_conformance_checks() {
+        use std::io::Read;
+        let (mut l, mut r) = stick();
+        conformance::tx(&mut l, &[0xab, 0x01]);
+        // only the valid packet and the stop went out: the refused sends wrote nothing
+        let want = b"Q ab01\nS\n";
+        let mut got = vec![0u8; want.len()];
+        r.read_exact(&mut got).unwrap();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn reports_the_computed_airtime_not_zero() {
+        let (mut l, _r) = stick();
+        let r = l.send(&[0u8; 255]).unwrap();
+        // (6 + 2 + 1 + 255 + 2) * 8 bits at 300 kbit/s
+        assert_eq!((r.airtime_us, r.busy_us), (7_093, 7_093));
+        assert_eq!((r.delivered, r.acked), (None, None));
+        assert_eq!(l.send(&[0u8; 10]).unwrap().airtime_us, 560);
+    }
+
+    #[test]
+    fn idle_reports_a_stick_that_will_not_take_the_stop() {
+        let (mut l, _r) = stick();
+        l.timeout = Duration::from_millis(100);
+        // fill the pty so the stop cannot be written
+        while write_deadline(&mut l.w, &[b'a'; 4096], Duration::from_millis(50)).is_ok() {}
+        let e = l.idle().unwrap_err();
+        assert!(matches!(e, LinkError::Io(_)), "{e:?}");
+        assert!(!l.stopped && l.resync);
+    }
+
+    #[test]
+    fn drop_stops_the_stick_once() {
+        use std::io::Read;
+        let (l, mut r) = stick();
+        drop(l);
+        let mut got = [0u8; 2];
+        r.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"S\n");
+        // after idle, a drop adds nothing
+        let (mut l, mut r) = stick();
+        l.idle().unwrap();
+        drop(l);
+        let mut got = [0u8; 2];
+        r.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"S\n");
+        let mut rest = [0u8; 1];
+        // the pty is now closed on the writer side: nothing more to read
+        assert!(!matches!(r.read(&mut rest), Ok(1)));
     }
 }

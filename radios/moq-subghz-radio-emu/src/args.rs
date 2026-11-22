@@ -140,6 +140,10 @@ mod tests {
             &["x", "--halow-bw", "2", "--halow-mcs", "10"],
             &["x", "--emu-loss", "iid:2"],
             &["x", "--halow-mtu", "100"],
+            &["x", "--halow-retries", "4294967295"],
+            &["x", "--halow-overhead", "18446744073709551615"],
+            &["x", "--halow-latency-us", "18446744073709551615"],
+            &["x", "--halow-jitter-us", "18446744073709551615"],
         ] {
             assert!(P::parse_from(a).e.to_cfg(EmuSel::Halow).is_err(), "{a:?}");
         }

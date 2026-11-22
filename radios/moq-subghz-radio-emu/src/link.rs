@@ -6,7 +6,10 @@
 //!
 //! * [`EmuLink::pair`]: two ends in memory, for tests.
 //! * [`EmuLink::udp_sender`] and [`EmuLink::udp_receiver`]: one UDP datagram per delivered packet,
-//!   loopback addresses only.
+//!   loopback addresses only. The receiver takes a datagram from any local process: the sender's
+//!   port is not fixed, so there is nothing to filter on. This is a test channel, not a security
+//!   boundary; a local process can inject frames and the receiver treats them as noise it has to
+//!   survive (an empty or oversize datagram is an error, never a panic).
 //! * [`EmuLink::file_sender`]: `R <t> 0 0 <hex>` lines (one per wire frame) that
 //!   `moq-subghz-recv --replay` reads.
 //!
@@ -17,7 +20,9 @@
 
 use crate::model::{Channel, EmuCfg, PhyKind};
 use crate::pack;
-use moq_subghz_link::{Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport};
+use moq_subghz_link::{
+    check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport,
+};
 use std::collections::{BinaryHeap, VecDeque};
 use std::io::Write;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
@@ -26,10 +31,16 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// Most bytes one in-memory direction holds before a send is `Busy`, so a receiver that never
+/// drains cannot grow memory without bound.
+const QUEUE_BYTES: usize = 16 << 20;
+
 #[derive(Default)]
 struct State {
     /// Packets in flight, with the link-clock time each is delivered at.
     q: VecDeque<(Vec<u8>, u64)>,
+    /// Bytes in `q`.
+    queued: usize,
     closed: bool,
 }
 
@@ -233,12 +244,7 @@ impl Link for EmuLink {
         if !self.caps.tx {
             return Err(LinkError::Unsupported);
         }
-        if packet.is_empty() {
-            return Err(LinkError::Empty);
-        }
-        if packet.len() > self.caps.max_payload {
-            return Err(LinkError::TooLong);
-        }
+        check_packet(self.caps.max_payload, packet)?;
         // Check a packed packet before it goes on the (modeled) air.
         let frames = if self.caps.max_frames_per_packet > 1 {
             Some(
@@ -248,6 +254,15 @@ impl Link for EmuLink {
         } else {
             None
         };
+        if let Out::Mem(ch) = &self.out {
+            let st = ch.lock();
+            if st.closed {
+                return Err(LinkError::Io("peer closed".into()));
+            }
+            if st.queued + packet.len() > QUEUE_BYTES {
+                return Err(LinkError::Busy);
+            }
+        }
         let o = self.chan.transmit(packet.len());
         let start_us = if self.realtime {
             (self.t0.elapsed().as_micros() as u64).max(self.clock_us)
@@ -271,6 +286,7 @@ impl Link for EmuLink {
                     if st.closed {
                         return Err(LinkError::Io("peer closed".into()));
                     }
+                    st.queued += packet.len();
                     st.q.push_back((packet.to_vec(), due_us));
                     drop(st);
                     ch.cv.notify_one();
@@ -301,6 +317,7 @@ impl Link for EmuLink {
             airtime_us: o.airtime_us,
             attempts: o.attempts,
             delivered: Some(o.delivered),
+            acked: o.acked,
             deliver_after_us: Some(o.deliver_after_us),
         })
     }
@@ -321,6 +338,7 @@ impl Link for EmuLink {
                         Ok(None)
                     };
                 };
+                st.queued -= p.len();
                 if p.len() > buf.len() {
                     return Err(LinkError::TooLong);
                 }
@@ -341,7 +359,11 @@ impl Link for EmuLink {
                 }
                 match sock.recv(&mut self.scratch) {
                     Ok(n) => {
-                        if n > buf.len() {
+                        // anything on the port may be foreign: refuse what no link sends
+                        if n == 0 {
+                            return Err(LinkError::Empty);
+                        }
+                        if n > self.caps.max_payload || n > buf.len() {
                             return Err(LinkError::TooLong);
                         }
                         buf[..n].copy_from_slice(&self.scratch[..n]);
@@ -435,6 +457,56 @@ mod tests {
             (f.caps().max_payload, f.caps().max_frames_per_packet),
             (255, 1)
         );
+    }
+
+    #[test]
+    fn passes_the_link_conformance_checks() {
+        use moq_subghz_link::conformance::{round_trip, tx};
+        let fsk = || EmuCfg::new(PhyKind::Fsk(FskCfg::default()));
+        let (mut a, mut b) = EmuLink::pair(fsk()).unwrap();
+        round_trip(&mut a, &mut b, &[1, 2, 3]);
+        let (mut a, mut b) = EmuLink::pair(halow(LossModel::None, true)).unwrap();
+        round_trip(&mut a, &mut b, &pack::pack(&[&[7u8; 40][..]]).unwrap());
+        let (mut a, _b) = EmuLink::pair(halow(LossModel::None, true)).unwrap();
+        tx(&mut a, &pack::pack(&[&[7u8; 40][..]]).unwrap());
+        let mut f = EmuLink::file_sender(fsk(), "/dev/null").unwrap();
+        tx(&mut f, &[9, 9]);
+        let mut rx = EmuLink::udp_receiver(fsk(), "127.0.0.1:0").unwrap();
+        let addr = rx.local_addr().unwrap().to_string();
+        let mut u = EmuLink::udp_sender(fsk(), &addr).unwrap();
+        round_trip(&mut u, &mut rx, &[4, 5, 6]);
+        tx(&mut u, &[1]);
+    }
+
+    #[test]
+    fn udp_receiver_survives_foreign_datagrams() {
+        let mut rx =
+            EmuLink::udp_receiver(EmuCfg::new(PhyKind::Fsk(FskCfg::default())), "127.0.0.1:0")
+                .unwrap();
+        let to = rx.local_addr().unwrap();
+        let s = UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.send_to(&[], to).unwrap();
+        s.send_to(&[1u8; 300], to).unwrap();
+        s.send_to(&[2u8; 5], to).unwrap();
+        let mut buf = [0u8; 512];
+        let t = Duration::from_secs(2);
+        assert_eq!(rx.recv(&mut buf, t), Err(LinkError::Empty));
+        assert_eq!(rx.recv(&mut buf, t), Err(LinkError::TooLong));
+        assert_eq!(rx.recv(&mut buf, t).unwrap().unwrap().len, 5);
+    }
+
+    #[test]
+    fn an_undrained_pair_makes_send_busy() {
+        let (mut a, mut b) = EmuLink::pair(EmuCfg::new(PhyKind::Fsk(FskCfg::default()))).unwrap();
+        let mut sent = 0usize;
+        while a.send(&[0; 255]).is_ok() {
+            sent += 1;
+            assert!(sent < 1 << 20);
+        }
+        assert_eq!(a.send(&[0; 255]), Err(LinkError::Busy));
+        assert_eq!(sent, (16 << 20) / 255);
+        b.recv(&mut [0u8; 255], Duration::ZERO).unwrap().unwrap();
+        a.send(&[0; 255]).unwrap();
     }
 
     #[test]
