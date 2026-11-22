@@ -1,0 +1,19 @@
+[package]
+name = "moq-subghz-bench"
+version = "0.1.0"
+description = "Bench and analysis tools: the Rust replacement for the scripts/ shell and Python harness"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+csv = "1"
+libc = "0.2"
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"

@@ -5,6 +5,13 @@
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### Tools
+
+* New crate `moq-subghz-bench`, the Rust replacement for the `scripts/` shell and Python harness.
+  This first step adds `analyze` (was `scripts/analyze-051.py`), `factory-bench`, `stick-cap` and
+  `factory-send` (were `results/factory-firmware/tools/`) and `elf2uf2` (was
+  `firmware/catwan-fw/elf2uf2.py`). The old scripts stay until the later steps land.
+
 ### Docs
 
 * README rewritten around a per-link and per-hardware status table (Measured, Modeled, Planned, Not started).
