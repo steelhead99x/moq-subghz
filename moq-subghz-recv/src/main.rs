@@ -461,6 +461,7 @@ fn main() -> Result<()> {
     );
     // ---- line source
     let (ltx, lrx) = mpsc::channel::<(u64, String)>();
+    let mut replay_disconnected = false;
     let mut replay_th: Option<std::thread::JoinHandle<std::io::Result<()>>> = None;
     let mut port_w = None;
     let emu_sel = a.link.emu();
@@ -608,34 +609,9 @@ fn main() -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         bail!("--radio needs Linux");
     } else if let Some(rp) = &a.replay {
-        let mut f = BufReader::new(File::open(rp)?);
+        let f = BufReader::new(File::open(rp)?);
         let paced = a.paced;
-        replay_th = Some(std::thread::spawn(move || -> std::io::Result<()> {
-            let t0 = Instant::now();
-            let mut due_us = 0u64;
-            loop {
-                let l = match read_line_limited(&mut f, MAX_SERIAL_LINE)? {
-                    Some(Line::Data(buf)) => String::from_utf8_lossy(&buf).trim().to_string(),
-                    Some(Line::TooLong) => "X line-too-long".to_string(),
-                    None => return Ok(()),
-                };
-                if l.is_empty() {
-                    continue;
-                }
-                if paced {
-                    if let Some(r) = parse_r_line(&l) {
-                        due_us = paced_due(due_us, r.t_us);
-                        let due = Duration::from_micros(due_us);
-                        if let Some(w) = due.checked_sub(t0.elapsed()) {
-                            std::thread::sleep(w);
-                        }
-                    }
-                }
-                if ltx.send((unix_us(), l)).is_err() {
-                    return Ok(());
-                }
-            }
-        }));
+        replay_th = Some(std::thread::spawn(move || replay_reader(f, paced, ltx)));
     } else {
         bail!("need --port or --replay");
     }
@@ -911,6 +887,7 @@ fn main() -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                replay_disconnected = true;
                 if a.replay.is_none() {
                     // Keep what we have: write the summary, then exit non-zero.
                     eprintln!("serial port closed, stopping");
@@ -930,15 +907,7 @@ fn main() -> Result<()> {
     }
     // A replay reader that stopped on an error must not pass for a clean end of file. One
     // still running was cut off by --secs, which is not an error.
-    let input_error = match replay_th
-        .take()
-        .filter(|t| t.is_finished())
-        .map(|t| t.join())
-    {
-        Some(Ok(Err(e))) => Some(e.to_string()),
-        Some(Err(_)) => Some("the replay reader panicked".to_string()),
-        _ => None,
-    };
+    let input_error = replay_failure(replay_th.take(), replay_disconnected);
     let mut stats_line = String::new();
     if a.radio || emu_sel.is_some() {
         // stop the RX thread and put the SX1276 back to sleep (it clears the flag when done)
@@ -1058,6 +1027,55 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Feed the lines of a replay source into the receive loop, optionally at their own times.
+/// Returns the I/O error that stopped it, if any; the channel closes when it returns.
+fn replay_reader<R: BufRead>(
+    mut f: R,
+    paced: bool,
+    ltx: mpsc::Sender<(u64, String)>,
+) -> std::io::Result<()> {
+    let t0 = Instant::now();
+    let mut due_us = 0u64;
+    loop {
+        let l = match read_line_limited(&mut f, MAX_SERIAL_LINE)? {
+            Some(Line::Data(buf)) => String::from_utf8_lossy(&buf).trim().to_string(),
+            Some(Line::TooLong) => "X line-too-long".to_string(),
+            None => return Ok(()),
+        };
+        if l.is_empty() {
+            continue;
+        }
+        if paced {
+            if let Some(r) = parse_r_line(&l) {
+                due_us = paced_due(due_us, r.t_us);
+                let due = Duration::from_micros(due_us);
+                if let Some(w) = due.checked_sub(t0.elapsed()) {
+                    std::thread::sleep(w);
+                }
+            }
+        }
+        if ltx.send((unix_us(), l)).is_err() {
+            return Ok(());
+        }
+    }
+}
+
+/// The failure of a replay reader, if it had one. When the line channel disconnected the reader
+/// has returned (or is about to), so join it: checking `is_finished` there races the thread's
+/// exit and would turn a read error into a clean end of file. A reader still running after a
+/// time-limited stop was cut off by `--secs`, which is not an error and is left alone.
+fn replay_failure(
+    th: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    channel_disconnected: bool,
+) -> Option<String> {
+    let th = th.filter(|t| channel_disconnected || t.is_finished())?;
+    match th.join() {
+        Ok(Err(e)) => Some(e.to_string()),
+        Err(_) => Some("the replay reader panicked".to_string()),
+        Ok(Ok(())) => None,
+    }
+}
+
 #[allow(deprecated)]
 fn cpu_s(who: i32) -> f64 {
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
@@ -1069,7 +1087,9 @@ fn cpu_s(who: i32) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{jnum, json_escape, paced_due, Sink, PACED_MAX_GAP_US};
+    use super::{
+        jnum, json_escape, paced_due, replay_failure, replay_reader, Sink, PACED_MAX_GAP_US,
+    };
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
@@ -1085,6 +1105,60 @@ mod tests {
         assert_eq!(paced_due(u64::MAX, u64::MAX), u64::MAX);
         // time going backwards (the HAT's 32-bit clock wrapped) waits for nothing
         assert_eq!(paced_due(5_000, 3), 5_000);
+    }
+
+    /// Yields some bytes, then an I/O error.
+    struct FailingReader {
+        data: &'static [u8],
+        pos: usize,
+    }
+    impl std::io::Read for FailingReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() {
+                return Err(std::io::Error::other("disk gone"));
+            }
+            let n = buf.len().min(self.data.len() - self.pos);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_replay_read_error_is_not_a_clean_end_of_file() {
+        // Repeat: the old check raced the thread's exit, so one pass could hide the error.
+        for _ in 0..200 {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let r = std::io::BufReader::new(FailingReader {
+                data: b"R 1 0 0 aabb\nR 2 0 0 ccdd\n",
+                pos: 0,
+            });
+            let th = std::thread::spawn(move || replay_reader(r, false, tx));
+            // drain until the channel disconnects, as the receive loop does
+            let mut lines = 0;
+            while rx.recv_timeout(Duration::from_secs(5)).is_ok() {
+                lines += 1;
+            }
+            assert_eq!(lines, 2);
+            let e = replay_failure(Some(th), true);
+            assert_eq!(e.as_deref(), Some("disk gone"));
+        }
+    }
+
+    #[test]
+    fn a_clean_or_cut_off_replay_reader_is_not_an_error() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let th = std::thread::spawn(move || replay_reader(&b"R 1 0 0 aabb\n"[..], false, tx));
+        while rx.recv_timeout(Duration::from_secs(5)).is_ok() {}
+        assert_eq!(replay_failure(Some(th), true), None);
+        // still running after a time-limited stop: left alone, no error, no wait
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let th = std::thread::spawn(move || {
+            let _ = stop_rx.recv();
+            Err(std::io::Error::other("late"))
+        });
+        assert_eq!(replay_failure(Some(th), false), None);
+        drop(stop_tx);
     }
 
     fn child(cmd: &str, args: &[&str]) -> Sink {

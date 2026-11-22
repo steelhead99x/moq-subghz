@@ -8,9 +8,14 @@ FEC k=8, 96 B minimum frame, max object age 1000 ms. CatWAN firmware v5
 (`firmware/catwan-fw-v5.uf2`, sha256 fe86cc05...). rind main d2dc35bd796aaadc42df56aee0f1526cdee94b66,
 ChaCha20-Poly1305. Antennas ~1 m apart, indoors.
 
-These runs were recorded with frame format version 3. The tools on `main` now speak version 4
-(per-run encryption salts) and count loss differently when frames are replayed or injected, so the
-current tools will not reproduce this table from a new run byte for byte. A re-measurement is planned.
+**Wire version: these are historical runs.** They were recorded with frame format version 3. The
+loss sweep in [`../loopback/`](../loopback/README.md) used version 4. The tools on `main` now speak
+version 5 (`VERSION` in `moq-subghz-wire/src/lib.rs`; per-run encryption salts arrived in 4) and
+count loss differently when frames are replayed or injected, so the current tools will not
+reproduce this table from a new run byte for byte. Use these captures for frame-size comparisons
+only (how big objects and frames are, what FEC and padding cost in bytes). Do not quote their loss
+or latency figures as results of the current v5 tools: any current loss or latency claim needs a
+fresh run. A re-measurement is planned.
 
 The results are in [table.md](table.md). The README shows the four forward runs in short form.
 

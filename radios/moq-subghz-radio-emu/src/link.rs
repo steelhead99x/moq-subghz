@@ -15,9 +15,11 @@
 //!   `moq-subghz-recv --replay` reads.
 //!
 //! Time is virtual unless [`EmuLink::realtime`] is set: a send then adds the busy time to the
-//! link clock and returns at once. With real time a send sleeps until the channel is free again
-//! and datagrams are released at their delivery time (busy time plus the modeled receive
-//! latency and jitter).
+//! link clock and returns at once. With real time a send queues the datagram for its modeled
+//! arrival time (start of the send plus the modeled first reception, receive latency and
+//! jitter), then sleeps until the channel is free again. Delivery is keyed by modeled arrival
+//! and does not wait for the sender's pacing, so ACK retries after the first reception never
+//! delay it.
 
 use crate::model::{Channel, EmuCfg, PhyKind};
 use crate::pack;
@@ -279,13 +281,6 @@ impl Link for EmuLink {
             self.clock_us
         };
         self.clock_us = start_us + o.busy_us;
-        if self.realtime {
-            let free_at = self.t0 + Duration::from_micros(self.clock_us);
-            let now = Instant::now();
-            if free_at > now {
-                std::thread::sleep(free_at - now);
-            }
-        }
         if o.delivered {
             let due_us = start_us + o.deliver_after_us;
             match &mut self.out {
@@ -319,6 +314,15 @@ impl Link for EmuLink {
                         writeln!(f, "R {due_us} 0 0 {hex}").map_err(io)?;
                     }
                 }
+            }
+        }
+        // Pace the sender only after delivery is scheduled: the model can place the first
+        // reception before the ACK retries end, so reception must not wait for them.
+        if self.realtime {
+            let free_at = self.t0 + Duration::from_micros(self.clock_us);
+            let now = Instant::now();
+            if free_at > now {
+                std::thread::sleep(free_at - now);
             }
         }
         Ok(TxReport {
@@ -663,5 +667,66 @@ mod tests {
             .t_us;
         assert_eq!(t2 - t1, r1.busy_us);
         assert_eq!(t2, r1.busy_us + r2.deliver_after_us.unwrap());
+    }
+
+    /// A packed packet of four 255 byte frames, and a seed for which the model places the first
+    /// reception well before the ACK retries end (a lost ACK after a good first copy).
+    fn early_reception() -> (EmuCfg, Vec<u8>, crate::model::Outcome) {
+        let f = [5u8; 255];
+        let pkt = pack::pack(&[&f[..], &f[..], &f[..], &f[..]]).unwrap();
+        for seed in 1..5000u64 {
+            let mut c = halow(LossModel::Iid(0.5), true);
+            c.seed = seed;
+            let o = Channel::new(c.clone()).transmit(pkt.len());
+            if o.delivered && o.busy_us > o.deliver_after_us + 40_000 {
+                return (c, pkt, o);
+            }
+        }
+        panic!("no seed with an early first reception");
+    }
+
+    #[test]
+    fn virtual_clock_places_reception_at_the_modeled_time() {
+        let (c, pkt, want) = early_reception();
+        let (mut a, mut b) = EmuLink::pair(c).unwrap();
+        let r = a.send(&pkt).unwrap();
+        assert_eq!(r.deliver_after_us, Some(want.deliver_after_us));
+        let m = b
+            .recv(&mut [0u8; 1472], Duration::from_millis(50))
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.t_us, want.deliver_after_us);
+        assert!(
+            m.t_us + 40_000 < r.busy_us,
+            "reception precedes the retries"
+        );
+    }
+
+    #[test]
+    fn realtime_udp_delivers_at_the_modeled_time_not_after_the_retries() {
+        let (c, pkt, want) = early_reception();
+        let mut rx = EmuLink::udp_receiver(c.clone(), "127.0.0.1:0", None).unwrap();
+        let addr = rx.local_addr().unwrap().to_string();
+        let mut tx = EmuLink::udp_sender(c, &addr, None).unwrap().realtime(true);
+        let t0 = tx.t0;
+        let th = std::thread::spawn(move || {
+            let mut buf = vec![0u8; 1472];
+            let m = rx.recv(&mut buf, Duration::from_secs(5)).unwrap();
+            (m.is_some(), Instant::now())
+        });
+        let r = tx.send(&pkt).unwrap();
+        let sent_returned = Instant::now();
+        let (got, at) = th.join().unwrap();
+        assert!(got);
+        let observed = at.duration_since(t0).as_micros() as u64;
+        let slack = 25_000;
+        assert!(
+            observed + 5_000 >= want.deliver_after_us && observed <= want.deliver_after_us + slack,
+            "observed {observed} us, modeled {} us",
+            want.deliver_after_us
+        );
+        // The send itself still paces to the busy time.
+        assert!(sent_returned.duration_since(t0).as_micros() as u64 + 2_000 >= r.busy_us);
+        assert!(observed + 20_000 < r.busy_us);
     }
 }

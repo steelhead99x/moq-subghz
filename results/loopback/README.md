@@ -4,7 +4,11 @@
 through a file, with radio frames removed on purpose. They answer one question the eight radio
 runs in [`../video/`](../video/) can't: how does the picture hold up as the link gets worse?
 
-Measured 2026-11-20 on the current code (frame format version 4).
+Measured 2026-11-20 with frame format version 4. **That is not the current wire version**: `main`
+now speaks version 5 (`VERSION` in `moq-subghz-wire/src/lib.rs`), and the radio runs these are
+compared with used version 3. The recordings support frame-size comparisons only. The loss and
+latency figures describe the v4 tools of that day; a current loss or latency claim needs a fresh
+run of the v5 tools.
 
 ## What was run
 
@@ -101,7 +105,7 @@ recordings.)
   gives 9.7%, 9.6%, 14.7% and 18.6% of frames not shown (the plain or encrypted k=8 column,
   whichever matches the run). The radio runs themselves measured 10.3%, 8.5%, 14.9% and 14.9%.
   Three are within 1.2 points. The last is 3.7 points off. The radio runs used frame format
-  version 3 and these replays version 4; the FEC and the GOP rule are the same in both.
+  version 3, these replays version 4 and the current tools are on version 5; the FEC and the GOP rule are the same in both.
 * Two checks that don't use the receiver's own counters, both from
   `scripts/loss_sweep.py check`:
   * Every video frame delivered under loss was compared, byte for byte, with what the sender

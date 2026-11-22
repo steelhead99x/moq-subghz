@@ -6,6 +6,11 @@ LoRa/GPS HAT sending, a CatWAN USB Stick RP2040 receiving. Everything marked **c
 datasheet airtime formula. This test uses this project's firmware (`firmware/catwan-fw-0.5.1.uf2`) and Rust
 tools at both ends. The factory test used neither.
 
+**Wire version.** The wire version these captures used is not recorded in this README, and the
+current tools speak version 5 (`VERSION` in `moq-subghz-wire/src/lib.rs`). Treat the captures as
+supporting frame-size and airtime comparisons only. Any current loss or latency claim needs a
+fresh run of the current tools.
+
 ## The short version
 
 * **The stick works end to end on 0.5.1.** 72 still-picture runs and 8 live-video runs, all with the stick on
