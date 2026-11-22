@@ -168,6 +168,21 @@ pub fn run_kind(recv: &Value, send: &Value) -> RunKind {
     }
 }
 
+/// Radio frame loss in percent. The receiver estimates it from sequence gaps, which says 0 when it
+/// saw no frame at all, so a total loss takes the sender's transmitted count as the denominator.
+fn radio_loss(recv: &Value, send: &Value, run: &str) -> Result<Cell> {
+    if run_kind(recv, send) == RunKind::TotalLoss {
+        let tx = as_f(get(send, "frames_tx"), "frames_tx")?;
+        return Ok(Cell::Float(round_to(100.0 * (1.0 - 0.0 / tx), 3)));
+    }
+    scaled_round(
+        req(recv, "radio_frame_loss", run)?,
+        100,
+        3,
+        "radio_frame_loss",
+    )
+}
+
 /// The rows of `fsk.csv`: one per `f300-*` run that put radio frames on the air.
 pub fn fsk_rows(runs: &Path) -> Result<Vec<Vec<Cell>>> {
     let mut rows = Vec::new();
@@ -217,7 +232,7 @@ pub fn fsk_rows(runs: &Path) -> Result<Vec<Vec<Cell>>> {
             c(r("radio_frames_ok")?)?,
             c(r("radio_frames_missing")?)?,
             c(r("radio_frames_bad")?)?,
-            scaled_round(r("radio_frame_loss")?, 100, 3, "radio_frame_loss")?,
+            radio_loss(&s, &t, &n)?,
             c(r("fec_recovered")?)?,
             c(r("objects_lost")?)?,
             c(r("groups_cut")?)?,
@@ -1017,6 +1032,30 @@ mod tests {
             ),
             RunKind::TotalLoss
         );
+    }
+
+    #[test]
+    fn total_loss_reports_full_radio_loss_not_the_receivers_gap_estimate() {
+        let runs = Scratch::new("fsk-total-loss");
+        let d = runs.0.join("f300-x");
+        fs::create_dir_all(&d).unwrap();
+        let recv =
+            fs::read_to_string(repo().join("results/stick-0.5.1/fsk/f300-fec8-p2-1/summary.json"))
+                .unwrap();
+        let mut v: Value = serde_json::from_str(&recv).unwrap();
+        // An empty capture: the receiver's gap estimate is 0 because it saw nothing.
+        v["radio_frames_ok"] = 0.into();
+        v["radio_frame_loss"] = 0.0.into();
+        v["obj_lat_ms"] = Value::Null;
+        v["g2g_lat_ms"] = Value::Null;
+        fs::write(d.join("summary.json"), v.to_string()).unwrap();
+        fs::write(d.join("send_summary.json"), r#"{"frames_tx":500}"#).unwrap();
+        let rows = fsk_rows(&runs.0).unwrap();
+        let col = FSK_COLS
+            .iter()
+            .position(|c| *c == "radio_frame_loss_pct")
+            .unwrap();
+        assert_eq!(rows[0][col].text(), "100.0");
     }
 
     #[test]

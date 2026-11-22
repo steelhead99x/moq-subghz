@@ -168,11 +168,22 @@ impl Cfg {
         v
     }
 
+    /// The local checks every run makes before any process (and above all any remote one) starts:
+    /// a plain run name, an explicit serial port that exists, and the run directories.
     fn prepare(&self, h: &dyn Host, name: &str) -> Result<()> {
         valid_name(name)?;
+        let port = self.port()?;
+        ensure!(
+            !port.starts_with('-'),
+            "--port {port:?} looks like an option"
+        );
         if !h.dry() {
-            fs::create_dir_all(&self.runs)
-                .with_context(|| format!("create {}", self.runs.display()))?;
+            ensure!(
+                Path::new(&port).exists(),
+                "the serial port {port} does not exist"
+            );
+            fs::create_dir_all(self.runs.join(name))
+                .with_context(|| format!("create {}", self.runs.join(name).display()))?;
         }
         Ok(())
     }
@@ -343,6 +354,13 @@ pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
         c.pi
     );
     let p = d.stdout.trim();
+    valid_scratch(p)?;
+    Ok(p.to_string())
+}
+
+/// Refuse a scratch directory name the Pi made unless it is ours: under `/tmp/moq-bench.`, plain
+/// characters only. Every `rm -rf` of a scratch directory is of a name that passed this.
+pub fn valid_scratch(p: &str) -> Result<()> {
     ensure!(
         p.starts_with("/tmp/moq-bench.")
             && p.len() <= 200
@@ -351,7 +369,7 @@ pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
                 .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)),
         "the Pi gave an odd scratch directory name: {p:?}"
     );
-    Ok(p.to_string())
+    Ok(())
 }
 
 fn words(s: &str) -> Vec<String> {
@@ -381,11 +399,17 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
-    let (off, _) = clock(h, c)?;
-    if !h.dry() {
+    let mut g = Cleanup {
+        h,
+        c,
+        scratch: None,
+        rx: None,
+    };
+    let (off, _) = clock(&mut *g.h, c)?;
+    if !g.h.dry() {
         write(&c.run_file(n, ".clock_start"), &format!("{off}\n"))?;
     }
-    let tmp = pi_scratch(h, c)?;
+    let tmp = pi_scratch(&mut *g.h, c)?;
     let mut a = vec![
         "--port".to_string(),
         c.port()?,
@@ -409,25 +433,27 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let rxw = words(r.rx);
     a.extend(c.lic_flags(Side::Local, &rxw));
     a.extend(rxw);
-    let rx = h.start(
+    let rx = g.h.start(
         &Plan::new(c.bin("moq-subghz-recv"), a)
             .out(c.run_file(n, ".out"))
             .err_to_out(),
     )?;
-    h.sleep(Duration::from_secs(3));
-    let send_st = h
-        .run(
+    g.rx = Some(rx);
+    g.h.sleep(Duration::from_secs(3));
+    let send_st =
+        g.h.run(
             &c.ssh(pi_send_script(&c.pi_dir, &tmp, r, &c.pi_send_flags(r.args)))
                 .out(c.run_file(n, ".send")),
         )?
         .code;
-    let recv_st = h.wait(rx)?;
-    if !h.dry() {
+    g.rx = None;
+    let recv_st = g.h.wait(rx)?;
+    if !g.h.dry() {
         fs::create_dir_all(c.runs.join(n))?;
     }
     let jsonl = format!("{tmp}/send.jsonl");
-    let log_st = h
-        .run(
+    let log_st =
+        g.h.run(
             &c.ssh(format!(
                 "cat {j}; st=$?; rm -rf {t}; exit $st",
                 j = shq(&jsonl),
@@ -436,8 +462,8 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
             .out(c.runs.join(n).join("send.jsonl")),
         )?
         .code;
-    if h.dry() {
-        h.run(
+    if g.h.dry() {
+        g.h.run(
             &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
                 .out(c.run_file(n, ".clock_end")),
         )?;
@@ -447,7 +473,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         &c.run_file(n, ".send"),
         &c.runs.join(n).join("send_summary.json"),
     )?;
-    h.run(
+    g.h.run(
         &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
             .out(c.run_file(n, ".clock_end")),
     )?;
@@ -485,18 +511,124 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     Ok(())
 }
 
+/// Undoes a reverse run's remote side on every way out: kills the local ssh that carries the
+/// receiver and removes this run's scratch directory on the Pi, that exact directory only.
+struct Cleanup<'a> {
+    h: &'a mut dyn Host,
+    c: &'a Cfg,
+    scratch: Option<String>,
+    rx: Option<usize>,
+}
+
+impl Drop for Cleanup<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.rx.take() {
+            self.h.kill(id);
+        }
+        if let Some(dir) = self.scratch.take() {
+            match stop_receiver(self.h, self.c, &dir) {
+                Some(warning) => eprintln!("{warning}"),
+                None => {
+                    let _ = self.h.run(&self.c.ssh(format!("rm -rf {}", shq(&dir))));
+                }
+            }
+        }
+    }
+}
+
+/// The remote command that confirms the receiver this run started is no longer running. It reads
+/// the pid and start time the run itself wrote to `dir/rx.pid` (waiting up to 3 s for a receiver
+/// that has not written them yet), and exits 4 (uncertain) if the file is missing, unreadable or
+/// not two numbers. A pid with no process counts as stopped. A process whose start time (field 22
+/// of `/proc/PID/stat`, compared as the exact string) is not the recorded one is another process
+/// that reused the pid: it is not signalled and the receiver counts as stopped, with a note. One
+/// whose `/proc` command line is not the receiver counts as stopped too. A live receiver gets TERM
+/// and up to 10 s, then KILL. Each signal, and each step of the wait, re-checks the pid, start time
+/// and command line immediately before it, so a pid reused during the wait is never sent the
+/// fallback KILL. The receiver is confirmed gone with `kill -0` (a zombie is gone); exit 3 if it
+/// is still there. Exit 0 means stopped. It removes nothing: the caller removes the directory only
+/// after a 0.
+pub fn stop_script(dir: &str) -> String {
+    r#"d=@DIR@
+alive() { kill -0 "$1" 2>/dev/null && ! grep -q ') Z' "/proc/$1/stat" 2>/dev/null; }
+same() { n=$(start_of "$p") && [ "$n" = "$t" ] && cl=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) && case $cl in *moq-subghz-recv*) return 0;; esac; return 1; }
+signal() { if same; then kill -"$1" "$p" 2>/dev/null; else echo "note: pid $p is no longer the receiver; $1 not sent" >&2; fi; }
+start_of() { s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; s=${s##*) }; set -- $s; shift 19; echo "$1"; }
+i=0; while [ ! -s "$d/rx.pid" ] && [ $i -lt 15 ]; do sleep 0.2; i=$((i+1)); done
+if [ ! -e "$d/rx.pid" ]; then echo "uncertain: $d/rx.pid does not exist" >&2; exit 4; fi
+if ! rec=$(cat "$d/rx.pid" 2>/dev/null); then echo "uncertain: $d/rx.pid is unreadable" >&2; exit 4; fi
+set -- $rec; p=$1; t=$2
+case $p in ''|*[!0-9]*) echo "uncertain: $d/rx.pid does not hold a pid" >&2; exit 4;; esac
+case $t in ''|*[!0-9]*) echo "uncertain: $d/rx.pid does not hold a start time" >&2; exit 4;; esac
+if [ -e "/proc/$p" ]; then
+if ! now=$(start_of "$p"); then echo "note: pid $p is gone" >&2; exit 0; fi
+if [ "$now" != "$t" ]; then echo "note: pid $p now belongs to another process (start time $now, recorded $t); not signalled, the receiver is already gone" >&2; exit 0; fi
+if ! c=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null); then echo "uncertain: cannot read /proc/$p/cmdline" >&2; exit 4; fi
+case $c in *moq-subghz-recv*)
+signal TERM; i=0; while same && alive "$p" && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
+if same && alive "$p"; then signal KILL; sleep 1; fi
+if same && alive "$p"; then echo "receiver $p is still running" >&2; exit 3; fi;;
+esac
+fi
+exit 0"#
+        .replace("@DIR@", &shq(dir))
+}
+
+/// Run [`stop_script`] on the Pi. `None` means the receiver is confirmed stopped. Otherwise the
+/// text is the loud warning naming the scratch directory, which the caller then keeps.
+fn stop_receiver(h: &mut dyn Host, c: &Cfg, dir: &str) -> Option<String> {
+    let why = match h.run(&c.ssh(stop_script(dir))) {
+        Ok(d) if d.code == 0 => return None,
+        Ok(d) if d.code == 3 => "the receiver is still running".to_string(),
+        Ok(d) if d.code == 4 => {
+            "its pid file is missing, unreadable or not a pid and start time".to_string()
+        }
+        Ok(d) => format!("the check exited {}", d.code),
+        Err(e) => format!("{e:#}"),
+    };
+    Some(format!(
+        "WARNING: could not confirm the receiver on {} stopped ({why}); its scratch directory {dir} was KEPT. Check the process and remove the directory by hand.",
+        c.pi
+    ))
+}
+
+/// Why the Pi's copy of the per frame log must be kept: the transfer failed, or the local copy is
+/// not the size of the remote one (`remote_wc` is the Pi's `wc -c` output). `None`: safe to remove.
+fn keep_reason(scp_st: i32, wc_st: i32, remote_wc: &str, local: Option<u64>) -> Option<String> {
+    if scp_st != 0 {
+        return Some(format!("the copy exited {scp_st}"));
+    }
+    let remote = (wc_st == 0)
+        .then(|| remote_wc.trim().parse::<u64>().ok())
+        .flatten();
+    match (remote, local) {
+        (Some(r), Some(l)) if r == l => None,
+        (Some(r), Some(l)) => Some(format!("the Pi's file is {r} bytes but the copy is {l}")),
+        _ => Some("the size of the Pi's file or of the copy could not be read".into()),
+    }
+}
+
 /// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here.
 pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
+    // Every local prerequisite is checked here, before the first remote command.
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
-    let (x, xf) = clock(h, c)?;
-    if !h.dry() {
+    let port = c.port()?;
+    let mut g = Cleanup {
+        h,
+        c,
+        scratch: None,
+        rx: None,
+    };
+    let (x, xf) = clock(&mut *g.h, c)?;
+    if !g.h.dry() {
         write(&c.run_file(n, ".clock_start"), &format!("{x}\n"))?;
     }
     // Capture clock (laptop) minus receive clock (Pi), printed like Python's repr of a float.
     let off = format!("{:?}", -xf);
-    let scratch = pi_scratch(h, c)?;
+    let scratch = pi_scratch(&mut *g.h, c)?;
+    g.scratch = Some(scratch.clone());
     let tmp = shq(&format!("{scratch}/rx"));
     let mut rxa = format!(
         "./moq-subghz-recv --radio --profile {} --secs {} --out {tmp} --decode --raw-log --clock-offset-ms={}",
@@ -511,12 +643,21 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     for w in c.lic_flags(Side::Pi, &rxw).into_iter().chain(rxw) {
         rxa += &format!(" {}", shq(&w));
     }
-    let script = format!("cd ~/{} && {rxa}", shq(&c.pi_dir));
-    let rx = h.start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
-    h.sleep(Duration::from_secs(4));
+    // The receiver records its own pid and its start time (field 22 of /proc/PID/stat, which exec
+    // does not change) in the run's scratch directory, so a cleanup can tell it from a process
+    // that reused the pid.
+    let script = format!(
+        "cd ~/{} && s=$(cat /proc/$$/stat) && s=${{s##*) }} && set -- $s && shift 19 && echo \"$$ $1\" > {} && exec {rxa}",
+        shq(&c.pi_dir),
+        shq(&format!("{scratch}/rx.pid"))
+    );
+    let rx =
+        g.h.start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
+    g.rx = Some(rx);
+    g.h.sleep(Duration::from_secs(4));
     let mut a = vec![
         "--catwan".to_string(),
-        c.port()?,
+        port,
         "--profile".into(),
         r.profile.into(),
         "--secs".into(),
@@ -532,23 +673,32 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let send = Plan::new(c.bin("moq-subghz-send"), a)
         .out(c.run_file(n, ".send"))
         .err(c.run_file(n, ".send.err"));
-    let send_st = h.run(&send)?.code;
-    let recv_st = h.wait(rx)?; // ssh exits with the remote receiver's status
-    if !h.dry() {
-        fs::create_dir_all(c.runs.join(n))?;
+    let send_st = g.h.run(&send)?.code;
+    g.rx = None;
+    let recv_st = g.h.wait(rx)?; // ssh exits with the remote receiver's status
+    if recv_st != 0 {
+        // A dropped ssh also lands here, with the receiver possibly still running: confirm it
+        // stopped on the Pi before anything is copied or removed.
+        if let Some(warning) = stop_receiver(&mut *g.h, c, &scratch) {
+            g.scratch = None; // kept, and already warned about
+            eprintln!("{warning}");
+            bail!("FAILED {n}: the receiver's exit was not confirmed (ssh exited {recv_st}); nothing was copied or removed");
+        }
     }
-    // scp's glob is expanded on the Pi; the Pi's copy is removed only after a good copy.
-    let mut copy_st = h
-        .run(&scp_plan(
+    // The receiver is confirmed gone. scp's glob is expanded on the Pi; the Pi's copy is removed
+    // only after a good copy, and a failed copy keeps it, so from here the guard leaves it alone.
+    g.scratch = None;
+    let mut copy_st =
+        g.h.run(&scp_plan(
             format!("{}:{scratch}/rx/*", scp_host(&c.pi)),
             format!("{}/", c.runs.join(n).display()),
         ))?
         .code;
     if copy_st == 0 {
-        copy_st = h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?.code;
+        copy_st = g.h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?.code;
     }
-    if h.dry() {
-        h.run(
+    if g.h.dry() {
+        g.h.run(
             &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
                 .out(c.run_file(n, ".clock_end")),
         )?;
@@ -565,7 +715,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         &c.run_file(n, ".send"),
         &c.runs.join(n).join("send_summary.json"),
     )?;
-    h.run(
+    g.h.run(
         &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
             .out(c.run_file(n, ".clock_end")),
     )?;
@@ -657,9 +807,39 @@ pub fn radio_overrides(args: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Seconds the logger has to listen: `passes` passes of `pass_s` plus a second each, and 14 more.
-pub fn log_secs(pass_s: f64, passes: u32) -> i64 {
-    (passes as f64 * (pass_s + 1.0) + 14.0) as i64
+/// The pause the sender is configured to leave between passes, in seconds: `--pass-gap-ms` in the
+/// sender arguments, else the sender's own default of one second.
+pub fn pass_gap_s(args: &[String]) -> Result<f64> {
+    let mut gap = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let (key, inline) = match a.split_once('=') {
+            Some((k, v)) => (k, Some(v.to_string())),
+            None => (a.as_str(), None),
+        };
+        if key != "--pass-gap-ms" {
+            continue;
+        }
+        let v = match inline {
+            Some(v) => v,
+            None => it
+                .next()
+                .cloned()
+                .with_context(|| format!("{key} needs a value"))?,
+        };
+        let ms: u32 = v
+            .parse()
+            .with_context(|| format!("--pass-gap-ms {v:?} is not a number of milliseconds"))?;
+        ensure!(gap.replace(ms).is_none(), "--pass-gap-ms given twice");
+    }
+    Ok(gap.unwrap_or(1000) as f64 / 1000.0)
+}
+
+/// Seconds the logger has to listen: `passes` passes of `pass_s`, `passes - 1` gaps of `gap_s`
+/// between them, and 15 s of margin for the first frame and the last one's tail.
+pub fn log_secs(pass_s: f64, passes: u32, gap_s: f64) -> i64 {
+    let gaps = passes.saturating_sub(1) as f64;
+    (passes as f64 * pass_s + gaps * gap_s + 15.0).ceil() as i64
 }
 
 fn after_digits(text: &str, key: &str, dot: bool) -> Option<String> {
@@ -678,6 +858,12 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
+    let mut g = Cleanup {
+        h,
+        c,
+        scratch: None,
+        rx: None,
+    };
     valid_name(r.file).context("picture file name")?;
     let frame = c.frames.join(r.file);
     let radio = radio_overrides(r.args)?;
@@ -707,19 +893,25 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         .chain(r.args.iter().cloned()),
     )
     .local();
-    let d = h.run(&dry)?;
+    let d = g.h.run(&dry)?;
     ensure!(d.code == 0, "{} exited with {}", dry.shell(), d.code);
     let pass_s: f64 = after_digits(&d.stdout, "pass_s=", true)
         .and_then(|s| s.parse().ok())
         .with_context(|| format!("no pass_s= in the output of {}", dry.shell()))?;
-    let secs = log_secs(pass_s, r.passes);
+    let gap_s = pass_gap_s(r.args)?;
+    let secs = log_secs(pass_s, r.passes, gap_s);
+    println!(
+        "logging window for {n}: {secs} s ({} passes x {pass_s:.3} s + {} gaps x {gap_s:.3} s + 15 s margin)",
+        r.passes,
+        r.passes.saturating_sub(1)
+    );
     let reference: Vec<String> = if r.file.ends_with(".jpg") {
         vec!["--reference".into(), frame.display().to_string()]
     } else {
         vec![]
     };
     let rdir = c.runs.join(n);
-    if !h.dry() {
+    if !g.h.dry() {
         fs::create_dir_all(&rdir)?;
     }
     let mut a: Vec<String> = [
@@ -737,13 +929,14 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     a.extend(radio.iter().cloned());
     a.extend(reference.iter().cloned());
     a.extend(c.lic_flags(Side::Local, &[]));
-    let lg = h.start(
+    let lg = g.h.start(
         &Plan::new(c.bin("lora2015-log"), a)
             .out(c.run_file(n, ".log.out"))
             .err_to_out(),
     )?;
-    h.sleep(Duration::from_secs(3));
-    let scratch = pi_scratch(h, c)?;
+    g.rx = Some(lg);
+    g.h.sleep(Duration::from_secs(3));
+    let scratch = pi_scratch(&mut *g.h, c)?;
     let so = shq(&format!("{scratch}/send.out"));
     let args: String = c
         .pi_send_flags(r.args)
@@ -759,15 +952,33 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         r.passes,
         shq(&format!("{scratch}/tx.csv")),
     );
-    let send_st = h.run(&c.ssh(script).out(c.run_file(n, ".send")))?.code;
-    let log_st = h.wait(lg)?;
-    let tx_st = h
-        .run(&scp_plan(
+    let send_st = g.h.run(&c.ssh(script).out(c.run_file(n, ".send")))?.code;
+    g.rx = None;
+    let log_st = g.h.wait(lg)?;
+    let tx_st =
+        g.h.run(&scp_plan(
             format!("{}:{scratch}/tx.csv", scp_host(&c.pi)),
             c.run_file(n, ".tx.csv").display().to_string(),
         ))?
         .code;
-    h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?;
+    // The Pi's copy is the only one until the local copy is known good: remove it only then.
+    let remote_tx = format!("{scratch}/tx.csv");
+    let keep = if g.h.dry() {
+        None
+    } else {
+        let wc = g.h.run(&c.ssh(format!("wc -c < {}", shq(&remote_tx))))?;
+        let local = fs::metadata(c.run_file(n, ".tx.csv")).ok().map(|m| m.len());
+        keep_reason(tx_st, wc.code, &wc.stdout, local)
+    };
+    match &keep {
+        None => {
+            g.h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?;
+        }
+        Some(why) => eprintln!(
+            "WARNING: the per frame log was NOT removed from the Pi: {why}. It is at {}:{remote_tx} (scratch directory {scratch}); copy it by hand.",
+            c.pi
+        ),
+    }
     let sent = after_digits(
         &fs::read_to_string(c.run_file(n, ".send")).unwrap_or_default(),
         "sent frames=",
@@ -791,17 +1002,17 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         a.extend(radio.iter().cloned());
         a.extend(reference);
         a.extend(c.lic_flags(Side::Local, &[]));
-        exact_st = h
-            .run(
+        exact_st =
+            g.h.run(
                 &Plan::new(c.bin("lora2015-log"), a)
                     .out(c.run_file(n, ".exact.out"))
                     .err_to_out(),
             )?
             .code;
-    } else if h.dry() {
+    } else if g.h.dry() {
         return Ok(());
     }
-    if h.dry() {
+    if g.h.dry() {
         return Ok(());
     }
     let fail = |why: String| -> Result<()> { bail!("FAILED {n}: {why}") };
@@ -823,7 +1034,13 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
             c.run_file(n, ".send").display()
         ));
     };
-    if tx_st != 0 || fs::metadata(c.run_file(n, ".tx.csv")).map_or(true, |m| m.len() == 0) {
+    if let Some(why) = keep {
+        return fail(format!(
+            "no per frame log (tx.csv) copied from the Pi ({why}); it is kept at {}:{remote_tx}",
+            c.pi
+        ));
+    }
+    if fs::metadata(c.run_file(n, ".tx.csv")).map_or(true, |m| m.len() == 0) {
         return fail("no per frame log (tx.csv) copied from the Pi".into());
     }
     if exact_st != 0 || fs::metadata(rdir.join("exact/images.csv")).map_or(true, |m| m.len() == 0) {
@@ -860,6 +1077,8 @@ pub mod fake {
         pub rules: Vec<Rule>,
         pub log: Vec<String>,
         pub slept: Vec<Duration>,
+        /// Plans whose line holds one of these could not be started: `run` returns an error.
+        pub cannot_start: Vec<&'static str>,
         bg: Vec<i32>,
     }
 
@@ -909,7 +1128,14 @@ pub mod fake {
 
     impl Host for Fake {
         fn run(&mut self, p: &Plan) -> Result<Done> {
-            Ok(self.apply(p))
+            let done = self.apply(p);
+            if let Some(w) = self.cannot_start.iter().find(|w| p.shell().contains(**w)) {
+                bail!("could not start {w}");
+            }
+            Ok(done)
+        }
+        fn kill(&mut self, id: usize) {
+            self.log.push(format!("kill job {id}"));
         }
         fn start(&mut self, p: &Plan) -> Result<usize> {
             let d = self.apply(p);
@@ -932,12 +1158,14 @@ mod tests {
     use crate::testutil::Scratch;
 
     fn cfg(dir: &Path) -> Cfg {
+        // A port that exists, since a real run checks before it starts anything remote.
+        fs::write(dir.join("ttyTEST"), "").unwrap();
         Cfg {
             pi: "pi".into(),
             pi_dir: "moq-subghz".into(),
             bin: "bin".into(),
             runs: dir.to_path_buf(),
-            port: Some("/dev/ttyTEST".into()),
+            port: Some(dir.join("ttyTEST")),
             frames: "frames".into(),
             antenna: true,
             transmit: true,
@@ -997,7 +1225,7 @@ mod tests {
         );
         assert_eq!(
             f.log[2],
-            format!("bin/moq-subghz-recv --port /dev/ttyTEST --profile 300000:100000:6 --secs 340 --out {r}/t --decode --raw-log --clock-offset-ms=-12.50 --key-file 'my key.hex' --no-licence --redact-licence --x 1 > {r}/t.out 2>&1")
+            format!("bin/moq-subghz-recv --port {r}/ttyTEST --profile 300000:100000:6 --secs 340 --out {r}/t --decode --raw-log --clock-offset-ms=-12.50 --key-file 'my key.hex' --no-licence --redact-licence --x 1 > {r}/t.out 2>&1")
         );
         assert_eq!(
             f.log[3],
@@ -1201,6 +1429,296 @@ mod tests {
     }
 
     #[test]
+    fn reverse_checks_the_port_before_it_starts_anything_remote() {
+        let d = Scratch::new("revport");
+        let mut missing = cfg(&d.0);
+        missing.port = Some(d.0.join("nope"));
+        let mut unset = cfg(&d.0);
+        unset.port = None;
+        for (c, why) in [(missing, "does not exist"), (unset, "--port")] {
+            let mut f = Fake::default();
+            f.rule("--clock-check", 0, CLOCK, vec![]);
+            let e = reverse(&mut f, &c, &run("t", &[])).unwrap_err().to_string();
+            assert!(e.contains(why), "{e}");
+            assert!(f.log.is_empty(), "nothing ran: {:?}", f.log);
+        }
+        // the antenna and transmit gate comes first, too
+        let mut c = cfg(&d.0);
+        c.antenna = false;
+        let mut f = Fake::default();
+        assert!(reverse(&mut f, &c, &run("t", &[])).is_err());
+        assert!(f.log.is_empty());
+    }
+
+    #[test]
+    fn reverse_kills_the_receiver_and_removes_only_its_scratch_when_the_sender_cannot_start() {
+        let d = Scratch::new("revclean");
+        let mut f = Fake::default();
+        f.rule("--clock-check", 0, CLOCK, vec![]);
+        f.cannot_start.push("moq-subghz-send --catwan");
+        let e = reverse(&mut f, &cfg(&d.0), &run("t", &[]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("could not start"), "{e}");
+        let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
+        // the local ssh is killed, the Pi confirms the receiver stopped, and only then the rm
+        let (kill, stop, rm) = (at("kill job 0"), at("signal TERM"), at("rm -rf /tmp"));
+        assert!(kill < stop && stop < rm, "{:?}", f.log);
+        assert_eq!(
+            f.log[rm],
+            "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'"
+        );
+        assert_eq!(f.log.iter().filter(|l| l.contains("rm -rf")).count(), 1);
+        assert!(f
+            .log
+            .iter()
+            .any(|l| l.contains("> /tmp/moq-bench.T/rx.pid && exec ./moq-subghz-recv")));
+    }
+
+    #[test]
+    fn an_unconfirmed_stop_keeps_the_directory_and_warns_naming_it() {
+        let d = Scratch::new("revkeep");
+        for (code, why) in [(3, "still running"), (4, "pid file")] {
+            let mut f = Fake::default();
+            f.rule("signal TERM", code, "", vec![]);
+            let w = stop_receiver(&mut f, &cfg(&d.0), "/tmp/moq-bench.T").unwrap();
+            assert!(
+                w.contains("WARNING") && w.contains("/tmp/moq-bench.T"),
+                "{w}"
+            );
+            assert!(w.contains("KEPT") && w.contains(why), "{w}");
+        }
+        let mut ok = Fake::default();
+        assert!(stop_receiver(&mut ok, &cfg(&d.0), "/tmp/moq-bench.T").is_none());
+        // a full run whose stop cannot be confirmed never removes the directory
+        let mut f = Fake::default();
+        f.rule("--clock-check", 0, CLOCK, vec![]);
+        f.rule("signal TERM", 3, "", vec![]);
+        f.cannot_start.push("moq-subghz-send --catwan");
+        assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
+        assert!(!f.log.iter().any(|l| l.contains("rm -rf")), "{:?}", f.log);
+    }
+
+    #[test]
+    fn a_dropped_ssh_is_confirmed_stopped_before_anything_is_copied_or_removed() {
+        let d = Scratch::new("revdrop");
+        let rules = |f: &mut Fake, stop: i32| {
+            f.rule("--clock-check", 0, CLOCK, vec![]);
+            f.rule("signal TERM", stop, "", vec![]);
+            // the ssh that carries the receiver drops: exit 255; the copy would succeed
+            f.rule("moq-subghz-recv --radio", 255, "", vec![]);
+            f.rule(
+                "moq-subghz-send --catwan",
+                0,
+                "{\"role\":\"send\"}\n",
+                vec![(d.0.join("t.send.jsonl"), "x\n")],
+            );
+            f.rule(
+                "scp -q",
+                0,
+                "",
+                vec![(d.0.join("t/summary.json"), "{\"role\":\"recv\"}")],
+            );
+        };
+        // stop confirmed: the stop runs first, then the copy, then the removal; the run still fails
+        let mut f = Fake::default();
+        rules(&mut f, 0);
+        assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
+        let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
+        assert!(
+            at("signal TERM") < at("scp -q") && at("scp -q") < at("rm -rf"),
+            "{:?}",
+            f.log
+        );
+        // stop not confirmed: no copy and no removal
+        let mut f = Fake::default();
+        rules(&mut f, 3);
+        let e = reverse(&mut f, &cfg(&d.0), &run("t", &[]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not confirmed"), "{e}");
+        assert!(f.log.iter().any(|l| l.contains("signal TERM")));
+        assert!(!f
+            .log
+            .iter()
+            .any(|l| l.starts_with("scp") || l.contains("rm -rf")));
+    }
+
+    /// Run the stop script on a pid file with `content` (or none) in a fresh directory.
+    fn stop_on(tag: &str, content: Option<&str>) -> (i32, Scratch) {
+        let d = Scratch::new(tag);
+        if let Some(c) = content {
+            fs::write(d.0.join("rx.pid"), c).unwrap();
+        }
+        let st = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(stop_script(&d.0.display().to_string()))
+            .status()
+            .unwrap();
+        (st.code().unwrap(), d)
+    }
+
+    fn orphan(cmd: &str) -> i32 {
+        // started through a shell that exits, so init owns it and reaps it, as on the Pi
+        let o = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("{cmd} >/dev/null 2>&1 </dev/null & echo $!"))
+            .stdout(std::process::Stdio::piped())
+            .output()
+            .unwrap();
+        String::from_utf8(o.stdout).unwrap().trim().parse().unwrap()
+    }
+
+    /// Field 22 of /proc/PID/stat, as the stop script reads it.
+    fn start_time(pid: i32) -> String {
+        let s = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        s.rsplit_once(") ")
+            .unwrap()
+            .1
+            .split(' ')
+            .nth(19)
+            .unwrap()
+            .to_string()
+    }
+
+    fn alive(pid: i32) -> bool {
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z"))
+    }
+
+    #[test]
+    fn the_stop_script_treats_missing_process_information_as_uncertain() {
+        assert_eq!(
+            stop_on("stop-none", None).0,
+            4,
+            "no pid file (after its 3 s wait)"
+        );
+        assert_eq!(stop_on("stop-nan", Some("12ab 5\n")).0, 4);
+        assert_eq!(
+            stop_on("stop-nostart", Some("1234\n")).0,
+            4,
+            "a pid alone is not enough"
+        );
+        assert_eq!(stop_on("stop-nanstart", Some("1234 x\n")).0, 4);
+        assert_eq!(stop_on("stop-empty", Some("")).0, 4);
+        assert_eq!(stop_on("stop-neg", Some("-1")).0, 4);
+        if unsafe { libc::geteuid() } != 0 {
+            let d = Scratch::new("stop-unreadable");
+            let f = d.0.join("rx.pid");
+            fs::write(&f, "1234").unwrap();
+            fs::set_permissions(&f, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+            let st = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(stop_script(&d.0.display().to_string()))
+                .status()
+                .unwrap();
+            assert_eq!(st.code(), Some(4));
+        }
+    }
+
+    #[test]
+    fn the_stop_script_kills_only_the_receiver_and_never_an_unrelated_pid() {
+        // an unrelated process: counts as stopped (the receiver is gone) and is NOT signalled
+        let other = orphan("sleep 60");
+        let (code, _d) = stop_on(
+            "stop-other",
+            Some(&format!("{other} {}", start_time(other))),
+        );
+        assert_eq!(code, 0);
+        assert!(alive(other), "an unrelated process was killed");
+        // SAFETY: ending the sleep we started.
+        unsafe { libc::kill(other, libc::SIGKILL) };
+        // an absent pid
+        let gone = orphan("true");
+        for _ in 0..100 {
+            if !Path::new(&format!("/proc/{gone}")).exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(stop_on("stop-gone", Some(&format!("{gone} 1"))).0, 0);
+        // a stand-in receiver (its command line names moq-subghz-recv): stopped
+        let d = Scratch::new("stop-recv");
+        let bin = d.0.join("moq-subghz-recv");
+        fs::write(&bin, "#!/bin/sh\nwhile :; do sleep 1; done\n").unwrap();
+        fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let rx = orphan(&bin.display().to_string());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(alive(rx));
+        // another process reused the recorded pid: the start time differs, so it is NOT signalled
+        // (its command line even names the receiver)
+        fs::write(d.0.join("rx.pid"), format!("{rx} 1")).unwrap();
+        let st = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(stop_script(&d.0.display().to_string()))
+            .status()
+            .unwrap();
+        assert_eq!(st.code(), Some(0));
+        assert!(alive(rx), "a process with another start time was signalled");
+        // the matching pid and start time: TERMed (and KILLed if needed) as before
+        fs::write(d.0.join("rx.pid"), format!("{rx} {}", start_time(rx))).unwrap();
+        let st = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(stop_script(&d.0.display().to_string()))
+            .status()
+            .unwrap();
+        assert_eq!(st.code(), Some(0));
+        assert!(!alive(rx), "the receiver was left running");
+    }
+
+    #[test]
+    fn the_kill_after_the_wait_is_bound_to_the_receiver_identity_too() {
+        // Stand-in receiver that, on TERM, becomes another program under the same pid and start
+        // time (as a reused pid would look to the check): the fallback KILL must not hit it.
+        let d = Scratch::new("stop-rebind");
+        let bin = d.0.join("moq-subghz-recv");
+        fs::write(
+            &bin,
+            "#!/bin/sh\ntrap 'exec sleep 30' TERM\nwhile :; do sleep 0.2; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let rx = orphan(&bin.display().to_string());
+        std::thread::sleep(Duration::from_millis(300));
+        fs::write(d.0.join("rx.pid"), format!("{rx} {}", start_time(rx))).unwrap();
+        let st = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(stop_script(&d.0.display().to_string()))
+            .status()
+            .unwrap();
+        assert_eq!(st.code(), Some(0));
+        assert!(
+            alive(rx),
+            "the KILL hit a process that is no longer the receiver"
+        );
+        // SAFETY: ending the sleep we started.
+        unsafe { libc::kill(rx, libc::SIGKILL) };
+    }
+
+    #[test]
+    fn forward_and_lora_kill_and_reap_the_capture_when_a_later_step_fails() {
+        let d = Scratch::new("capfail");
+        // forward: the Pi sender cannot be started after the receiver here began
+        let mut f = Fake::default();
+        good_forward(&mut f, &d.0);
+        f.cannot_start.push("moq-subghz-send --profile");
+        assert!(forward(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
+        assert!(f.log.iter().any(|l| l == "kill job 0"), "{:?}", f.log);
+        // lora: the Pi scratch directory cannot be made after the logger began
+        let mut f = lora_job(&d.0);
+        f.cannot_start.push("mktemp");
+        let l = Lora {
+            name: "t",
+            mode: "chunk",
+            file: "f.jpg",
+            profile: "sf7-125",
+            passes: 1,
+            args: &[],
+        };
+        assert!(lora(&mut f, &cfg(&d.0), &l).is_err());
+        assert!(f.log.iter().any(|l| l == "kill job 0"), "{:?}", f.log);
+    }
+
+    #[test]
     fn reverse_negates_the_offset_and_copies_before_it_removes() {
         let d = Scratch::new("rev");
         let mut f = Fake::default();
@@ -1230,9 +1748,10 @@ mod tests {
             f.log[2]
         );
         assert_eq!(f.slept, [Duration::from_secs(4)]);
-        assert!(f.log[3].starts_with(
-            "bin/moq-subghz-send --catwan /dev/ttyTEST --profile 300000:100000:6 --secs 330 --log"
-        ));
+        assert!(f.log[3].starts_with(&format!(
+            "bin/moq-subghz-send --catwan {}/ttyTEST --profile 300000:100000:6 --secs 330 --log",
+            d.0.display()
+        )));
         assert!(f.log[3]
             .contains("--i-have-an-antenna --transmit --no-licence --redact-licence --fec-k 8 > "));
         let (scp, rm) = (
@@ -1298,6 +1817,8 @@ mod tests {
             "",
             vec![(d.join("t/exact/images.csv"), "image\n0\n")],
         );
+        // the Pi's `wc -c` of tx.csv: the 8 bytes the copy rule writes
+        f.rule("wc -c", 0, "8\n", vec![]);
         f
     }
 
@@ -1326,7 +1847,77 @@ mod tests {
         assert!(f.log.iter().any(|l| l.contains(
             "--power 5 --passes 3 --tx-log /tmp/moq-bench.T/tx.csv --i-have-an-antenna --transmit --no-licence --redact-licence --dr dr3 >"
         )));
-        assert_eq!(log_secs(14.0, 3), 59);
+        assert_eq!(log_secs(14.0, 3, 1.0), 59);
+    }
+
+    #[test]
+    fn the_logger_window_follows_the_senders_pass_gap() {
+        let d = Scratch::new("lorawin");
+        let mut f = lora_job(&d.0);
+        let args: Vec<String> = ["--pass-gap-ms", "60000"].map(String::from).into();
+        let l = Lora {
+            name: "t",
+            mode: "chunk",
+            file: "f.jpg",
+            profile: "sf7-125",
+            passes: 2,
+            args: &args,
+        };
+        lora(&mut f, &cfg(&d.0), &l).unwrap();
+        // 2 x 14 s of passes + one 60 s gap + 15 s margin: both passes are inside the window
+        assert!(f.log[1].contains("--secs 103 "), "{}", f.log[1]);
+        assert_eq!(log_secs(14.0, 2, 60.0), 103);
+        assert_eq!(pass_gap_s(&[]).unwrap(), 1.0);
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(pass_gap_s(&a(&["--pass-gap-ms=2500"])).unwrap(), 2.5);
+        assert!(pass_gap_s(&a(&["--pass-gap-ms"])).is_err());
+        assert!(pass_gap_s(&a(&["--pass-gap-ms", "x"])).is_err());
+        assert!(pass_gap_s(&a(&["--pass-gap-ms=1", "--pass-gap-ms=2"])).is_err());
+    }
+
+    #[test]
+    fn the_pi_copy_of_the_log_is_removed_only_after_a_good_transfer() {
+        let lora_with = |f: &mut Fake, d: &Path| {
+            let l = Lora {
+                name: "t",
+                mode: "chunk",
+                file: "f.jpg",
+                profile: "sf7-125",
+                passes: 1,
+                args: &[],
+            };
+            lora(f, &cfg(d), &l)
+        };
+        let removed = |f: &Fake| f.log.iter().any(|l| l.contains("rm -rf /tmp/moq-bench.T"));
+        // the transfer fails: the remote file stays, and the error names where it is
+        let d = Scratch::new("txfail");
+        let mut f = lora_job(&d.0);
+        f.rules[3].code = 1;
+        let e = lora_with(&mut f, &d.0).unwrap_err().to_string();
+        assert!(
+            e.contains("pi:/tmp/moq-bench.T/tx.csv") && e.contains("kept"),
+            "{e}"
+        );
+        assert!(!removed(&f), "{:?}", f.log);
+        // the copy arrives but its size is not the Pi's
+        let d = Scratch::new("txsize");
+        let mut f = lora_job(&d.0);
+        f.rules.last_mut().unwrap().stdout = "99\n".into();
+        let e = lora_with(&mut f, &d.0).unwrap_err().to_string();
+        assert!(
+            e.contains("99 bytes") && e.contains("/tmp/moq-bench.T/tx.csv"),
+            "{e}"
+        );
+        assert!(!removed(&f));
+        // a good copy of the same size: removed
+        let d = Scratch::new("txok");
+        let mut f = lora_job(&d.0);
+        lora_with(&mut f, &d.0).unwrap();
+        assert!(removed(&f));
+        assert_eq!(keep_reason(0, 0, "8\n", Some(8)), None);
+        assert!(keep_reason(0, 1, "", Some(8)).is_some());
+        assert!(keep_reason(0, 0, "x", Some(8)).is_some());
+        assert!(keep_reason(0, 0, "8", None).is_some());
     }
 
     #[test]

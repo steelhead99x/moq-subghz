@@ -5,6 +5,31 @@
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### Bench correctness
+
+* `analyze`: a run that sent frames and received none is 100% radio loss in `fsk.csv`, not the
+  receiver's 0% gap estimate.
+* `package-051` compresses a log through a private temp file renamed into place after the licence
+  scan, so a rejected log no longer removes an existing output.
+* The LoRa logger window uses the sender's `--pass-gap-ms` and is printed.
+* `factory-bench` uses a private remote scratch directory per run and a chunk file per pass, and
+  removes only that directory.
+* `reverse` checks the serial port and run directories before any remote command, and kills the
+  receiver's ssh and removes its scratch directory on every early exit.
+* `factory-send` bounds its stderr drain by the timeout and ends the app's process group; `factory-bench` reserves its local run directory exclusively; the reverse cleanup confirms on the Pi that the receiver stopped (pidfile, TERM then KILL) before removing the scratch directory, and keeps it with a warning if it cannot.
+* `factory-send` ends the stock app's whole process group (TERM, then KILL, then reap) on Ctrl-C,
+  SIGTERM, SIGHUP, any error return or a panic. The reverse runner keeps its cleanup armed until
+  the Pi confirms the receiver stopped (a dropped ssh is checked before any copy), and an unknown
+  pid state keeps the scratch directory with a warning. `forward` and `lora` kill and reap their
+  capture process on every early exit.
+* `factory-send` also checks for a cancel while it drains the app's stderr and before each chunk
+  (no timing row, exit 130). The reverse cleanup signals a receiver only if its pid and start time
+  match what the run recorded, so a reused pid is never touched. The LoRa runner removes the Pi's
+  per frame log only after the copy succeeded and its size matches, and otherwise keeps it and
+  says where it is.
+* `factory-send` fails the run when the stock app exits non-zero before its timeout (no timing row)
+  and marks a zero exit before it.
+
 ### CI and hygiene
 
 * The leak guard fails closed (no git, an unreadable tracked file or a private licence file that

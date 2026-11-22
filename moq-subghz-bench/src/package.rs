@@ -109,19 +109,36 @@ fn cp_bin(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Compress `from` to `to` through a private sibling temp file, renamed over `to` only after the
+/// scan passed and the data is synced, so a rejected input never touches an existing output.
 fn gzip(g: &Guard, from: &Path, to: &Path) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut name = to
+        .file_name()
+        .context("output has no file name")?
+        .to_owned();
+    name.push(format!(".tmp-{}", std::process::id()));
+    let tmp = to.with_file_name(name);
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .with_context(|| format!("create {}", tmp.display()))?;
+    // Only the file this call created is removed, by its exact path.
+    gzip_into(g, from, file, to, &tmp).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
+}
+
+fn gzip_into(g: &Guard, from: &Path, out: fs::File, to: &Path, tmp: &Path) -> Result<()> {
     use std::io::{Read, Write};
     let mut f = fs::File::open(from).with_context(|| format!("read {}", from.display()))?;
-    let mut e = GzEncoder::new(fs::File::create(to)?, Compression::best());
+    let mut e = GzEncoder::new(out, Compression::best());
     // Streamed, so a big log costs no memory, but not without end. Each block is scanned (with
     // the tail of the one before, so a value cannot hide across a block boundary) before it is
-    // compressed; on a hit the half-written output is removed.
+    // compressed.
     let (mut buf, mut carry, mut total) = (vec![0u8; 1 << 20], Vec::<u8>::new(), 0u64);
-    let fail = |e: GzEncoder<fs::File>, err: anyhow::Error| {
-        drop(e);
-        let _ = fs::remove_file(to);
-        err
-    };
     loop {
         let n = f.read(&mut buf)?;
         if n == 0 {
@@ -129,22 +146,17 @@ fn gzip(g: &Guard, from: &Path, to: &Path) -> Result<()> {
         }
         total += n as u64;
         if total > MAX_LOG {
-            let err = anyhow::anyhow!("{} is larger than {MAX_LOG} bytes", from.display());
-            return Err(fail(e, err));
+            bail!("{} is larger than {MAX_LOG} bytes", from.display());
         }
         let mut win = std::mem::take(&mut carry);
         win.extend_from_slice(&buf[..n]);
-        if let Err(err) = g.check_window(from, &win, false) {
-            return Err(fail(e, err));
-        }
+        g.check_window(from, &win, false)?;
         carry = win[win.len().saturating_sub(OVERLAP)..].to_vec();
         e.write_all(&buf[..n])?;
     }
-    if let Err(err) = g.check_window(from, &carry, true) {
-        return Err(fail(e, err));
-    }
-    e.finish()?;
-    Ok(())
+    g.check_window(from, &carry, true)?;
+    e.finish()?.sync_all()?;
+    fs::rename(tmp, to).with_context(|| format!("write {}", to.display()))
 }
 
 /// Copy the files of every run name in `dir` that match `pat` (`image*.jpg`, `image*.ssdv`).
@@ -404,10 +416,35 @@ mod tests {
         let e = gzip(&g, &from, &to).unwrap_err().to_string();
         assert!(e.contains("refusing to package"), "{e}");
         assert!(!to.exists(), "the half-written output is removed");
+        assert_eq!(
+            fs::read_dir(&d.0).unwrap().count(),
+            1,
+            "no temp file is left"
+        );
         // the same log without the value compresses
         fs::write(&from, vec![b'.'; (1 << 20) + 10]).unwrap();
         gzip(&g, &from, &to).unwrap();
         assert!(to.exists());
+    }
+
+    #[test]
+    fn a_rejected_log_leaves_an_existing_output_untouched() {
+        let k = Scratch::new("pk-keep-lic");
+        let g = licensed(&k.0);
+        let d = Scratch::new("pk-keep");
+        let (from, to) = (d.0.join("raw.log"), d.0.join("raw.log.gz"));
+        fs::write(&to, b"previous output").unwrap();
+        fs::write(&from, fill("@ID@")).unwrap();
+        assert!(gzip(&g, &from, &to).is_err());
+        assert_eq!(fs::read(&to).unwrap(), b"previous output");
+        // a missing input is an error that leaves it alone too
+        assert!(gzip(&g, &d.0.join("nope"), &to).is_err());
+        assert_eq!(fs::read(&to).unwrap(), b"previous output");
+        let names: Vec<_> = fs::read_dir(&d.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
     }
 
     #[test]
