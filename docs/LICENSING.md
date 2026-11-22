@@ -3,7 +3,9 @@
 **Not legal advice. You are responsible for what you transmit.** This page describes
 the `moq-subghz-licence` crate. It is a library with a gate and tests. **It is not wired into
 `moq-subghz-send` or `moq-subghz-recv` yet** (a follow-up change does that), so today nothing in
-the tools reads a licence file. Nothing here transmits, and all amateur transmit stays disabled.
+the tools reads a licence file. **Status: the gate is a library only.** Sections below that say
+"the tools" send or refuse describe the intended behaviour once it is wired, not what the binaries
+do now. Nothing here transmits, and all amateur transmit stays disabled.
 
 ## Modes
 

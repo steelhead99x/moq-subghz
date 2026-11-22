@@ -110,7 +110,8 @@ pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
     // Sized up front: this also decodes key files, and a growing Vec would leave
     // copies of the key in freed memory.
     let mut out = Vec::with_capacity(b.len() / 2);
-    for p in b.chunks_exact(2) {
+    // Even length was checked above, so the remainder is empty.
+    for p in b.as_chunks::<2>().0 {
         match (val(p[0]), val(p[1])) {
             (Some(hi), Some(lo)) => out.push(hi << 4 | lo),
             _ => {
