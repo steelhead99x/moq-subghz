@@ -66,6 +66,9 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   not measured. The FSK path and the existing tools are unchanged.
   `moq-subghz-pi` gains `open_hat_raw`, the part of `open_hat` that opens spidev and GPIO.
 
+* `moq-subghz-link`: the `Link` trait (`caps`, `send` returning a `TxReport`, `recv(buf, timeout)`, `idle`)
+  and an in-memory `loopback::pair` with deterministic drops. No binary uses it yet; nothing on the air changes.
+
 ### Changed on the air
 
 * **Frame format version 4.** Encrypted objects now carry a per-run salt, and each run encrypts
