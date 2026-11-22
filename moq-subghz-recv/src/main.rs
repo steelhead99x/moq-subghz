@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
-use moq_subghz_licence::{Auth, Encryption, GateArgs, Mode, Permit, Profile, Station, Tuning};
+use moq_subghz_licence::{Auth, Encryption, GateArgs, Mode, Profile, RxPermit, Station, Tuning};
 use moq_subghz_link::Link;
 use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
 use moq_subghz_radio_emu::{pack, EmuLink};
@@ -384,7 +384,7 @@ fn clock_check(host: &str) -> Result<()> {
 
 /// The gate's answer for opening a radio to receive (a CatWAN port or the Pi's SX1276). The
 /// radio code is only reached with the permit this returns.
-fn receive_permit(station: &Station, a: &Args, bitrate: u32, fdev: u32) -> Result<Permit> {
+fn receive_permit(station: &Station, a: &Args, bitrate: u32, fdev: u32) -> Result<RxPermit> {
     let (profile, encryption) = (
         if a.amateur {
             Profile::AMATEUR
