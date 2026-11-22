@@ -3,7 +3,7 @@
 
 use crate::band::{Band, BandKind};
 use crate::config::{ConfigError, LicenceConfig};
-use crate::region::{IdRule, Region};
+use crate::region::Region;
 use crate::Mode;
 use std::fmt;
 
@@ -44,13 +44,18 @@ impl Profile {
     };
 }
 
-/// Run flags. `Flags::default()` is receive-only, no encryption, no authentication, no licence.
+/// Run flags. `Flags::default()` is receive-only, no encryption, no authentication, no licence,
+/// and no amateur-band receive in unlicensed mode.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Flags<'a> {
     /// `--transmit` was passed. Default false: never transmit.
     pub transmit: bool,
     pub encryption: Encryption,
     pub auth: Auth,
+    /// `--rx-amateur` was passed: receive-only use of an amateur band in unlicensed mode.
+    /// Receiving generally needs no licence, but verify your local rules. It never allows
+    /// transmitting, and it has no effect in licensed mode. Default false.
+    pub rx_amateur: bool,
     /// The loaded licence file, if any.
     pub licence: Option<&'a LicenceConfig>,
 }
@@ -61,7 +66,8 @@ pub struct Permit {
     pub mode: Mode,
     /// True only from [`check_transmit`].
     pub may_transmit: bool,
-    /// Send the station ID in identification frames (licensed mode and transmitting only).
+    /// Send the station ID in identification frames: licensed mode, an amateur profile and
+    /// transmitting only. Never on ISM profiles.
     pub station_id: bool,
     /// Longest gap between identifications, in seconds (when `station_id`).
     pub id_interval_secs: Option<u32>,
@@ -72,7 +78,8 @@ pub struct Permit {
 pub enum Refusal {
     /// Unlicensed mode and the band is licensed-only.
     LicensedBandInUnlicensedMode,
-    /// Unlicensed mode and an amateur profile.
+    /// Unlicensed mode and an amateur profile without `--rx-amateur`, or any attempt to
+    /// transmit on an amateur profile in unlicensed mode.
     AmateurProfileInUnlicensedMode,
     /// The profile kind does not match the band kind (for example an ISM profile on an amateur band).
     ProfileBandMismatch,
@@ -84,8 +91,6 @@ pub enum Refusal {
     InvalidLicence(ConfigError),
     /// The band belongs to a different region than the licence.
     RegionMismatch,
-    /// Region `other` without a user-supplied rule, or without an identification interval.
-    RegionRulesMissing,
     /// Amateur profile with sealing or an AES payload.
     EncryptionOnAmateurProfile,
     /// Amateur profile with authentication (until reviewed).
@@ -96,17 +101,15 @@ pub enum Refusal {
 
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let note = " The tools check the shape of a licence ID only; they cannot verify it.";
         match self {
             Self::LicensedBandInUnlicensedMode => write!(f, "this band is licensed-only and unlicensed mode blocks it"),
-            Self::AmateurProfileInUnlicensedMode => write!(f, "amateur profiles need licensed mode"),
+            Self::AmateurProfileInUnlicensedMode => write!(f, "amateur profiles need licensed mode; in unlicensed mode only receiving with --rx-amateur is allowed (receiving generally needs no licence, but verify your local rules)"),
             Self::ProfileBandMismatch => write!(f, "the profile kind does not match the band"),
             Self::NoLicenceConfig => write!(f, "licensed mode needs a licence file (--licence-file, MOQ_SUBGHZ_LICENCE or the XDG config path)"),
             Self::MissingLicenceId => write!(f, "licensed mode needs a licence ID in the licence file"),
             Self::MissingOperatorName => write!(f, "licensed mode needs an operator name in the licence file"),
             Self::InvalidLicence(e) => write!(f, "{e}"),
             Self::RegionMismatch => write!(f, "the band is not in the licence's region"),
-            Self::RegionRulesMissing => write!(f, "region \"other\" needs your own id_mask and id_interval_secs; blocked until set.{note}"),
             Self::EncryptionOnAmateurProfile => write!(f, "amateur profiles forbid encryption (no sealing, no AES payload)"),
             Self::AuthenticationOnAmateurProfile => write!(f, "amateur profiles use no authentication until reviewed"),
             Self::TransmitNotRequested => write!(f, "receive-only: pass --transmit to allow transmitting"),
@@ -124,15 +127,13 @@ fn licence_ok(licence: Option<&LicenceConfig>) -> Result<&LicenceConfig, Refusal
     if !l.has_name() {
         return Err(Refusal::MissingOperatorName);
     }
-    if matches!(l.region(), Region::Other(IdRule::Missing)) || l.id_interval_secs().is_none() {
-        return Err(Refusal::RegionRulesMissing);
-    }
     Ok(l)
 }
 
 /// May the tool start on this band with this profile? Never permits transmit by itself.
 ///
-/// * Unlicensed: the band must be `unlicensed_ok` and the profile must not be amateur.
+/// * Unlicensed: the band must be `unlicensed_ok` and the profile must not be amateur. The one
+///   exception is receive-only on an amateur band with `--rx-amateur` ([`Flags::rx_amateur`]).
 /// * Licensed: a licence with both ID and name, in the band's region. Amateur profiles also
 ///   need an amateur band, no encryption and no authentication.
 pub fn check_start(
@@ -153,9 +154,10 @@ pub fn check_start(
     match mode {
         Mode::Unlicensed => {
             if profile.kind == BandKind::Amateur {
-                return Err(Refusal::AmateurProfileInUnlicensedMode);
-            }
-            if !band.unlicensed_ok {
+                if !flags.rx_amateur {
+                    return Err(Refusal::AmateurProfileInUnlicensedMode);
+                }
+            } else if !band.unlicensed_ok {
                 return Err(Refusal::LicensedBandInUnlicensedMode);
             }
         }
@@ -163,12 +165,13 @@ pub fn check_start(
             let l = licence_ok(flags.licence)?;
             let tag = match l.region() {
                 Region::Us => "US",
-                Region::Other(_) => "",
             };
             if band.region != tag {
                 return Err(Refusal::RegionMismatch);
             }
-            permit.id_interval_secs = l.id_interval_secs();
+            if profile.kind == BandKind::Amateur {
+                permit.id_interval_secs = Some(l.id_interval_secs());
+            }
         }
     }
     if profile.kind == BandKind::Amateur {
@@ -182,7 +185,8 @@ pub fn check_start(
     Ok(permit)
 }
 
-/// May the tool transmit? Needs [`check_start`] to pass AND `--transmit`. In licensed mode the
+/// May the tool transmit? Needs [`check_start`] to pass AND `--transmit`. In licensed mode on an
+/// amateur profile the
 /// permit also says to send station ID frames.
 pub fn check_transmit(
     mode: Mode,
@@ -191,11 +195,15 @@ pub fn check_transmit(
     flags: &Flags<'_>,
 ) -> Result<Permit, Refusal> {
     let mut p = check_start(mode, band, profile, flags)?;
+    if mode == Mode::Unlicensed && profile.kind == BandKind::Amateur {
+        // `--rx-amateur` is receive-only. Transmitting on an amateur band needs licensed mode.
+        return Err(Refusal::AmateurProfileInUnlicensedMode);
+    }
     if !flags.transmit {
         return Err(Refusal::TransmitNotRequested);
     }
     p.may_transmit = true;
-    p.station_id = mode == Mode::Licensed;
+    p.station_id = mode == Mode::Licensed && profile.kind == BandKind::Amateur;
     Ok(p)
 }
 
@@ -211,7 +219,7 @@ mod tests {
         US_BANDS.iter().find(|b| b.name.contains("70 cm")).unwrap()
     }
     fn cfg() -> LicenceConfig {
-        LicenceConfig::from_parts(Region::Us, Some("K1AB"), Some("Test Person"), None).unwrap()
+        LicenceConfig::from_parts(Region::Us, Some("K1AB"), Some("Test Person")).unwrap()
     }
 
     #[test]
@@ -296,9 +304,9 @@ mod tests {
 
     #[test]
     fn licensed_without_id_or_name_refuses() {
-        let no_id = LicenceConfig::from_parts(Region::Us, None, Some("Test Person"), None).unwrap();
-        let no_name = LicenceConfig::from_parts(Region::Us, Some("K1AB"), None, None).unwrap();
-        let empty = LicenceConfig::from_parts(Region::Us, Some("  "), Some(""), None).unwrap();
+        let no_id = LicenceConfig::from_parts(Region::Us, None, Some("Test Person")).unwrap();
+        let no_name = LicenceConfig::from_parts(Region::Us, Some("K1AB"), None).unwrap();
+        let empty = LicenceConfig::from_parts(Region::Us, Some("  "), Some("")).unwrap();
         for (c, want) in [
             (&no_id, Refusal::MissingLicenceId),
             (&no_name, Refusal::MissingOperatorName),
@@ -383,51 +391,67 @@ mod tests {
     }
 
     #[test]
-    fn other_region_stays_blocked_without_rules() {
-        let c =
-            LicenceConfig::from_parts(Region::Other(IdRule::Missing), None, None, None).unwrap();
-        let f = Flags {
-            transmit: true,
-            licence: Some(&c),
+    fn rx_amateur_allows_receive_only_in_unlicensed() {
+        let rx = Flags {
+            rx_amateur: true,
             ..Flags::default()
         };
-        assert!(check_start(Mode::Licensed, ism(), Profile::ISM, &f).is_err());
-        let c = LicenceConfig::from_parts(
-            Region::Other(IdRule::Mask("LLDLL".into())),
-            Some("AB1CD"),
-            Some("T P"),
-            Some(900),
-        )
-        .unwrap();
-        let f = Flags {
-            transmit: true,
-            licence: Some(&c),
-            ..Flags::default()
-        };
-        // No built-in bands for `other`, so a US band is a region mismatch.
+        let p = check_start(Mode::Unlicensed, ham(), Profile::AMATEUR, &rx).unwrap();
+        assert!(!p.may_transmit && !p.station_id && p.id_interval_secs.is_none());
+        // Without the flag it stays blocked.
         assert_eq!(
-            check_start(Mode::Licensed, ham(), Profile::AMATEUR, &f),
-            Err(Refusal::RegionMismatch)
+            check_start(Mode::Unlicensed, ham(), Profile::AMATEUR, &Flags::default()),
+            Err(Refusal::AmateurProfileInUnlicensedMode)
         );
-        let mut b = *ham();
-        b.region = "";
-        let p = check_transmit(Mode::Licensed, &b, Profile::AMATEUR, &f).unwrap();
-        assert_eq!(p.id_interval_secs, Some(900));
-        let c = LicenceConfig::from_parts(
-            Region::Other(IdRule::Mask("LLDLL".into())),
-            Some("AB1CD"),
-            Some("T P"),
-            None,
-        )
-        .unwrap();
+        // Transmit stays blocked, with or without --transmit.
+        for transmit in [false, true] {
+            let f = Flags {
+                rx_amateur: true,
+                transmit,
+                ..Flags::default()
+            };
+            assert_eq!(
+                check_transmit(Mode::Unlicensed, ham(), Profile::AMATEUR, &f),
+                Err(Refusal::AmateurProfileInUnlicensedMode)
+            );
+        }
+        // Encryption and authentication rules still apply on the amateur profile.
+        let f = Flags {
+            rx_amateur: true,
+            encryption: Encryption::Sealed,
+            ..Flags::default()
+        };
+        assert_eq!(
+            check_start(Mode::Unlicensed, ham(), Profile::AMATEUR, &f),
+            Err(Refusal::EncryptionOnAmateurProfile)
+        );
+        // It does not let an ISM profile onto an amateur band.
+        assert_eq!(
+            check_start(Mode::Unlicensed, ham(), Profile::ISM, &rx),
+            Err(Refusal::ProfileBandMismatch)
+        );
+    }
+
+    #[test]
+    fn station_id_only_on_amateur_profiles_in_licensed_mode() {
+        let c = cfg();
         let f = Flags {
             transmit: true,
             licence: Some(&c),
             ..Flags::default()
         };
+        let p = check_transmit(Mode::Licensed, ism(), Profile::ISM, &f).unwrap();
+        assert!(p.may_transmit && !p.station_id && p.id_interval_secs.is_none());
+        let p = check_transmit(Mode::Licensed, ham(), Profile::AMATEUR, &f).unwrap();
+        assert!(p.station_id && p.id_interval_secs == Some(600));
+    }
+
+    #[test]
+    fn other_region_is_blocked() {
+        // A licence for another region cannot even be built: see config.rs and region.rs.
         assert_eq!(
-            check_start(Mode::Licensed, &b, Profile::AMATEUR, &f),
-            Err(Refusal::RegionRulesMissing)
+            Region::from_name("other"),
+            Err(crate::config::ConfigError::RegionNotReviewed)
         );
     }
 

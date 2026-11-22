@@ -8,10 +8,9 @@
 # The values below are obvious fakes. The loader rejects them, so licensed mode cannot start
 # from this file. The tools check the SHAPE of the ID only and cannot verify it.
 
-region = "us"                              # "us", or "other" (needs id_mask and id_interval_secs)
+region = "us"                              # only "us" is enabled; "other" is rejected
 licence_id = "REPLACE-WITH-YOUR-ID"
 operator_name = "REPLACE WITH YOUR NAME"
 
-# Only for region = "other": there are no built-in rules, so give your own.
-# id_mask = "LLDLL"            # L = letter, D = digit, anything else literal
-# id_interval_secs = 600       # longest gap between identifications your rules allow
+# There are no keys for your own ID mask or interval. Other regions stay blocked until a
+# country has been reviewed with citations (docs/LICENSING.md).

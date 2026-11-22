@@ -107,11 +107,10 @@ pub const US_BANDS: &[Band] = &[
     },
 ];
 
-/// Bands for a region. `Other` has no built-in table: nothing is listed, so nothing is allowed.
+/// Bands for a region. Add a table here when a country is reviewed with citations.
 pub fn bands(region: &Region) -> &'static [Band] {
     match region {
         Region::Us => US_BANDS,
-        Region::Other(_) => &[],
     }
 }
 
@@ -154,13 +153,6 @@ mod tests {
             assert!(b.source.contains("https://"), "{}", b.name);
             assert!(b.low_hz < b.high_hz);
         }
-    }
-
-    #[test]
-    fn other_region_has_no_bands() {
-        let r = Region::Other(crate::region::IdRule::Mask("LLDLL".into()));
-        assert!(bands(&r).is_empty());
-        assert!(find(&r, BandKind::Ism, 915_000_000, 915_000_000).is_none());
     }
 
     #[test]

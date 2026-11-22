@@ -25,3 +25,11 @@ catwan-backup-*.bin
 # private licence config (licensed mode). Never commit; use licence.example.toml as the template.
 licence.toml
 **/licence.toml
+
+# python bytecode and tool caches (two .pyc files were committed by mistake)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+*.egg-info/

@@ -20,7 +20,7 @@ pub mod region;
 pub use band::{Band, BandKind};
 pub use config::{ConfigError, LicenceConfig};
 pub use gate::{check_start, check_transmit, Auth, Encryption, Flags, Permit, Profile, Refusal};
-pub use region::{IdRule, Region};
+pub use region::Region;
 
 /// Operating mode. The default is [`Mode::Unlicensed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

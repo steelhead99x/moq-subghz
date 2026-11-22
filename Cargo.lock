@@ -668,6 +668,13 @@ name = "moq-subghz-licence"
 version = "0.1.0"
 
 [[package]]
+name = "moq-subghz-link"
+version = "0.0.1"
+dependencies = [
+ "moq-subghz-wire",
+]
+
+[[package]]
 name = "moq-subghz-lora2015"
 version = "0.1.0"
 dependencies = [

@@ -4,7 +4,7 @@
 //! lines. Tables, arrays, duplicate keys, unknown keys and any other syntax are errors. Error
 //! values never contain the ID or the name.
 
-use crate::region::{mask_is_sane, IdRule, Region};
+use crate::region::Region;
 use crate::REDACTED;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -31,10 +31,8 @@ pub enum ConfigError {
     BadRegion,
     BadIdShape,
     BadName,
-    BadMask,
-    BadInterval,
-    /// `region = "other"` needs `id_mask` and `id_interval_secs`.
-    OtherNeedsRule,
+    /// The region exists but its rules have not been reviewed, so licensed mode is blocked for it.
+    RegionNotReviewed,
     /// A value still holds the placeholder from licence.example.toml.
     Placeholder,
     /// No licence file was found at any of the search locations.
@@ -50,12 +48,10 @@ impl fmt::Display for ConfigError {
             Self::Syntax { line } => write!(f, "licence file line {line}: not `key = \"value\"`"),
             Self::DuplicateKey { line } => write!(f, "licence file line {line}: duplicate key"),
             Self::UnknownKey { line } => write!(f, "licence file line {line}: unknown key"),
-            Self::BadRegion => write!(f, "region must be \"us\" or \"other\""),
+            Self::BadRegion => write!(f, "region must be \"us\""),
             Self::BadIdShape => write!(f, "licence ID does not look like a valid ID for the region (the tools check the shape only and cannot verify it against any database)"),
             Self::BadName => write!(f, "operator name is empty, too long or has control characters"),
-            Self::BadMask => write!(f, "id_mask must be 3 to 16 characters of L, D, A-Z, 0-9 or -"),
-            Self::BadInterval => write!(f, "id_interval_secs must be 1 to 86400"),
-            Self::OtherNeedsRule => write!(f, "region \"other\" has no built-in rules: set id_mask and id_interval_secs yourself, otherwise licensed mode stays blocked"),
+            Self::RegionNotReviewed => write!(f, "region \"other\" is blocked: only \"us\" is enabled until a country has been reviewed with citations"),
             Self::Placeholder => write!(f, "licence file still holds the placeholder values from licence.example.toml"),
             Self::NotFound => write!(f, "no licence file found (--licence-file, MOQ_SUBGHZ_LICENCE, or $XDG_CONFIG_HOME/moq-subghz/licence.toml)"),
         }
@@ -70,7 +66,6 @@ pub struct LicenceConfig {
     region: Region,
     id: Option<String>,
     name: Option<String>,
-    interval: Option<u32>,
 }
 
 impl fmt::Debug for LicenceConfig {
@@ -78,13 +73,11 @@ impl fmt::Debug for LicenceConfig {
         let set = |o: &Option<String>| if o.is_some() { REDACTED } else { "<unset>" };
         let region = match self.region {
             Region::Us => "us",
-            Region::Other(_) => "other",
         };
         f.debug_struct("LicenceConfig")
             .field("region", &region)
             .field("licence_id", &set(&self.id))
             .field("operator_name", &set(&self.name))
-            .field("id_interval_secs", &self.interval)
             .finish()
     }
 }
@@ -96,7 +89,6 @@ impl LicenceConfig {
         region: Region,
         id: Option<&str>,
         name: Option<&str>,
-        interval: Option<u32>,
     ) -> Result<Self, ConfigError> {
         let id = id.map(str::trim).filter(|s| !s.is_empty());
         let id = match id {
@@ -116,23 +108,13 @@ impl LicenceConfig {
             }
             None => None,
         };
-        if let Some(s) = interval {
-            if !(1..=86_400).contains(&s) {
-                return Err(ConfigError::BadInterval);
-            }
-        }
-        Ok(Self {
-            region,
-            id,
-            name,
-            interval,
-        })
+        Ok(Self { region, id, name })
     }
 
     /// Parse the text of a licence file.
     pub fn parse_str(text: &str) -> Result<Self, ConfigError> {
         let mut seen: Vec<&'static str> = Vec::new();
-        let (mut region, mut id, mut name, mut mask, mut interval) = (None, None, None, None, None);
+        let (mut region, mut id, mut name) = (None, None, None);
         for (n, raw) in text.lines().enumerate() {
             let line = n + 1;
             let l = strip_comment(raw).trim();
@@ -144,8 +126,6 @@ impl LicenceConfig {
                 "region" => "region",
                 "licence_id" => "licence_id",
                 "operator_name" => "operator_name",
-                "id_mask" => "id_mask",
-                "id_interval_secs" => "id_interval_secs",
                 _ => return Err(ConfigError::UnknownKey { line }),
             };
             if seen.contains(&key) {
@@ -153,41 +133,18 @@ impl LicenceConfig {
             }
             seen.push(key);
             let val = val.trim();
-            if key == "id_interval_secs" {
-                let v: u32 = val.parse().map_err(|_| ConfigError::BadInterval)?;
-                interval = Some(v);
-                continue;
-            }
             let s = parse_string(val).ok_or(ConfigError::Syntax { line })?;
             match key {
                 "region" => region = Some(s),
                 "licence_id" => id = Some(s),
-                "operator_name" => name = Some(s),
-                _ => mask = Some(s),
+                _ => name = Some(s),
             }
         }
-        let region = match region.as_deref() {
-            Some("us") => Region::Us,
-            Some("other") => {
-                let rule = match mask.as_deref() {
-                    Some(m) if mask_is_sane(m) => IdRule::Mask(m.to_string()),
-                    Some(_) => return Err(ConfigError::BadMask),
-                    None => IdRule::Missing,
-                };
-                Region::Other(rule)
-            }
-            _ => return Err(ConfigError::BadRegion),
-        };
-        if mask.is_some() && matches!(region, Region::Us) {
-            return Err(ConfigError::UnknownKey { line: 0 });
-        }
-        if matches!(region, Region::Other(_)) && interval.is_none() {
-            return Err(ConfigError::OtherNeedsRule);
-        }
+        let region = Region::from_name(region.as_deref().unwrap_or(""))?;
         if id.as_deref().is_some_and(|s| is_placeholder(s.trim())) {
             return Err(ConfigError::Placeholder);
         }
-        Self::from_parts(region, id.as_deref(), name.as_deref(), interval)
+        Self::from_parts(region, id.as_deref(), name.as_deref())
     }
 
     /// Read and parse a file. Refuses files over 4 KiB and, on Unix, files that group or others
@@ -213,9 +170,9 @@ impl LicenceConfig {
         &self.region
     }
 
-    /// Seconds between identifications for this region, if known.
-    pub fn id_interval_secs(&self) -> Option<u32> {
-        self.region.id_interval_secs(self.interval)
+    /// Longest gap between identifications for this region, in seconds.
+    pub fn id_interval_secs(&self) -> u32 {
+        self.region.id_interval_secs()
     }
 
     pub fn has_id(&self) -> bool {
@@ -367,7 +324,7 @@ mod tests {
         let c = LicenceConfig::parse_str(GOOD).unwrap();
         assert_eq!(c.id(false), Some("K1AB"));
         assert_eq!(c.name(false), Some("Test Person"));
-        assert_eq!(c.id_interval_secs(), Some(600));
+        assert_eq!(c.id_interval_secs(), 600);
     }
 
     #[test]
@@ -393,9 +350,14 @@ mod tests {
             e("region = \"us\"\nlicence_id = \"K1AB\"\noperator_name = \"a\\nb\"\n"),
             ConfigError::Syntax { line: 3 }
         );
+        // The user-supplied mask and interval keys are gone.
         assert_eq!(
-            e("region = \"us\"\nid_interval_secs = 0\n"),
-            ConfigError::BadInterval
+            e("region = \"us\"\nid_mask = \"LLDLL\"\n"),
+            ConfigError::UnknownKey { line: 2 }
+        );
+        assert_eq!(
+            e("region = \"us\"\nid_interval_secs = 900\n"),
+            ConfigError::UnknownKey { line: 2 }
         );
     }
 
@@ -415,26 +377,17 @@ mod tests {
     }
 
     #[test]
-    fn other_region_needs_explicit_rule() {
+    fn other_region_is_blocked_whatever_the_file_says() {
         let t = "region = \"other\"\nlicence_id = \"AB1CD\"\noperator_name = \"T P\"\n";
         assert_eq!(
             LicenceConfig::parse_str(t).unwrap_err(),
-            ConfigError::OtherNeedsRule
+            ConfigError::RegionNotReviewed
         );
-        let t2 = format!("{t}id_mask = \"LLDLL\"\n");
+        // Supplying your own rule does not unblock it: those keys no longer exist.
+        let t2 = format!("{t}id_mask = \"LLDLL\"\nid_interval_secs = 900\n");
         assert_eq!(
             LicenceConfig::parse_str(&t2).unwrap_err(),
-            ConfigError::OtherNeedsRule
-        );
-        let t3 = format!("{t2}id_interval_secs = 900\n");
-        let c = LicenceConfig::parse_str(&t3).unwrap();
-        assert_eq!(c.id_interval_secs(), Some(900));
-        assert_eq!(
-            LicenceConfig::parse_str(
-                "region = \"other\"\nid_mask = \"xx\"\nid_interval_secs = 9\n"
-            )
-            .unwrap_err(),
-            ConfigError::BadMask
+            ConfigError::UnknownKey { line: 4 }
         );
     }
 

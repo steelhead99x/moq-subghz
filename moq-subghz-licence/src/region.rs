@@ -3,38 +3,36 @@
 use crate::config::ConfigError;
 
 /// Region whose rules apply to the licence.
+///
+/// Only the United States is enabled. A country is added here only after its rules have been
+/// reviewed with citations: an ID shape check, the identification interval, and a band table
+/// in `band.rs`. Until then a licence file naming any other region is rejected
+/// ([`ConfigError::RegionNotReviewed`]) and licensed mode stays blocked for it. There is
+/// deliberately no way to supply your own mask or interval.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Region {
     /// United States (FCC amateur service, 47 CFR Part 97).
     Us,
-    /// Any other region. Has no built-in rules: the user must supply an ID mask and an
-    /// identification interval in the licence file, otherwise licensed mode stays blocked.
-    Other(IdRule),
-}
-
-/// How an ID is checked and how often it must be sent on air.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IdRule {
-    /// Built-in US callsign shapes.
-    UsCallsign,
-    /// User-supplied mask. `L` is a letter A-Z, `D` is a digit, anything else must match
-    /// literally. Example: `LLDLL`.
-    Mask(String),
-    /// `region = "other"` without a mask: licensed mode is blocked.
-    Missing,
 }
 
 impl Region {
-    /// Maximum seconds between identifications while transmitting. `None` means unknown, and
-    /// transmitting in licensed mode is refused.
+    /// Region from the `region` key of the licence file. `"other"` is recognised but blocked.
+    pub fn from_name(name: &str) -> Result<Self, ConfigError> {
+        match name {
+            "us" => Ok(Region::Us),
+            "other" => Err(ConfigError::RegionNotReviewed),
+            _ => Err(ConfigError::BadRegion),
+        }
+    }
+
+    /// Maximum seconds between identifications while transmitting.
     ///
     /// US: 47 CFR 97.119(a), identify "at the end of each communication, and at least every
     /// 10 minutes during a communication".
     /// <https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-B/section-97.119>
-    pub fn id_interval_secs(&self, user_interval: Option<u32>) -> Option<u32> {
+    pub fn id_interval_secs(&self) -> u32 {
         match self {
-            Region::Us => Some(600),
-            Region::Other(_) => user_interval.filter(|s| *s > 0),
+            Region::Us => 600,
         }
     }
 
@@ -44,9 +42,6 @@ impl Region {
         let id = raw.trim().to_ascii_uppercase();
         let ok = match self {
             Region::Us => us_callsign_plausible(&id),
-            Region::Other(IdRule::Mask(m)) => mask_matches(m, &id),
-            Region::Other(IdRule::UsCallsign) => us_callsign_plausible(&id),
-            Region::Other(IdRule::Missing) => return Err(ConfigError::OtherNeedsRule),
         };
         if ok {
             Ok(id)
@@ -88,26 +83,6 @@ pub fn us_callsign_plausible(id: &str) -> bool {
     }
 }
 
-/// `L` letter, `D` digit, any other mask character matches itself. Lengths must be equal.
-pub fn mask_matches(mask: &str, id: &str) -> bool {
-    let (m, i) = (mask.as_bytes(), id.as_bytes());
-    m.len() == i.len()
-        && m.iter().zip(i).all(|(m, c)| match m {
-            b'L' => c.is_ascii_uppercase(),
-            b'D' => c.is_ascii_digit(),
-            lit => lit == c,
-        })
-}
-
-/// A mask is usable when it is 3..=16 chars of `L`, `D`, digits, uppercase letters, `-`.
-pub fn mask_is_sane(mask: &str) -> bool {
-    (3..=16).contains(&mask.len())
-        && mask
-            .bytes()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'-')
-        && mask.bytes().any(|c| c == b'L' || c == b'D')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,30 +114,17 @@ mod tests {
     }
 
     #[test]
-    fn other_needs_mask() {
-        let r = Region::Other(IdRule::Missing);
-        assert_eq!(r.check_id("AB1CD"), Err(ConfigError::OtherNeedsRule));
-        let r = Region::Other(IdRule::Mask("LLDLL".into()));
-        assert!(r.check_id("ab1cd").is_ok());
-        assert_eq!(r.check_id("AB1C"), Err(ConfigError::BadIdShape));
-        assert_eq!(r.check_id("ABDCD"), Err(ConfigError::BadIdShape));
+    fn other_region_is_blocked() {
+        assert_eq!(Region::from_name("us"), Ok(Region::Us));
+        assert_eq!(
+            Region::from_name("other"),
+            Err(ConfigError::RegionNotReviewed)
+        );
+        assert_eq!(Region::from_name("eu"), Err(ConfigError::BadRegion));
     }
 
     #[test]
-    fn intervals() {
-        assert_eq!(Region::Us.id_interval_secs(None), Some(600));
-        assert_eq!(Region::Us.id_interval_secs(Some(5)), Some(600));
-        let o = Region::Other(IdRule::Missing);
-        assert_eq!(o.id_interval_secs(None), None);
-        assert_eq!(o.id_interval_secs(Some(0)), None);
-        assert_eq!(o.id_interval_secs(Some(300)), Some(300));
-    }
-
-    #[test]
-    fn mask_sanity() {
-        assert!(mask_is_sane("LLDLL"));
-        assert!(!mask_is_sane("LL"));
-        assert!(!mask_is_sane("lldll"));
-        assert!(!mask_is_sane("..."));
+    fn us_interval_is_fixed() {
+        assert_eq!(Region::Us.id_interval_secs(), 600);
     }
 }

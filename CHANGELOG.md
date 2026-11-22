@@ -5,6 +5,12 @@
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### Docs
+
+* README rewritten around a per-link and per-hardware status table (Measured, Modeled, Planned, Not started).
+  New pages: `docs/LINKS.md`, `docs/HARDWARE.md`, `docs/BENCHMARKS.md`, `docs/REGULATORY.md` and
+  `docs/AMATEUR.md` (a planned, receive-only amateur radio and satellite bridge). Documentation only.
+
 ### Renamed
 
 * **The project is now moq-subghz** (it was moq-lora), and the repository moved to
@@ -16,7 +22,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Added
 
-* **`moq-subghz-licence` crate: licensed vs unlicensed mode.** Licence file loader, US region rules (ID shape, 47 CFR 97.119 interval), band table, identification frames and the `check_transmit` gate, with a CI guard against committing a licence ID or name. Not wired into send/recv yet; amateur transmit stays disabled. See `docs/LICENSING.md`.
+* **`moq-subghz-licence` crate: licensed vs unlicensed mode.** Licence file loader, US region rules (ID shape, 47 CFR 97.119 interval), band table, identification frames and the `check_transmit` gate, with a CI guard against committing a licence ID or name. Not wired into send/recv yet; amateur transmit stays disabled. See `docs/LICENSING.md`. Rules: receive-only on an amateur band in unlicensed mode needs an explicit `--rx-amateur` (transmit stays blocked); station ID frames go out only on amateur profiles in licensed mode, never on ISM profiles; the scheduler sends an ID at start, a fixed 60 s before the region's limit (every 540 s for the US 600 s rule) and at the end, and refuses intervals of 60 s or less; region `other` is blocked and the user-supplied mask and interval keys are removed, so only the US is enabled.
 
 ### Fixed
 
@@ -50,6 +56,10 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Added
 
+* `moq-subghz-wire/tests/golden_v5.rs`: SHA-256 of the exact frame stream (k = 0, 4, 8, sealed and
+  unsealed) for a fixed set of synthetic objects. It fails if a byte on the air changes.
+* `RLine` (a parsed `R` line) keeps the line's `t_us` and `snr`, which `parse_r_line` used to drop.
+
 * `results/stick-0.5.1/`: the full over-the-air benchmark on `catwan-fw` 0.5.1. 72 still-picture runs
   (chunked JPEG, SSDV, LoRaWAN-framed at SF7/125, SF7/250, SF7/500, SF8/500) and 8 live FSK video runs,
   next to the factory baseline, plus a 6 minute demo (`scripts/demo-051.sh`). `scripts/run2.sh` now works
@@ -65,6 +75,9 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   CatWAN stick and writes CSV. Built and tested without radios; the airtime table is calculated,
   not measured. The FSK path and the existing tools are unchanged.
   `moq-subghz-pi` gains `open_hat_raw`, the part of `open_hat` that opens spidev and GPIO.
+
+* `moq-subghz-link`: the `Link` trait (`caps`, `send` returning a `TxReport`, `recv(buf, timeout)`, `idle`)
+  and an in-memory `loopback::pair` with deterministic drops. No binary uses it yet; nothing on the air changes.
 
 ### Changed on the air
 
@@ -103,6 +116,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * Key files must be readable only by their owner.
 * The bench scripts quote key paths and pass the receiver's key separately.
 * The Pi radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
+* Two committed `.pyc` files are removed, `.gitignore` covers Python bytecode, and CI fails if one is committed again.
 
 ### Results
 

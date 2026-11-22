@@ -2,7 +2,7 @@
 //!
 //! Only the licence ID goes on air (the operator name stays off air). Frames are built only
 //! from a [`Permit`] that says `station_id`, which [`crate::check_transmit`] grants only in
-//! licensed mode with transmit explicitly allowed. Plain text, never sealed.
+//! licensed mode on an amateur profile with transmit explicitly allowed (never on ISM profiles). Plain text, never sealed.
 
 use crate::config::LicenceConfig;
 use crate::gate::Permit;
@@ -36,9 +36,33 @@ pub fn parse_id_frame(b: &[u8]) -> Option<&str> {
     std::str::from_utf8(&b[6..]).ok().filter(|s| s.is_ascii())
 }
 
+/// How long before the region's limit the next ID goes out, in seconds. For a 600 s rule that
+/// is every 540 s.
+pub const ID_LEAD_SECS: u32 = 60;
+
+/// Why no scheduler could be built from a permit that calls for station IDs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScheduleError {
+    /// The interval is not longer than [`ID_LEAD_SECS`], so a fixed lead would mean sending IDs
+    /// back to back (or never in time). The caller must not transmit.
+    IntervalTooShort,
+}
+
+impl std::fmt::Display for ScheduleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the identification interval is too short to schedule with a {ID_LEAD_SECS} s lead"
+        )
+    }
+}
+
+impl std::error::Error for ScheduleError {}
+
 /// Decides when to send the next identification. Time is a monotonic offset the caller
-/// supplies, so tests do not sleep. IDs go out first, then every 90 percent of the region's
-/// interval (a margin under the rule), and once more at the end of a communication.
+/// supplies, so tests do not sleep. An ID goes out at the start, then a fixed
+/// [`ID_LEAD_SECS`] (60 s) before the region's limit is reached (every 540 s for a 600 s rule),
+/// and once more at the end of a communication.
 #[derive(Clone, Debug)]
 pub struct IdScheduler {
     period: Duration,
@@ -47,17 +71,24 @@ pub struct IdScheduler {
 }
 
 impl IdScheduler {
-    /// `None` if the permit does not call for station IDs or the interval is unknown.
-    pub fn new(permit: &Permit) -> Option<Self> {
+    /// `Ok(None)` if the permit does not call for station IDs (not licensed, not an amateur
+    /// profile, or not transmitting). `Err` if it does but the interval is not longer than
+    /// 60 s: treat that as "do not transmit".
+    pub fn new(permit: &Permit) -> Result<Option<Self>, ScheduleError> {
         if !(permit.may_transmit && permit.station_id) {
-            return None;
+            return Ok(None);
         }
-        let secs = permit.id_interval_secs?;
-        Some(Self {
-            period: Duration::from_millis(u64::from(secs) * 900),
+        let secs = permit
+            .id_interval_secs
+            .ok_or(ScheduleError::IntervalTooShort)?;
+        if secs <= ID_LEAD_SECS {
+            return Err(ScheduleError::IntervalTooShort);
+        }
+        Ok(Some(Self {
+            period: Duration::from_secs(u64::from(secs - ID_LEAD_SECS)),
             last: None,
             sent_since_id: false,
-        })
+        }))
     }
 
     /// True when an ID must be sent before (or instead of) the next data frame.
@@ -94,8 +125,7 @@ mod tests {
     use crate::Mode;
 
     fn setup() -> (LicenceConfig, Permit) {
-        let c =
-            LicenceConfig::from_parts(Region::Us, Some("K1AB"), Some("Test Person"), None).unwrap();
+        let c = LicenceConfig::from_parts(Region::Us, Some("K1AB"), Some("Test Person")).unwrap();
         let band = US_BANDS.iter().find(|b| b.name.contains("70 cm")).unwrap();
         let f = Flags {
             transmit: true,
@@ -124,25 +154,54 @@ mod tests {
             ..Flags::default()
         };
         let p = check_start(Mode::Licensed, band, Profile::AMATEUR, &rx).unwrap();
-        assert!(id_frame(&p, &c).is_none() && IdScheduler::new(&p).is_none());
+        assert!(id_frame(&p, &c).is_none() && IdScheduler::new(&p).unwrap().is_none());
         let f = Flags {
             transmit: true,
             ..Flags::default()
         };
         let p = check_transmit(Mode::Unlicensed, &US_BANDS[0], Profile::ISM, &f).unwrap();
-        assert!(id_frame(&p, &c).is_none() && IdScheduler::new(&p).is_none());
+        assert!(id_frame(&p, &c).is_none() && IdScheduler::new(&p).unwrap().is_none());
+    }
+
+    #[test]
+    fn no_frame_on_ism_profile_even_when_licensed() {
+        let (c, _) = setup();
+        let f = Flags {
+            transmit: true,
+            licence: Some(&c),
+            ..Flags::default()
+        };
+        let p = check_transmit(Mode::Licensed, &US_BANDS[0], Profile::ISM, &f).unwrap();
+        assert!(id_frame(&p, &c).is_none() && IdScheduler::new(&p).unwrap().is_none());
+    }
+
+    #[test]
+    fn short_intervals_are_refused() {
+        let (_, mut p) = setup();
+        for secs in [None, Some(0), Some(30), Some(60)] {
+            p.id_interval_secs = secs;
+            assert_eq!(
+                IdScheduler::new(&p).unwrap_err(),
+                ScheduleError::IntervalTooShort
+            );
+        }
+        p.id_interval_secs = Some(61);
+        let mut s = IdScheduler::new(&p).unwrap().unwrap();
+        s.mark_sent(Duration::from_secs(0));
+        assert!(!s.due(Duration::ZERO) && s.due(Duration::from_secs(1)));
     }
 
     #[test]
     fn schedule_us_ten_minutes() {
         let (_, p) = setup();
-        let mut s = IdScheduler::new(&p).unwrap();
+        let mut s = IdScheduler::new(&p).unwrap().unwrap();
         let t = Duration::from_secs;
         assert!(s.due(t(0)));
         s.mark_sent(t(0));
         assert!(!s.final_id_needed());
         assert!(!s.due(t(539)));
         assert!(s.due(t(540)));
+        assert_eq!(ID_LEAD_SECS, 60);
         assert!(s.due(t(600)));
         s.note_data_sent();
         assert!(s.final_id_needed());

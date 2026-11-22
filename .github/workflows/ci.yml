@@ -18,6 +18,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.90.0
         with:
           components: rustfmt, clippy
+      - name: no committed Python bytecode
+        run: |
+          if git ls-files | grep -E '(^|/)__pycache__/|\.py[co]$'; then
+            echo "committed Python bytecode; remove it (.gitignore covers it)" >&2
+            exit 1
+          fi
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
