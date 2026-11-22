@@ -776,6 +776,7 @@ dependencies = [
  "csv",
  "flate2",
  "libc",
+ "moq-subghz-licence",
  "serde",
  "serde_json",
  "sha2",
@@ -838,6 +839,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "libc",
+ "moq-subghz-licence",
  "moq-subghz-link",
  "moq-subghz-pi",
  "moq-subghz-wire",

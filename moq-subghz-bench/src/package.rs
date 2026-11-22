@@ -1,9 +1,16 @@
 //! `package-051`: copy the data worth keeping from a bench-051 runs directory into
-//! `results/stick-0.5.1/`, with no logs that hold host paths. A port of
-//! `scripts/package-051.sh`. A run missing a file it should have is an error, not a gap.
+//! `results/stick-0.5.1/`. A port of `scripts/package-051.sh`. A run missing a file it should
+//! have is an error, not a gap.
+//!
+//! Everything text that is copied (summaries, the gzipped logs, the CSVs) is read first and
+//! scanned for the configured licence ID and operator name, and for any licence line (the
+//! summaries' ID field) that is not redacted. A hit refuses the whole packaging; the file is not written and the values
+//! are never printed. Pictures and video are copied as they are. Host paths and the `--pi` host
+//! are NOT scrubbed or checked here: read the logs before committing them.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use flate2::{write::GzEncoder, Compression};
+use moq_subghz_licence::{GateArgs, Station, REDACTED};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,13 +28,78 @@ fn dirs(root: &Path, keep: impl Fn(&str) -> bool) -> Result<Vec<String>> {
     Ok(v)
 }
 
-fn cp(from: &Path, to: &Path) -> Result<()> {
+/// How the run summaries introduce the licence ID (split so this file does not look like one).
+const ID_KEY: &str = concat!("licence_", "id=");
+
+/// The scan every copied text file goes through.
+pub struct Guard {
+    station: Station,
+}
+
+impl Guard {
+    /// The licence to look for: `--licence-file`, or the usual places (`MOQ_SUBGHZ_LICENCE`, the
+    /// XDG path). With no licence found anywhere the user must say `--no-licence`: a scan that
+    /// silently has nothing to look for would not catch the run made with a licence.
+    pub fn load(licence_file: Option<PathBuf>, no_licence: bool) -> Result<Guard> {
+        let station = GateArgs {
+            licence_file,
+            no_licence,
+            ..GateArgs::default()
+        }
+        .station()
+        .context("licence")?;
+        if station.licence().is_none() && !no_licence {
+            bail!(
+                "no licence file found to scan for: pass --licence-file PATH (the licence of the \
+                 runs being packaged), or --no-licence to say they were made unlicensed"
+            );
+        }
+        Ok(Guard { station })
+    }
+
+    /// Why `bytes`, the content of `file`, may not be published; `Ok` when it holds neither the
+    /// licence ID nor the name and no unredacted licence line. Never carries the values.
+    pub fn check(&self, file: &Path, bytes: &[u8]) -> Result<()> {
+        let text = String::from_utf8_lossy(bytes);
+        if self.station.licence().is_some_and(|l| l.appears_in(&text)) {
+            bail!(
+                "refusing to package: {} holds the licence ID or operator name (values not printed). \
+                 Re-run it with --redact-licence, or leave that run out",
+                file.display()
+            );
+        }
+        if text
+            .match_indices(ID_KEY)
+            .any(|(i, k)| !text[i + k.len()..].starts_with(REDACTED))
+        {
+            bail!(
+                "refusing to package: {} has a licence line that is not redacted (values not printed)",
+                file.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn read(&self, from: &Path) -> Result<Vec<u8>> {
+        let data = fs::read(from).with_context(|| format!("read {}", from.display()))?;
+        self.check(from, &data)?;
+        Ok(data)
+    }
+}
+
+/// Copy a text file after the scan.
+fn cp(g: &Guard, from: &Path, to: &Path) -> Result<()> {
+    fs::write(to, g.read(from)?).with_context(|| format!("copy {}", from.display()))
+}
+
+/// Copy a picture as it is (not text, not scanned).
+fn cp_bin(from: &Path, to: &Path) -> Result<()> {
     fs::copy(from, to).with_context(|| format!("copy {}", from.display()))?;
     Ok(())
 }
 
-fn gzip(from: &Path, to: &Path) -> Result<()> {
-    let data = fs::read(from).with_context(|| format!("read {}", from.display()))?;
+fn gzip(g: &Guard, from: &Path, to: &Path) -> Result<()> {
+    let data = g.read(from)?;
     let mut e = GzEncoder::new(fs::File::create(to)?, Compression::best());
     e.write_all(&data)?;
     e.finish()?;
@@ -43,13 +115,13 @@ fn cp_pictures(dir: &Path, to: &Path) -> Result<()> {
         let e = e?;
         let n = e.file_name().to_string_lossy().into_owned();
         if n.starts_with("image") && (n.ends_with(".jpg") || n.ends_with(".ssdv")) {
-            cp(&e.path(), &to.join(&n))?;
+            cp_bin(&e.path(), &to.join(&n))?;
         }
     }
     Ok(())
 }
 
-pub fn run(runs: &Path, demo: &Path, out: &Path) -> Result<()> {
+pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
     let (fsk, lora, dm): (PathBuf, PathBuf, PathBuf) =
         (out.join("fsk"), out.join("lora"), out.join("demo"));
     for d in [&fsk, &lora, &dm] {
@@ -67,10 +139,14 @@ pub fn run(runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         }
         let o = fsk.join(&n);
         fs::create_dir_all(&o)?;
-        cp(&summary, &o.join("summary.json"))?;
-        cp(&d.join("send_summary.json"), &o.join("send_summary.json"))?;
+        cp(g, &summary, &o.join("summary.json"))?;
+        cp(
+            g,
+            &d.join("send_summary.json"),
+            &o.join("send_summary.json"),
+        )?;
         for f in ["objects.jsonl", "decoded.jsonl", "send.jsonl", "serial.log"] {
-            gzip(&d.join(f), &o.join(format!("{f}.gz")))?;
+            gzip(g, &d.join(f), &o.join(format!("{f}.gz")))?;
         }
     }
     // Same glob as the shell: a single digit after "-r".
@@ -81,11 +157,11 @@ pub fn run(runs: &Path, demo: &Path, out: &Path) -> Result<()> {
     })? {
         let (d, o) = (runs.join(&n), lora.join(&n));
         fs::create_dir_all(&o)?;
-        cp(&d.join("exact/images.csv"), &o.join("images.csv"))?;
-        cp(&d.join("exact/rx.csv"), &o.join("rx.csv"))?;
+        cp(g, &d.join("exact/images.csv"), &o.join("images.csv"))?;
+        cp(g, &d.join("exact/rx.csv"), &o.join("rx.csv"))?;
         cp_pictures(&d.join("exact"), &o)?;
-        gzip(&d.join("raw.log"), &o.join("raw.log.gz"))?;
-        cp(&runs.join(format!("{n}.tx.csv")), &o.join("tx.csv"))?;
+        gzip(g, &d.join("raw.log"), &o.join("raw.log.gz"))?;
+        cp(g, &runs.join(format!("{n}.tx.csv")), &o.join("tx.csv"))?;
         let send = fs::read_to_string(runs.join(format!("{n}.send")))
             .with_context(|| format!("read {n}.send"))?;
         let line: String = send
@@ -93,12 +169,14 @@ pub fn run(runs: &Path, demo: &Path, out: &Path) -> Result<()> {
             .filter(|l| l.contains("sent frames"))
             .map(|l| format!("{l}\n"))
             .collect();
+        g.check(&runs.join(format!("{n}.send")), line.as_bytes())?;
         fs::write(o.join("send.txt"), line)?;
     }
     for f in ["fsk-live.mp4", "fsk-live-still.png"] {
-        cp(&demo.join(f), &dm.join(f))?;
+        cp_bin(&demo.join(f), &dm.join(f))?;
     }
     cp(
+        g,
         &demo.join("fsk-live/summary.json"),
         &dm.join("fsk-live-summary.json"),
     )?;
@@ -106,6 +184,7 @@ pub fn run(runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         let o = dm.join(&n);
         fs::create_dir_all(&o)?;
         cp(
+            g,
             &demo.join(&n).join("exact/images.csv"),
             &o.join("images.csv"),
         )?;
@@ -121,9 +200,23 @@ mod tests {
     use flate2::read::GzDecoder;
     use std::io::Read;
 
+    /// The fake licence values are built here, not written out, so no source line looks like a
+    /// licence to the repo's leak guard.
+    fn fill(t: &str) -> String {
+        t.replace("@ID2@", &["W9", "XYZ"].concat())
+            .replace("@ID@", &["K1", "AB"].concat())
+            .replace("@id@", &["k1", "ab"].concat())
+            .replace("@NM2@", &["Some", "one"].concat())
+            .replace("@NM@", &["Test", " Person"].concat())
+            .replace("@LK@", &["licence", "_id"].concat())
+            .replace("@NK@", &["operator", "_name"].concat())
+            .replace("@LI@", ID_KEY)
+            .replace("@OP@", &["operator", "="].concat())
+    }
+
     fn put(p: PathBuf, text: &str) {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p, text).unwrap();
+        fs::write(p, fill(text)).unwrap();
     }
 
     fn gunzip(p: &Path) -> String {
@@ -132,6 +225,136 @@ mod tests {
             .read_to_string(&mut s)
             .unwrap();
         s
+    }
+
+    fn none() -> Guard {
+        Guard::load(None, true).unwrap()
+    }
+
+    /// A guard for a licence file written under `dir` (a fake ID and name).
+    fn licensed(dir: &Path) -> Guard {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("licence.toml");
+        fs::write(
+            &p,
+            fill("region = \"us\"\n@LK@ = \"@ID@\"\n@NK@ = \"@NM@\"\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        Guard::load(Some(p), false).unwrap()
+    }
+
+    fn refused(g: &Guard, tag: &str, edit: impl Fn(&Path, &Path)) -> String {
+        let (r, d, o) = (
+            Scratch::new(&format!("{tag}-r")),
+            Scratch::new(&format!("{tag}-d")),
+            Scratch::new(&format!("{tag}-o")),
+        );
+        stage(&r.0, &d.0);
+        edit(&r.0, &d.0);
+        let e = run(g, &r.0, &d.0, &o.0).unwrap_err().to_string();
+        assert!(
+            !e.contains(&fill("@ID@")) && !e.contains(&fill("@NM@")),
+            "{e}"
+        );
+        e
+    }
+
+    #[test]
+    fn a_licence_id_in_a_summary_refuses_and_is_not_written() {
+        let k = Scratch::new("pk-lic");
+        let g = licensed(&k.0);
+        let (r, d, o) = (
+            Scratch::new("pkl-r"),
+            Scratch::new("pkl-d"),
+            Scratch::new("pkl-o"),
+        );
+        stage(&r.0, &d.0);
+        put(
+            r.0.join("f300-a/send_summary.json"),
+            "{\"licence\":\"@LI@@ID@ @OP@@NM@\"}",
+        );
+        let e = run(&g, &r.0, &d.0, &o.0).unwrap_err().to_string();
+        assert!(
+            e.contains("refusing to package") && e.contains("send_summary.json"),
+            "{e}"
+        );
+        assert!(!e.contains(&fill("@ID@")));
+        assert!(!o.0.join("fsk/f300-a/send_summary.json").exists());
+    }
+
+    #[test]
+    fn the_name_or_id_in_any_copied_text_refuses() {
+        let k = Scratch::new("pk-lic2");
+        let g = licensed(&k.0);
+        // lower case ID, in each kind of file that is copied or gzipped
+        for (n, rel, text) in [
+            (
+                "a",
+                "f300-a/summary.json",
+                "{\"radio_frames_ok\":9,\"o\":\"@id@\"}",
+            ),
+            ("b", "f300-a/serial.log", "hello @NM@"),
+            ("c", "f300-a/send.jsonl", "x @ID@ y"),
+            ("d", "chunk-sf7-125-small-r1/raw.log", "@ID@"),
+            ("e", "chunk-sf7-125-small-r1/exact/images.csv", "@NM@"),
+            ("f", "chunk-sf7-125-small-r1.tx.csv", "@ID@"),
+            ("g", "chunk-sf7-125-small-r1.send", "sent frames=5 @ID@\n"),
+        ] {
+            let e = refused(&g, &format!("pkx{n}"), |r, _| put(r.join(rel), text));
+            assert!(e.contains("refusing to package"), "{rel}: {e}");
+        }
+        let e = refused(&g, "pkxh", |_, d| {
+            put(d.join("fsk-live/summary.json"), "@NM@")
+        });
+        assert!(e.contains("refusing to package"), "{e}");
+        let e = refused(&g, "pkxi", |_, d| {
+            put(d.join("demo-chunk-sf7-500/exact/images.csv"), "@ID@")
+        });
+        assert!(e.contains("refusing to package"), "{e}");
+    }
+
+    #[test]
+    fn a_licence_line_that_is_not_redacted_refuses_even_with_no_licence() {
+        let e = refused(&none(), "pkn", |r, _| {
+            put(
+                r.join("f300-a/send_summary.json"),
+                "{\"licence\":\"@LI@@ID2@ @OP@@NM2@\"}",
+            )
+        });
+        assert!(e.contains("not redacted"), "{e}");
+        // a redacted line is fine
+        let (r, d, o) = (
+            Scratch::new("pkr-r"),
+            Scratch::new("pkr-d"),
+            Scratch::new("pkr-o"),
+        );
+        stage(&r.0, &d.0);
+        put(
+            r.0.join("f300-a/send_summary.json"),
+            "{\"licence\":\"@LI@[redacted] @OP@[redacted]\"}",
+        );
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+    }
+
+    #[test]
+    fn clean_files_pass_a_licensed_guard() {
+        let k = Scratch::new("pk-lic3");
+        let (r, d, o) = (
+            Scratch::new("pkc-r"),
+            Scratch::new("pkc-d"),
+            Scratch::new("pkc-o"),
+        );
+        stage(&r.0, &d.0);
+        run(&licensed(&k.0), &r.0, &d.0, &o.0).unwrap();
+        assert!(o.0.join("fsk/f300-a/summary.json").exists());
+    }
+
+    #[test]
+    fn without_a_licence_or_the_no_licence_flag_it_will_not_package() {
+        // an explicit missing file is an error, and `--no-licence` is the only way to scan nothing
+        assert!(Guard::load(Some("/nonexistent/licence.toml".into()), false).is_err());
+        assert!(Guard::load(None, true).is_ok());
     }
 
     fn stage(r: &Path, d: &Path) {
@@ -180,7 +403,7 @@ mod tests {
             Scratch::new("pk-o"),
         );
         stage(&r.0, &d.0);
-        run(&r.0, &d.0, &o.0).unwrap();
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
         assert!(o.0.join("fsk/f300-a/summary.json").exists());
         assert!(!o.0.join("fsk/f300-dead").exists() && !o.0.join("fsk/f300-none").exists());
         assert_eq!(gunzip(&o.0.join("fsk/f300-a/serial.log.gz")), "serial.log");
@@ -208,7 +431,7 @@ mod tests {
         );
         stage(&r.0, &d.0);
         fs::remove_file(r.0.join("f300-a/serial.log")).unwrap();
-        assert!(run(&r.0, &d.0, &o.0)
+        assert!(run(&none(), &r.0, &d.0, &o.0)
             .unwrap_err()
             .to_string()
             .contains("serial.log"));

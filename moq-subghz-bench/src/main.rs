@@ -5,6 +5,7 @@ mod cell;
 mod demo;
 mod exec;
 mod factory;
+mod licence;
 mod lora2015;
 mod matrix;
 mod orch;
@@ -52,9 +53,18 @@ enum Cmd {
         /// Required: the antenna is on the HAT
         #[arg(long)]
         i_have_an_antenna: bool,
+        /// The carrier the stock app is built for, in MHz. No default: the app cannot be queried,
+        /// so you declare it and the licence gate checks it (the stock build's 868.1 is refused)
+        #[arg(long)]
+        freq_mhz: f64,
+        /// The power the stock app is built for, in dBm (the project allows 2 to 5)
+        #[arg(long)]
+        power_dbm: i8,
         /// How long each send may run before it is cut off, in milliseconds
         #[arg(long, default_value_t = 1300)]
         timeout_ms: u64,
+        #[command(flatten)]
+        gate: moq_subghz_licence::GateArgs,
     },
     /// One Pi-to-laptop run: receiver here, sender on the Pi (scripts/run2.sh)
     Run(RunArgs),
@@ -127,6 +137,14 @@ enum Cmd {
         runs: PathBuf,
         demo: PathBuf,
         out: PathBuf,
+        /// Licence file whose ID and name must not appear in what is copied (default: the
+        /// MOQ_SUBGHZ_LICENCE or XDG location)
+        #[arg(long, value_name = "PATH", conflicts_with = "no_licence")]
+        licence_file: Option<PathBuf>,
+        /// The runs were made unlicensed: nothing configured to scan for (unredacted
+        /// licence lines in the summaries are still refused)
+        #[arg(long)]
+        no_licence: bool,
     },
     /// Print the calculated airtime table of results/lora-2015/README.md (scripts/lora2015-table.sh)
     Lora2015Table {
@@ -202,6 +220,7 @@ fn host(dry: bool) -> Box<dyn exec::Host> {
 
 fn one_run(a: RunArgs, fwd: bool) -> Result<()> {
     let (c, mut h) = (a.env.cfg()?, host(a.env.dry_run));
+    c.announce();
     let r = orch::Run {
         name: &a.name,
         profile: &a.profile,
@@ -237,6 +256,7 @@ fn real_main() -> Result<()> {
             no_play,
         } => {
             let (c, k) = (env.cfg()?, keys.get("moq-subghz-key.hex"));
+            c.announce();
             let mut h = host(env.dry_run);
             let steps = matrix::bench_plan(secs, &k.lkey, &k.pkey);
             matrix::with_clock_log(&c, env.dry_run, || {
@@ -252,6 +272,7 @@ fn real_main() -> Result<()> {
             no_play,
         } => {
             let (c, k) = (env.cfg()?, keys.get("../moq-subghz-key.hex"));
+            c.announce();
             let mut h = host(env.dry_run);
             let steps = matrix::plan_051(part, reps, fsk_secs, &k.pkey);
             if !env.dry_run {
@@ -284,6 +305,7 @@ fn real_main() -> Result<()> {
             args,
         } => {
             let (c, mut h) = (env.cfg()?, host(env.dry_run));
+            c.announce();
             orch::lora(
                 &mut *h,
                 &c,
@@ -299,11 +321,21 @@ fn real_main() -> Result<()> {
         }
         Cmd::Demo051 { env, out, play } => {
             let (c, mut h) = (env.cfg()?, host(env.dry_run));
+            c.announce();
             let out = out.unwrap_or_else(|| c.runs.join("demo"));
             demo::run(&mut *h, &c, &out, play)
         }
         Cmd::Clocklog { env } => matrix::clocklog_until_file(&env.cfg()?),
-        Cmd::Package051 { runs, demo, out } => package::run(&runs, &demo, &out),
+        Cmd::Package051 {
+            runs,
+            demo,
+            out,
+            licence_file,
+            no_licence,
+        } => {
+            let g = package::Guard::load(licence_file, no_licence)?;
+            package::run(&g, &runs, &demo, &out)
+        }
         Cmd::Lora2015Table { bin, repo_root } => {
             let bin = match bin {
                 Some(b) => b,
@@ -341,13 +373,30 @@ fn real_main() -> Result<()> {
             chunks,
             app_dir,
             i_have_an_antenna,
+            freq_mhz,
+            power_dbm,
             timeout_ms,
+            gate,
         } => {
+            // The gate first: before the chunk file is read or the stock app started.
+            let station = gate.station().context("licence")?;
+            let permit = factory::gate(
+                &station,
+                factory::Declared {
+                    freq_mhz,
+                    power_dbm,
+                },
+            )?;
             anyhow::ensure!(
                 i_have_an_antenna,
                 "refusing to transmit without --i-have-an-antenna"
             );
-            factory::send_chunks(&chunks, &app_dir, Duration::from_millis(timeout_ms))
+            factory::send_chunks(
+                &permit,
+                &chunks,
+                &app_dir,
+                Duration::from_millis(timeout_ms),
+            )
         }
         Cmd::Elf2uf2 { elf, uf2 } => {
             let (bytes, line) = uf2::convert(

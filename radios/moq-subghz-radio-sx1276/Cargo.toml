@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 moq-subghz-link = { path = "../../moq-subghz-link" }
 moq-subghz-wire = { path = "../../moq-subghz-wire" }
+moq-subghz-licence = { path = "../../moq-subghz-licence" }
 anyhow = "1"
 libc = "0.2"
 

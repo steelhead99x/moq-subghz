@@ -18,3 +18,4 @@ flate2 = "1"
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+moq-subghz-licence = { path = "../moq-subghz-licence", features = ["cli"] }

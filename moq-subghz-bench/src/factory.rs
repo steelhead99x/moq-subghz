@@ -3,13 +3,20 @@
 //! receiver on the stick prints what it hears. A port of `factory_bench.py` and
 //! `factory-send.sh`; the stick capture is the `stick-cap` subcommand.
 //!
-//! This transmits, so it needs `--i-have-an-antenna` and the serial port of the stick as `--dev`.
+//! This transmits, so it needs `--i-have-an-antenna`, `--transmit`, the serial port of the stick
+//! as `--dev`, and the licence gate's permit for the carrier and power the stock app is built for.
+//! The stock app cannot be queried, so the user declares them (`--freq-mhz`, `--power-dbm`) and
+//! the gate checks the declaration: the stock Dragino build (868.1 MHz, up to +17 dBm) is
+//! refused, the project's patched build (915.0 MHz, +5 dBm) is not. The gate runs before
+//! anything else: before a file is read, a serial port opened, or ssh started.
 
 use crate::cell::{num, read_dict, round_to};
 use crate::exec::{capture, run_ok, Plan};
+use crate::licence::{LicenceOpts, Side};
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use clap::Args;
+use moq_subghz_licence::{Auth, Encryption, Profile, Refusal, Station, Tuning, TxPermit};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -379,9 +386,74 @@ pub struct Opts {
     /// Required: the antennas are on both radios
     #[arg(long)]
     pub i_have_an_antenna: bool,
+    /// Required to transmit (the licence gate). Forwarded to the Pi's `factory-send`
+    #[arg(long)]
+    pub transmit: bool,
+    /// The carrier the stock app on the Pi is built for, in MHz. No default: the app cannot be
+    /// queried, so you declare it and the gate checks it (the stock build's 868.1 is refused)
+    #[arg(long)]
+    pub freq_mhz: f64,
+    /// The power the stock app on the Pi is built for, in dBm (the project allows 2 to 5)
+    #[arg(long)]
+    pub power_dbm: i8,
+    #[command(flatten)]
+    pub licence: LicenceOpts,
     /// Print the commands and stop
     #[arg(long)]
     pub dry_run: bool,
+}
+
+/// What the user says the stock app is built for. It cannot be read back from the app.
+#[derive(Clone, Copy, Debug)]
+pub struct Declared {
+    pub freq_mhz: f64,
+    pub power_dbm: i8,
+}
+
+/// The stock app's LoRa bandwidth (125 kHz), the width of the span the gate checks.
+const APP_WIDTH_HZ: u64 = 125_000;
+
+/// Why the stock Dragino build cannot be benched through this tool, and the way that can.
+const STOCK_868: &str = "the stock Dragino app transmits 868.1 MHz at up to +17 dBm, which is outside the \
+project's US ISM rules, and the gate has no 868 MHz profile to check it against (the EU region is not \
+enabled; region \"other\" is blocked). To bench legitimately, apply firmware/vendor/dragino-lora-gps-hat/dragino-bench.patch \
+(915.0 MHz, +5 dBm), rebuild the app on the Pi and declare --freq-mhz 915.0 --power-dbm 5";
+
+/// The licence gate for the stock app on the declared carrier and power. The result is the proof
+/// that [`send_chunks`] needs, so nothing is keyed without it. Refuses outside 902-928 MHz (not
+/// within 0.3 MHz of 925.0) and outside 2 to 5 dBm, needs `--transmit`, and never permits a
+/// run that would need station identification frames (the stock app cannot send them).
+pub fn gate(station: &Station, d: Declared) -> Result<TxPermit> {
+    if !d.freq_mhz.is_finite() || !(1.0..=7000.0).contains(&d.freq_mhz) {
+        bail!("--freq-mhz {} is not a frequency in MHz", d.freq_mhz);
+    }
+    let hz = (d.freq_mhz * 1e6).round() as u64;
+    let permit = station
+        .check_transmit_without_station_id(
+            Tuning::occupied(hz, APP_WIDTH_HZ),
+            Profile::ISM,
+            Encryption::None,
+            Auth::None,
+        )
+        .map_err(|e| match e {
+            Refusal::OutOfBand => anyhow::anyhow!("refusing to transmit: {e}. {STOCK_868}"),
+            e => anyhow::anyhow!("refusing to transmit: {e}"),
+        })?;
+    // The project's own rule on top of the gate's table (which also lists 2.4 and 5.8 GHz): the
+    // stock app is a sub-GHz LoRa build, and this repo operates inside 902-928 MHz only.
+    if !(902.0..=928.0).contains(&d.freq_mhz) {
+        bail!(
+            "refusing to transmit: --freq-mhz {} is outside the project's 902-928 MHz. {STOCK_868}",
+            d.freq_mhz
+        );
+    }
+    if !(2..=5).contains(&d.power_dbm) {
+        bail!(
+            "refusing to transmit: --power-dbm {} is outside the project's 2 to 5 dBm. {STOCK_868}",
+            d.power_dbm
+        );
+    }
+    Ok(permit)
 }
 
 /// The stick capture, started once before the first pass.
@@ -401,6 +473,8 @@ pub fn cap_plan(o: &Opts, exe: &str) -> Plan {
 
 /// The commands one pass runs, in order: copy the chunk list to the Pi, send it there.
 pub fn pass_plan(o: &Opts, pass: usize) -> [Plan; 2] {
+    let lic = o.licence.resolve().flags(Side::Pi, &[]);
+    let lic: String = lic.iter().map(|f| format!("{} ", shq(f))).collect();
     let local = o.out.join(&o.label).join(format!("pass{pass}.chunks.txt"));
     [
         Plan::new(
@@ -416,8 +490,10 @@ pub fn pass_plan(o: &Opts, pass: usize) -> [Plan; 2] {
             [
                 o.pi.clone(),
                 format!(
-                    "{} factory-send --i-have-an-antenna --app-dir {} factory-bench/chunks.txt",
+                    "{} factory-send --i-have-an-antenna --transmit --freq-mhz {} --power-dbm {} {lic}--app-dir {} factory-bench/chunks.txt",
                     shq(&o.pi_tool),
+                    o.freq_mhz,
+                    o.power_dbm,
                     shq(&o.pi_app_dir)
                 ),
             ],
@@ -437,6 +513,28 @@ pub fn shq(s: &str) -> String {
 }
 
 pub fn run(o: &Opts) -> Result<()> {
+    // The gate is the first thing: before a file is read, a port opened or ssh started.
+    let station = o
+        .licence
+        .gate_args(o.transmit)
+        .station()
+        .context("licence")?;
+    let permit = gate(
+        &station,
+        Declared {
+            freq_mhz: o.freq_mhz,
+            power_dbm: o.power_dbm,
+        },
+    );
+    println!("{}", o.licence.resolve().describe());
+    match permit {
+        Err(e) if o.dry_run => println!("gate: a real run would be REFUSED: {e:#}"),
+        Err(e) => return Err(e),
+        Ok(_) => eprintln!(
+            "gate passed for the DECLARED {} MHz at +{} dBm (the stock app cannot be queried: you attest that the build on the Pi uses these)",
+            o.freq_mhz, o.power_dbm
+        ),
+    }
     let exe = std::env::current_exe()?.display().to_string();
     let jpeg = fs::read(&o.jpeg).with_context(|| format!("read {}", o.jpeg.display()))?;
     if o.chunk == 0 || !o.id.is_ascii_alphabetic() {
@@ -551,18 +649,30 @@ fn bench(
     let text = pretty(&s)?;
     fs::write(d.join("summary.json"), &text)?;
     println!("{text}");
+    verdict(&o.label, o.passes, &re, jpeg)
+}
+
+/// Success is the byte comparison, not the chunk count: a picture with every chunk present but
+/// different bytes from the original (a corrupted chunk that passed the stick's CRC) fails.
+pub fn verdict(label: &str, passes: usize, re: &Reassembly, jpeg: &[u8]) -> Result<()> {
     if !re.complete() {
-        bail!(
-            "FAILED {}: the picture is not complete after {} passes",
-            o.label,
-            o.passes
-        );
+        bail!("FAILED {label}: the picture is not complete after {passes} passes");
+    }
+    if re.image().as_deref() != Some(jpeg) {
+        bail!("FAILED {label}: every chunk arrived but the picture does not match the original (matches_original is false)");
     }
     Ok(())
 }
 
 /// The Pi side: send each chunk line with the stock Dragino app, and print `<start> <end> <id:seq>`.
-pub fn send_chunks(chunks: &Path, app_dir: &Path, app_timeout: Duration) -> Result<()> {
+///
+/// `_permit` is the gate's answer ([`gate`]): the stock app is not started without one.
+pub fn send_chunks(
+    _permit: &TxPermit,
+    chunks: &Path,
+    app_dir: &Path,
+    app_timeout: Duration,
+) -> Result<()> {
     use std::process::{Command, Stdio};
     let text = fs::read_to_string(chunks).with_context(|| format!("read {}", chunks.display()))?;
     let epoch = || {
@@ -656,6 +766,33 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_but_corrupted_picture_fails_the_run() {
+        let jpeg = [1u8, 2, 3, 4, 5, 6];
+        let chunks = make_chunks(&jpeg, 'A', 3);
+        let mut re = Reassembly::new(b'A', 2, 0);
+        let rows = [pk(1.0, -40, &chunks[0]), pk(2.0, -40, &chunks[1])];
+        re.pass(1, &rows, 0, 1.0);
+        assert!(verdict("t", 1, &re, &jpeg).is_ok());
+        // same chunk count, one byte different from what was sent
+        let bad = make_chunks(&[1u8, 2, 3, 4, 5, 7], 'A', 3);
+        let mut re = Reassembly::new(b'A', 2, 0);
+        re.pass(1, &[pk(1.0, -40, &bad[0]), pk(2.0, -40, &bad[1])], 0, 1.0);
+        assert!(re.complete());
+        let e = verdict("t", 1, &re, &jpeg).unwrap_err().to_string();
+        assert!(
+            e.starts_with("FAILED t:") && e.contains("does not match"),
+            "{e}"
+        );
+        // missing chunks still fail the old way
+        let mut re = Reassembly::new(b'A', 2, 0);
+        re.pass(1, &[pk(1.0, -40, &chunks[0])], 0, 1.0);
+        assert!(verdict("t", 1, &re, &jpeg)
+            .unwrap_err()
+            .to_string()
+            .contains("not complete"));
+    }
+
+    #[test]
     fn plan_is_printed_without_running() {
         let o = Opts {
             label: "x".into(),
@@ -670,6 +807,10 @@ mod tests {
             pi_tool: "factory-bench/moq-subghz-bench".into(),
             pi_app_dir: "factory-bench/dragino".into(),
             i_have_an_antenna: false,
+            transmit: true,
+            freq_mhz: 915.0,
+            power_dbm: 5,
+            licence: LicenceOpts::default(),
             dry_run: true,
         };
         let p = pass_plan(&o, 1);
@@ -678,12 +819,116 @@ mod tests {
             "scp -q out/x/pass1.chunks.txt pi:factory-bench/chunks.txt"
         );
         assert!(p[1].shell().starts_with(
-            "ssh pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna"
-        ));
+            "ssh pi 'factory-bench/moq-subghz-bench factory-send --i-have-an-antenna --transmit --freq-mhz 915 --power-dbm 5 --no-licence --redact-licence --app-dir factory-bench/dragino"
+        ), "{}", p[1].shell());
         assert_eq!(
             cap_plan(&o, "bench").shell(),
             "bench stick-cap --dev /dev/ttyACM0 --out out/x/stick"
         );
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    fn station(transmit: bool) -> Station {
+        LicenceOpts::default()
+            .gate_args(transmit)
+            .station()
+            .expect("--no-licence reads no file")
+    }
+
+    fn d(freq_mhz: f64, power_dbm: i8) -> Declared {
+        Declared {
+            freq_mhz,
+            power_dbm,
+        }
+    }
+
+    fn opts(transmit: bool, freq_mhz: f64, power_dbm: i8, dry: bool) -> Opts {
+        Opts {
+            label: "x".into(),
+            // never read: the gate refuses first, and a read would say so in the error
+            jpeg: "/nonexistent/gate-first.jpg".into(),
+            id: 'A',
+            passes: 1,
+            chunk: 120,
+            limit: 0,
+            out: "/nonexistent/out".into(),
+            pi: "pi".into(),
+            dev: "/nonexistent/dev".into(),
+            pi_tool: "t".into(),
+            pi_app_dir: "a".into(),
+            i_have_an_antenna: true,
+            transmit,
+            freq_mhz,
+            power_dbm,
+            licence: LicenceOpts::default(),
+            dry_run: dry,
+        }
+    }
+
+    #[test]
+    fn the_patched_915_build_passes_with_transmit() {
+        assert!(gate(&station(true), d(915.0, 5)).is_ok());
+        assert!(gate(&station(true), d(915.0, 2)).is_ok());
+    }
+
+    #[test]
+    fn the_stock_868_build_is_refused_and_the_message_says_why_and_what_to_do() {
+        let e = gate(&station(true), d(868.1, 17)).unwrap_err().to_string();
+        assert!(e.contains("refusing to transmit"), "{e}");
+        assert!(e.contains("868.1 MHz at up to +17 dBm"), "{e}");
+        assert!(e.contains("EU region is not enabled"), "{e}");
+        assert!(e.contains("dragino-bench.patch"), "{e}");
+        assert!(e.contains("--freq-mhz 915.0 --power-dbm 5"), "{e}");
+        // the carrier alone is enough to refuse it, whatever power is declared
+        assert!(gate(&station(true), d(868.1, 5)).is_err());
+    }
+
+    #[test]
+    fn no_transmit_flag_no_permit() {
+        let e = gate(&station(false), d(915.0, 5)).unwrap_err().to_string();
+        assert!(e.contains("--transmit"), "{e}");
+    }
+
+    #[test]
+    fn power_outside_the_projects_range_is_refused() {
+        for p in [-1, 0, 1, 6, 17, 23] {
+            let e = gate(&station(true), d(915.0, p)).unwrap_err().to_string();
+            assert!(e.contains("2 to 5 dBm"), "{p}: {e}");
+        }
+    }
+
+    #[test]
+    fn bad_and_guarded_carriers_are_refused() {
+        for f in [f64::NAN, f64::INFINITY, 0.0, -915.0, 1e9] {
+            assert!(gate(&station(true), d(f, 5)).is_err(), "{f}");
+        }
+        // the project's 0.3 MHz no-go zone around 925.0, and the band edges with the 125 kHz span
+        for f in [925.0, 925.2, 902.0, 928.0, 901.0, 929.0, 433.0, 2450.0] {
+            assert!(gate(&station(true), d(f, 5)).is_err(), "{f}");
+        }
+    }
+
+    #[test]
+    fn a_real_run_is_refused_before_anything_is_read_or_started() {
+        // Each refusal comes before the JPEG is read, the output directory made or ssh started:
+        // otherwise the error would be about /nonexistent/gate-first.jpg.
+        let e = run(&opts(false, 915.0, 5, false)).unwrap_err().to_string();
+        assert!(e.contains("--transmit"), "{e}");
+        let e = run(&opts(true, 868.1, 17, false)).unwrap_err().to_string();
+        assert!(e.contains("868.1 MHz"), "{e}");
+        let e = run(&opts(true, 915.0, 17, false)).unwrap_err().to_string();
+        assert!(e.contains("2 to 5 dBm"), "{e}");
+    }
+
+    #[test]
+    fn a_dry_run_still_says_it_would_be_refused() {
+        // Dry runs read the JPEG (to count chunks), so this one fails there, after the gate line.
+        let e = run(&opts(true, 868.1, 17, true)).unwrap_err().to_string();
+        assert!(e.contains("gate-first.jpg"), "{e}");
     }
 }
 

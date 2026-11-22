@@ -288,8 +288,7 @@ fn open_radio(
     p: &Profile,
     cfg: &sx1276::LoRaConfig,
 ) -> Result<moq_subghz_radio_sx1276::Sx1276LoraTx> {
-    let _ = permit; // proof that the gate said yes
-    moq_subghz_radio_sx1276::Sx1276LoraTx::open(a.spi_hz, p.freq_hz, cfg, a.power)
+    moq_subghz_radio_sx1276::Sx1276LoraTx::open(permit, a.spi_hz, p.freq_hz, cfg, a.power)
 }
 
 #[cfg(not(target_os = "linux"))]

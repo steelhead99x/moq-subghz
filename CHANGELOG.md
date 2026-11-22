@@ -15,6 +15,23 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * CI: `--locked` throughout, doc tests, least-privilege `permissions:`, actions pinned by commit.
 * `docs/DEPENDENCIES.md` records why `rind` is a git dependency pinned by rev.
 
+### Safety and privacy (review 2)
+
+* `factory-send` and `factory-bench` no longer transmit on `--i-have-an-antenna` alone. They need
+  `--transmit` and a declaration of the stock app's carrier and power (`--freq-mhz`, `--power-dbm`),
+  and run the licence gate on the laptop and again on the Pi before reading, opening or starting
+  anything. The unpatched Dragino build (868.1 MHz, +17 dBm) is refused with the way to bench it
+  (the 915 MHz patch). `demo-051` runs the transmit check before it writes `I` to the stick.
+* Radio `open` functions take the gate's permit (`TxPermit` / `RxPermit`), so a missing gate is a
+  compile error; a permit also carries the span it checked and the open refuses another carrier.
+* The bench passes `--licence-file` or the new `--no-licence` to every program, prints each end's
+  mode before running, and passes `--redact-licence` unless `--show-licence`. `package-051` refuses
+  to copy any file holding the configured licence ID or name, or an unredacted licence line.
+* `factory-bench` fails a run whose picture has every chunk but does not match the original.
+* CatWAN `idle` waits for the stick's drained report (bounded) instead of a fixed 300 ms. Frames
+  not confirmed are left out of `frames_tx`, `bytes_tx` and `radio_busy_pct` and counted in the new
+  `tx_unconfirmed_frames`.
+
 ### Tools
 
 * New crate `moq-subghz-bench`, the Rust replacement for the `scripts/` shell and Python harness.
