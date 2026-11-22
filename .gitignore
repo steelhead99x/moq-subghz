@@ -21,3 +21,7 @@ catwan-backup-*.bin
 
 # agent scratch (quest context)
 .tmp/
+
+# private licence config (licensed mode). Never commit; use licence.example.toml as the template.
+licence.toml
+**/licence.toml

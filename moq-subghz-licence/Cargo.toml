@@ -1,0 +1,12 @@
+[package]
+name = "moq-subghz-licence"
+version = "0.1.0"
+description = "Licensed vs unlicensed operating mode: licence config, region rules, band table and the transmit gate. No radio code, no dependencies."
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+# Deliberately no dependencies and no dependency on the send/recv crates. The config is a
+# small strict subset of TOML parsed by hand (see config.rs).
+[dependencies]
