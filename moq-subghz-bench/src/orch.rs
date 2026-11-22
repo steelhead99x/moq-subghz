@@ -1,5 +1,4 @@
-//! `run`, `rev` and `lora2015-run`: one over-the-air run each, ports of `scripts/run2.sh`,
-//! `scripts/rev.sh` and `scripts/lora2015-run.sh`. They start the project's own binaries and ssh,
+//! `run`, `rev` and `lora2015-run`: one over-the-air run each. They start the project's own binaries and ssh,
 //! then check every artifact: a run counts only when the sender, the receiver or logger and the
 //! log copy all succeeded and left their summaries. Any failure is `FAILED <run>: <why>`, exit 1.
 //!
@@ -16,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Where things are: the same settings `scripts/env.sh` held.
+/// Where things are: the ssh host, the binaries, the runs directory, the serial device.
 #[derive(Args, Clone, Debug)]
 pub struct Env {
     /// ssh host of the Pi
@@ -70,6 +69,7 @@ impl Env {
                 .context("current exe has no directory")?
                 .to_path_buf(),
         };
+        validate_host(&self.pi)?;
         Ok(Cfg {
             pi: self.pi.clone(),
             pi_dir: self.pi_dir.clone(),
@@ -105,9 +105,9 @@ impl Cfg {
         self.runs.join(format!("{name}{suffix}"))
     }
 
-    /// `ssh PI <script>`.
-    fn ssh(&self, script: String) -> Plan {
-        Plan::new("ssh", [self.pi.clone(), script])
+    /// `ssh -o BatchMode=yes -- PI <script>`.
+    pub fn ssh(&self, script: String) -> Plan {
+        ssh_plan(&self.pi, script)
     }
 
     /// A real run needs the user to have passed `--i-have-an-antenna` and `--transmit`, here or in
@@ -149,14 +149,94 @@ impl Cfg {
     }
 }
 
+/// The longest host string accepted: a user of 64 bytes, `@`, and a host name of 253.
+const MAX_HOST: usize = 64 + 1 + 253;
+
+/// Check a `--pi` / `PI` value before it reaches ssh or scp: a host name, `user@host`, or an IPv4
+/// or IPv6 literal. Nothing that ssh could read as an option (leading `-`), no white space, no
+/// control or shell characters.
+pub fn validate_host(s: &str) -> Result<()> {
+    let bad = |why: &str| anyhow::anyhow!("--pi {s:?}: {why}");
+    ensure!(!s.is_empty(), "--pi is empty");
+    if s.len() > MAX_HOST {
+        return Err(bad("too long"));
+    }
+    let (user, host) = match s.split_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, s),
+    };
+    let name_ok = |x: &str| {
+        !x.is_empty()
+            && !x.starts_with(['-', '.'])
+            && x.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    };
+    if let Some(u) = user {
+        if u.len() > 64 || !name_ok(u) {
+            return Err(bad("the user part needs letters, digits, '.', '_' and '-', not starting with '-' or '.'"));
+        }
+    }
+    if host.contains(':') {
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(bad("a host with ':' must be an IPv6 literal"));
+        }
+    } else if host.len() > 253 || !name_ok(host) {
+        return Err(bad(
+            "use a host name, user@host, or an IP literal (letters, digits, '.', '_' and '-'; no leading '-')",
+        ));
+    }
+    Ok(())
+}
+
+/// `host` as scp wants it before a `:path`: an IPv6 literal goes in brackets.
+pub fn scp_host(pi: &str) -> String {
+    match pi.rsplit_once('@') {
+        Some((u, h)) if h.contains(':') => format!("{u}@[{h}]"),
+        None if pi.contains(':') => format!("[{pi}]"),
+        _ => pi.to_string(),
+    }
+}
+
+/// `ssh -o BatchMode=yes -- HOST SCRIPT`: `--` ends the options, so a host can never be one, and
+/// BatchMode keeps an unattended run from waiting at a prompt.
+pub fn ssh_plan(host: &str, script: String) -> Plan {
+    Plan::new(
+        "ssh",
+        [
+            "-o".to_string(),
+            "BatchMode=yes".into(),
+            "--".into(),
+            host.to_string(),
+            script,
+        ],
+    )
+}
+
+/// `scp -q -o BatchMode=yes -- FROM TO`.
+pub fn scp_plan(from: String, to: String) -> Plan {
+    Plan::new(
+        "scp",
+        [
+            "-q".to_string(),
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "--".into(),
+            from,
+            to,
+        ],
+    )
+}
+
 /// A run name goes into file names and remote paths: keep it plain.
 pub fn valid_name(n: &str) -> Result<()> {
     ensure!(
         !n.is_empty()
+            && n.len() <= 64
+            && !n.contains("..")
             && !n.starts_with(['-', '.'])
             && n.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)),
-        "run name {n:?}: use letters, digits, '_', '-' and '.' only"
+        "run name {n:?}: use at most 64 of letters, digits, '_', '-' and '.' (no '..', no leading '-' or '.')"
     );
     Ok(())
 }
@@ -220,15 +300,39 @@ pub struct Run<'a> {
     pub args: &'a [String],
 }
 
+/// A private scratch directory on the Pi (`mktemp -d`: mode 0700, a name nobody can predict), for
+/// this run's files. The caller removes it, and only it, when the run is done. A dry run prints the
+/// command and uses a placeholder.
+pub fn pi_scratch(h: &mut dyn Host, c: &Cfg) -> Result<String> {
+    let d = h.run(&c.ssh("mktemp -d /tmp/moq-bench.XXXXXXXXXX".to_string()))?;
+    if h.dry() {
+        return Ok("/tmp/moq-bench.XXXXXXXXXX".to_string());
+    }
+    ensure!(
+        d.code == 0,
+        "could not make a scratch directory on {}",
+        c.pi
+    );
+    let p = d.stdout.trim();
+    ensure!(
+        p.starts_with("/tmp/moq-bench.")
+            && p.len() <= 200
+            && !p.contains("..")
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)),
+        "the Pi gave an odd scratch directory name: {p:?}"
+    );
+    Ok(p.to_string())
+}
+
 fn words(s: &str) -> Vec<String> {
     s.split_whitespace().map(String::from).collect()
 }
 
 /// The remote command that runs the Pi's sender, keeping its output in a file so ssh exits with
 /// the sender's own status.
-pub fn pi_send_script(pi_dir: &str, r: &Run, flags: &[String]) -> String {
-    let n = r.name;
-    let so = shq(&format!("/tmp/{n}_send.out"));
+pub fn pi_send_script(pi_dir: &str, tmp: &str, r: &Run, flags: &[String]) -> String {
+    let so = shq(&format!("{tmp}/send.out"));
     let args: String = flags
         .iter()
         .chain(r.args)
@@ -239,11 +343,11 @@ pub fn pi_send_script(pi_dir: &str, r: &Run, flags: &[String]) -> String {
         shq(pi_dir),
         shq(r.profile),
         r.secs,
-        shq(&format!("/tmp/{n}_send.jsonl")),
+        shq(&format!("{tmp}/send.jsonl")),
     )
 }
 
-/// Pi to laptop: the receiver here, the sender on the Pi (`run2.sh`).
+/// Pi to laptop: the receiver here, the sender on the Pi.
 pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -252,6 +356,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     if !h.dry() {
         write(&c.run_file(n, ".clock_start"), &format!("{off}\n"))?;
     }
+    let tmp = pi_scratch(h, c)?;
     let mut a = vec![
         "--port".to_string(),
         c.port()?,
@@ -281,7 +386,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     h.sleep(Duration::from_secs(3));
     let send_st = h
         .run(
-            &c.ssh(pi_send_script(&c.pi_dir, r, &c.tx_flags(r.args)))
+            &c.ssh(pi_send_script(&c.pi_dir, &tmp, r, &c.tx_flags(r.args)))
                 .out(c.run_file(n, ".send")),
         )?
         .code;
@@ -289,11 +394,15 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     if !h.dry() {
         fs::create_dir_all(c.runs.join(n))?;
     }
-    let jsonl = format!("/tmp/{n}_send.jsonl");
+    let jsonl = format!("{tmp}/send.jsonl");
     let log_st = h
         .run(
-            &c.ssh(format!("cat {j} && rm -f {j}", j = shq(&jsonl)))
-                .out(c.runs.join(n).join("send.jsonl")),
+            &c.ssh(format!(
+                "cat {j}; st=$?; rm -rf {t}; exit $st",
+                j = shq(&jsonl),
+                t = shq(&tmp)
+            ))
+            .out(c.runs.join(n).join("send.jsonl")),
         )?
         .code;
     if h.dry() {
@@ -345,7 +454,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     Ok(())
 }
 
-/// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here (`rev.sh`).
+/// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here.
 pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
@@ -356,7 +465,8 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     }
     // Capture clock (laptop) minus receive clock (Pi), printed like Python's repr of a float.
     let off = format!("{:?}", -xf);
-    let tmp = shq(&format!("/tmp/{n}"));
+    let scratch = pi_scratch(h, c)?;
+    let tmp = shq(&format!("{scratch}/rx"));
     let mut rxa = format!(
         "./moq-subghz-recv --radio --profile {} --secs {} --out {tmp} --decode --raw-log --clock-offset-ms={}",
         shq(r.profile),
@@ -369,7 +479,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     for w in words(r.rx) {
         rxa += &format!(" {}", shq(&w));
     }
-    let script = format!("cd ~/{} && rm -rf {tmp} && {rxa}", shq(&c.pi_dir));
+    let script = format!("cd ~/{} && {rxa}", shq(&c.pi_dir));
     let rx = h.start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
     h.sleep(Duration::from_secs(4));
     let mut a = vec![
@@ -396,17 +506,13 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     }
     // scp's glob is expanded on the Pi; the Pi's copy is removed only after a good copy.
     let mut copy_st = h
-        .run(&Plan::new(
-            "scp",
-            [
-                "-q".to_string(),
-                format!("{}:/tmp/{n}/*", c.pi),
-                format!("{}/", c.runs.join(n).display()),
-            ],
+        .run(&scp_plan(
+            format!("{}:{scratch}/rx/*", scp_host(&c.pi)),
+            format!("{}/", c.runs.join(n).display()),
         ))?
         .code;
     if copy_st == 0 {
-        copy_st = h.run(&c.ssh(format!("rm -rf {tmp}")))?.code;
+        copy_st = h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?.code;
     }
     if h.dry() {
         h.run(
@@ -473,6 +579,51 @@ pub struct Lora<'a> {
     pub args: &'a [String],
 }
 
+/// The radio settings a sender argument list overrides, as `--freq X --cr N`: resolved once, so
+/// the dry run, the transmitter, the live logger and the replay all get the same ones. Only
+/// `--freq` and `--cr` change what is on the air; the profile is passed to every stage as it is.
+pub fn radio_overrides(args: &[String]) -> Result<Vec<String>> {
+    let (mut freq, mut cr) = (None, None);
+    let mut it = args.iter().peekable();
+    while let Some(a) = it.next() {
+        let (key, inline) = match a.split_once('=') {
+            Some((k, v)) => (k, Some(v.to_string())),
+            None => (a.as_str(), None),
+        };
+        if key != "--freq" && key != "--cr" {
+            continue;
+        }
+        let v = match inline {
+            Some(v) => v,
+            None => it
+                .next()
+                .cloned()
+                .with_context(|| format!("{key} needs a value"))?,
+        };
+        if key == "--freq" {
+            let f: f64 = v
+                .parse()
+                .ok()
+                .filter(|f: &f64| f.is_finite())
+                .with_context(|| format!("--freq {v:?} is not a number"))?;
+            ensure!(freq.replace(f).is_none(), "--freq given twice");
+        } else {
+            let n: u8 = v
+                .parse()
+                .with_context(|| format!("--cr {v:?} is not a number"))?;
+            ensure!(cr.replace(n).is_none(), "--cr given twice");
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(f) = freq {
+        out.extend(["--freq".to_string(), f.to_string()]);
+    }
+    if let Some(n) = cr {
+        out.extend(["--cr".to_string(), n.to_string()]);
+    }
+    Ok(out)
+}
+
 /// Seconds the logger has to listen: `passes` passes of `pass_s` plus a second each, and 14 more.
 pub fn log_secs(pass_s: f64, passes: u32) -> i64 {
     (passes as f64 * (pass_s + 1.0) + 14.0) as i64
@@ -489,13 +640,23 @@ fn after_digits(text: &str, key: &str, dot: bool) -> Option<String> {
     })
 }
 
-/// Logger here, sender on the Pi, then the exact loss from a replay (`lora2015-run.sh`).
+/// Logger here, sender on the Pi, then the exact loss from a replay.
 pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     let n = r.name;
     c.gate(h, r.args)?;
     c.prepare(h, n)?;
     valid_name(r.file).context("picture file name")?;
     let frame = c.frames.join(r.file);
+    let radio = radio_overrides(r.args)?;
+    println!(
+        "radio settings for {n}: profile {} {}",
+        r.profile,
+        if radio.is_empty() {
+            "(no overrides)".to_string()
+        } else {
+            radio.join(" ")
+        }
+    );
     let dry = Plan::new(
         c.bin("lora2015-send"),
         [
@@ -539,6 +700,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     ]
     .into();
     a.extend(["--out".into(), rdir.display().to_string()]);
+    a.extend(radio.iter().cloned());
     a.extend(reference.iter().cloned());
     let lg = h.start(
         &Plan::new(c.bin("lora2015-log"), a)
@@ -546,7 +708,8 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
             .err_to_out(),
     )?;
     h.sleep(Duration::from_secs(3));
-    let so = shq(&format!("/tmp/{n}.send.out"));
+    let scratch = pi_scratch(h, c)?;
+    let so = shq(&format!("{scratch}/send.out"));
     let args: String = c
         .tx_flags(r.args)
         .iter()
@@ -559,22 +722,17 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
         shq(r.file),
         shq(r.profile),
         r.passes,
-        shq(&format!("/tmp/{n}.tx.csv")),
+        shq(&format!("{scratch}/tx.csv")),
     );
     let send_st = h.run(&c.ssh(script).out(c.run_file(n, ".send")))?.code;
     let log_st = h.wait(lg)?;
-    let tx = format!("/tmp/{n}.tx.csv");
     let tx_st = h
-        .run(&Plan::new(
-            "scp",
-            [
-                "-q".to_string(),
-                format!("{}:{tx}", c.pi),
-                c.run_file(n, ".tx.csv").display().to_string(),
-            ],
+        .run(&scp_plan(
+            format!("{}:{scratch}/tx.csv", scp_host(&c.pi)),
+            c.run_file(n, ".tx.csv").display().to_string(),
         ))?
         .code;
-    h.run(&c.ssh(format!("rm -f {}", shq(&tx))))?;
+    h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?;
     let sent = after_digits(
         &fs::read_to_string(c.run_file(n, ".send")).unwrap_or_default(),
         "sent frames=",
@@ -595,6 +753,7 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
             rdir.join("exact").display().to_string(),
         ]
         .into();
+        a.extend(radio.iter().cloned());
         a.extend(reference);
         exact_st = h
             .run(
@@ -695,6 +854,7 @@ pub mod fake {
                     }
                     (r.code, r.stdout.clone())
                 }
+                None if line.contains("mktemp -d") => (0, "/tmp/moq-bench.T\n".to_string()),
                 None => (0, String::new()),
             };
             match &p.stdout {
@@ -777,7 +937,12 @@ mod tests {
             "{\"role\":\"send\",\"fec_k\":8}\n",
             vec![],
         );
-        f.rule("cat /tmp/t_send.jsonl", 0, "{\"seq\":1}\n", vec![]);
+        f.rule(
+            "cat /tmp/moq-bench.T/send.jsonl",
+            0,
+            "{\"seq\":1}\n",
+            vec![],
+        );
     }
 
     #[test]
@@ -791,11 +956,15 @@ mod tests {
         assert_eq!(f.log[0], "bin/moq-subghz-recv --clock-check pi");
         assert_eq!(
             f.log[1],
-            format!("bin/moq-subghz-recv --port /dev/ttyTEST --profile 300000:100000:6 --secs 340 --out {r}/t --decode --raw-log --clock-offset-ms=-12.50 --key-file 'my key.hex' --x 1 > {r}/t.out 2>&1")
+            "ssh -o BatchMode=yes -- pi 'mktemp -d /tmp/moq-bench.XXXXXXXXXX'"
         );
         assert_eq!(
             f.log[2],
-            format!("ssh pi 'cd ~/moq-subghz && ./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/t_send.jsonl --i-have-an-antenna --transmit --fec-k 8 > /tmp/t_send.out 2>&1; st=$?; tail -n 1 /tmp/t_send.out; rm -f /tmp/t_send.out; exit $st' > {r}/t.send")
+            format!("bin/moq-subghz-recv --port /dev/ttyTEST --profile 300000:100000:6 --secs 340 --out {r}/t --decode --raw-log --clock-offset-ms=-12.50 --key-file 'my key.hex' --x 1 > {r}/t.out 2>&1")
+        );
+        assert_eq!(
+            f.log[3],
+            format!("ssh -o BatchMode=yes -- pi 'cd ~/moq-subghz && ./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/moq-bench.T/send.jsonl --i-have-an-antenna --transmit --fec-k 8 > /tmp/moq-bench.T/send.out 2>&1; st=$?; tail -n 1 /tmp/moq-bench.T/send.out; rm -f /tmp/moq-bench.T/send.out; exit $st' > {r}/t.send")
         );
         assert_eq!(f.slept, [Duration::from_secs(3)]);
         assert_eq!(
@@ -843,7 +1012,7 @@ mod tests {
                 vec![],
             );
             f.rule(
-                "cat /tmp/t_send.jsonl",
+                "cat /tmp/moq-bench.T/send.jsonl",
                 if bad == "log" { 1 } else { 0 },
                 "{\"seq\":1}\n",
                 vec![],
@@ -863,8 +1032,9 @@ mod tests {
         let d = Scratch::new("emptylog");
         let mut f = Fake::default();
         good_forward(&mut f, &d.0);
-        f.rules.retain(|r| r.pat != "cat /tmp/t_send.jsonl");
-        f.rule("cat /tmp/t_send.jsonl", 0, "", vec![]);
+        f.rules
+            .retain(|r| r.pat != "cat /tmp/moq-bench.T/send.jsonl");
+        f.rule("cat /tmp/moq-bench.T/send.jsonl", 0, "", vec![]);
         assert!(forward(&mut f, &cfg(&d.0), &run("t", &[]))
             .unwrap_err()
             .to_string()
@@ -972,8 +1142,12 @@ mod tests {
         let mut h = crate::exec::Dry::new();
         forward(&mut h, &c, &run("t", &[])).unwrap();
         reverse(&mut h, &c, &run("t", &[])).unwrap();
-        assert!(!pi_send_script("d", &run("t", &[]), &c.tx_flags(&[])).contains("--transmit"));
-        assert!(!pi_send_script("d", &run("t", &[]), &c.tx_flags(&[])).contains("antenna"));
+        assert!(
+            !pi_send_script("d", "/tmp/x", &run("t", &[]), &c.tx_flags(&[])).contains("--transmit")
+        );
+        assert!(
+            !pi_send_script("d", "/tmp/x", &run("t", &[]), &c.tx_flags(&[])).contains("antenna")
+        );
     }
 
     #[test]
@@ -1014,20 +1188,20 @@ mod tests {
         )
         .unwrap();
         assert!(
-            f.log[1].contains("--clock-offset-ms=12.5 --key-file '\\''my key.hex'\\'' --x 1"),
+            f.log[2].contains("--clock-offset-ms=12.5 --key-file '\\''my key.hex'\\'' --x 1"),
             "{}",
-            f.log[1]
+            f.log[2]
         );
         assert_eq!(f.slept, [Duration::from_secs(4)]);
-        assert!(f.log[2].starts_with(
+        assert!(f.log[3].starts_with(
             "bin/moq-subghz-send --catwan /dev/ttyTEST --profile 300000:100000:6 --secs 330 --log"
         ));
-        assert!(f.log[2].contains("--i-have-an-antenna --transmit --fec-k 8 > "));
+        assert!(f.log[3].contains("--i-have-an-antenna --transmit --fec-k 8 > "));
         let (scp, rm) = (
             f.log.iter().position(|l| l.starts_with("scp")).unwrap(),
             f.log
                 .iter()
-                .position(|l| l == "ssh pi 'rm -rf /tmp/t'")
+                .position(|l| l == "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'")
                 .unwrap(),
         );
         assert!(scp < rm);
@@ -1053,7 +1227,10 @@ mod tests {
             e,
             "FAILED t: copying the receiver's files from the Pi failed"
         );
-        assert!(!f.log.iter().any(|l| l == "ssh pi 'rm -rf /tmp/t'"));
+        assert!(!f
+            .log
+            .iter()
+            .any(|l| l == "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'"));
     }
 
     fn lora_job(d: &Path) -> Fake {
@@ -1109,7 +1286,7 @@ mod tests {
             .iter()
             .any(|l| l.contains("--sent-frames 105") && l.contains("--reference frames/f.jpg")));
         assert!(f.log.iter().any(|l| l.contains(
-            "--power 5 --passes 3 --tx-log /tmp/t.tx.csv --i-have-an-antenna --transmit --dr dr3 >"
+            "--power 5 --passes 3 --tx-log /tmp/moq-bench.T/tx.csv --i-have-an-antenna --transmit --dr dr3 >"
         )));
         assert_eq!(log_secs(14.0, 3), 59);
     }
@@ -1169,5 +1346,265 @@ mod tests {
             parse_offset("{\"remote_minus_local_ms\":3}").unwrap().1,
             3.0
         );
+    }
+
+    #[test]
+    fn good_hosts_pass() {
+        for h in [
+            "pi",
+            "raspberrypi.local",
+            "pi-1_a.example.org",
+            "kd@pi",
+            "kd@192.168.1.20",
+            "192.168.1.20",
+            "::1",
+            "fe80::1",
+            "2001:db8::2",
+            "root@2001:db8::2",
+        ] {
+            validate_host(h).unwrap_or_else(|e| panic!("{h}: {e}"));
+        }
+    }
+
+    #[test]
+    fn hostile_hosts_are_refused() {
+        for h in [
+            "",
+            "-oProxyCommand=touch /tmp/x",
+            "-oProxyCommand=touch${IFS}/tmp/x",
+            "-F/dev/null",
+            "-o",
+            "--",
+            "a;b",
+            "a b",
+            "a\tb",
+            "a\nb",
+            "pi\n-oProxyCommand=x",
+            "$(x)",
+            "`x`",
+            "a|b",
+            "a&b",
+            "a>b",
+            "a<b",
+            "a'b",
+            "a\"b",
+            "a\\b",
+            "a*b",
+            "a?b",
+            "a!b",
+            "a#b",
+            "a%b",
+            "a,b",
+            "../x",
+            "a/b",
+            "~root",
+            "a\0b",
+            "pi\u{202e}",
+            "pi\u{e9}",
+            "@pi",
+            "kd@",
+            "-kd@pi",
+            "kd@-pi",
+            "a@b@c",
+            ".pi",
+            "pi:22",
+            "[::1]",
+            "::1;x",
+            "fe80::1%eth0",
+            "1:2:3:4:5:6:7:8:9",
+        ] {
+            assert!(validate_host(h).is_err(), "{h:?} was accepted");
+        }
+        assert!(validate_host(&"a".repeat(254)).is_err());
+        assert!(validate_host(&format!("{}@pi", "u".repeat(65))).is_err());
+        assert!(validate_host(&"a".repeat(253)).is_ok());
+    }
+
+    #[test]
+    fn env_refuses_a_hostile_pi_before_anything_runs() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct T {
+            #[command(flatten)]
+            env: Env,
+        }
+        let t = T::parse_from(["x", "--pi=-oProxyCommand=touch /tmp/x"]);
+        let e = t.env.cfg().unwrap_err().to_string();
+        assert!(e.contains("--pi"), "{e}");
+        assert!(T::parse_from(["x", "--pi", "kd@pi"]).env.cfg().is_ok());
+    }
+
+    #[test]
+    fn every_ssh_and_scp_plan_ends_the_options_before_the_host() {
+        let d = Scratch::new("dashdash");
+        let c = cfg(&d.0);
+        let p = c.ssh("true".into());
+        assert_eq!(p.shell(), "ssh -o BatchMode=yes -- pi true");
+        let p = scp_plan("pi:/a".into(), "/b".into());
+        assert_eq!(p.shell(), "scp -q -o BatchMode=yes -- pi:/a /b");
+        // A host that starts with '-' could still be one, if it ever got this far: it follows `--`.
+        let p = ssh_plan("-oProxyCommand=x", "true".into());
+        let i = p.args.iter().position(|a| a == "--").unwrap();
+        assert!(p.args[i + 1..].contains(&"-oProxyCommand=x".to_string()));
+        assert_eq!(scp_host("::1"), "[::1]");
+        assert_eq!(scp_host("kd@fe80::1"), "kd@[fe80::1]");
+        assert_eq!(scp_host("kd@pi"), "kd@pi");
+        assert_eq!(scp_host("pi"), "pi");
+    }
+
+    #[test]
+    fn every_ssh_scp_of_a_run_has_dashdash_and_a_private_scratch() {
+        let d = Scratch::new("alldash");
+        let mut f = Fake::default();
+        good_forward(&mut f, &d.0);
+        forward(&mut f, &cfg(&d.0), &run("t", &[])).unwrap();
+        for l in f
+            .log
+            .iter()
+            .filter(|l| l.starts_with("ssh") || l.starts_with("scp"))
+        {
+            assert!(l.contains(" -- "), "{l}");
+        }
+        assert!(f
+            .log
+            .iter()
+            .any(|l| l.contains("mktemp -d /tmp/moq-bench.")));
+        assert!(
+            !f.log
+                .iter()
+                .any(|l| l.contains("/tmp/t_") || l.contains("/tmp/t ")),
+            "no predictable /tmp name"
+        );
+    }
+
+    #[test]
+    fn a_strange_scratch_name_from_the_pi_is_refused() {
+        let d = Scratch::new("scratch");
+        for bad in [
+            "",
+            "relative/x",
+            "/tmp/a b",
+            "/tmp/../etc",
+            "/tmp/x;rm -rf /",
+            "/tmp/$(x)",
+        ] {
+            let mut f = Fake::default();
+            f.rule("mktemp", 0, bad, vec![]);
+            assert!(pi_scratch(&mut f, &cfg(&d.0)).is_err(), "{bad:?}");
+        }
+        let mut f = Fake::default();
+        f.rule("mktemp", 1, "/tmp/x", vec![]);
+        assert!(pi_scratch(&mut f, &cfg(&d.0)).is_err());
+    }
+
+    #[test]
+    fn run_names_and_labels_are_plain() {
+        for ok in ["t", "run-1", "a.b_c", &"a".repeat(64)] {
+            valid_name(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        for bad in [
+            "",
+            "../x",
+            "..",
+            "a..b",
+            "a/b",
+            "/abs",
+            "-x",
+            ".x",
+            "a b",
+            "a;b",
+            "$(x)",
+            "a\nb",
+            "x\0",
+            &"a".repeat(65),
+        ] {
+            assert!(valid_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_frequency_and_coding_rate_override_reaches_every_stage() {
+        let d = Scratch::new("loraov");
+        let mut f = lora_job(&d.0);
+        let args: Vec<String> = ["--freq", "903.5", "--cr=7", "--dr", "dr3"]
+            .map(String::from)
+            .into();
+        let l = Lora {
+            name: "t",
+            mode: "chunk",
+            file: "f.jpg",
+            profile: "sf7-125",
+            passes: 3,
+            args: &args,
+        };
+        lora(&mut f, &cfg(&d.0), &l).unwrap();
+        let has = |pat: &str| {
+            let hits: Vec<&String> = f.log.iter().filter(|l| l.contains(pat)).collect();
+            assert!(!hits.is_empty(), "no stage with {pat}");
+            hits
+        };
+        // dry run, transmitter (ssh), live logger, replay
+        for pat in [
+            "lora2015-send --mode chunk --file",
+            "lora2015-log --port",
+            "--replay",
+        ] {
+            for l in has(pat) {
+                assert!(
+                    l.contains("903.5") && (l.contains("--cr 7") || l.contains("--cr=7")),
+                    "{l}"
+                );
+            }
+        }
+        for l in has("lora2015-log") {
+            assert!(l.contains("--freq 903.5") && l.contains("--cr 7"), "{l}");
+        }
+    }
+
+    #[test]
+    fn radio_overrides_are_resolved_strictly() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(radio_overrides(&a(&["--dr", "dr3"])).unwrap().is_empty());
+        assert_eq!(
+            radio_overrides(&a(&["--freq=902.5"])).unwrap(),
+            a(&["--freq", "902.5"])
+        );
+        for bad in [
+            &["--freq"][..],
+            &["--freq", "nan"],
+            &["--cr", "x"],
+            &["--freq", "1", "--freq", "2"],
+        ] {
+            assert!(radio_overrides(&a(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_pi_scratch_must_be_ours() {
+        let d = Scratch::new("ours");
+        for bad in ["/tmp", "/tmp/t", "/home/kd", "/", "/tmp/other.X"] {
+            let mut f = Fake::default();
+            f.rule("mktemp", 0, bad, vec![]);
+            assert!(pi_scratch(&mut f, &cfg(&d.0)).is_err(), "{bad}");
+        }
+        // Reverse: the only rm -rf is of the unique directory, never of /tmp/<run name>.
+        let mut f = Fake::default();
+        f.rule("--clock-check", 0, CLOCK, vec![]);
+        f.rule(
+            "moq-subghz-send --catwan",
+            0,
+            "{}\n",
+            vec![(d.0.join("t.send.jsonl"), "x\n")],
+        );
+        f.rule("scp -q", 0, "", vec![(d.0.join("t/summary.json"), "{}")]);
+        let _ = reverse(&mut f, &cfg(&d.0), &run("t", &[]));
+        for l in f.log.iter().filter(|l| l.contains("rm -")) {
+            assert!(l.contains("/tmp/moq-bench.T"), "{l}");
+            assert!(!l.contains("/tmp/t'") && !l.contains("/tmp/t "), "{l}");
+        }
+        assert!(f
+            .log
+            .iter()
+            .any(|l| l.contains("--out /tmp/moq-bench.T/rx")));
     }
 }

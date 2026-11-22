@@ -7,7 +7,7 @@
 //! late when the receiver closes it, which is not a stall).
 //!
 //! `--clock-log FILE` (lines `{"t_us": <laptop unix µs>, "c": {"remote_minus_local_ms": Pi-minus-laptop}}`,
-//! written every few seconds by scripts/clocklog.sh during the runs) re-bases every latency
+//! written every few seconds by `moq-subghz-bench clocklog` during the runs) re-bases every latency
 //! sample on the offset interpolated at that moment instead of the single offset measured
 //! before the run. Needed because the Pi's timesyncd can step its clock by tens of ms mid-run.
 use anyhow::{Context, Result};

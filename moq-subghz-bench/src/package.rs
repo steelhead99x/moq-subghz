@@ -1,11 +1,12 @@
 //! `package-051`: copy the data worth keeping from a bench-051 runs directory into
-//! `results/stick-0.5.1/`, with no logs that hold host paths. A port of
-//! `scripts/package-051.sh`. A run missing a file it should have is an error, not a gap.
+//! `results/stick-0.5.1/`, with no logs that hold host paths. A run missing a file it should have is an error, not a gap.
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use flate2::{write::GzEncoder, Compression};
 use std::fs;
-use std::io::Write;
+
+/// Largest log `package-051` compresses (1 GiB).
+const MAX_LOG: u64 = 1 << 30;
 use std::path::{Path, PathBuf};
 
 fn dirs(root: &Path, keep: impl Fn(&str) -> bool) -> Result<Vec<String>> {
@@ -27,9 +28,16 @@ fn cp(from: &Path, to: &Path) -> Result<()> {
 }
 
 fn gzip(from: &Path, to: &Path) -> Result<()> {
-    let data = fs::read(from).with_context(|| format!("read {}", from.display()))?;
+    use std::io::Read;
+    let f = fs::File::open(from).with_context(|| format!("read {}", from.display()))?;
     let mut e = GzEncoder::new(fs::File::create(to)?, Compression::best());
-    e.write_all(&data)?;
+    // Streamed, so a big log costs no memory, but not without end.
+    let n = std::io::copy(&mut f.take(MAX_LOG + 1), &mut e)?;
+    ensure!(
+        n <= MAX_LOG,
+        "{} is larger than {MAX_LOG} bytes",
+        from.display()
+    );
     e.finish()?;
     Ok(())
 }
@@ -61,8 +69,21 @@ pub fn run(runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         if fs::metadata(&summary).map_or(true, |m| m.len() == 0) {
             continue;
         }
-        // A run whose sender never got a frame out has nothing to keep.
-        if fs::read_to_string(&summary)?.contains("\"radio_frames_ok\":0,") {
+        // A run whose sender never got a frame out has nothing to keep. One that sent frames and
+        // received none (a total loss) is a result and is kept.
+        let parse = |p: &Path| -> Result<serde_json::Value> {
+            Ok(
+                match crate::cell::read_text_opt(p, crate::cell::MAX_TEXT)? {
+                    Some(t) => {
+                        serde_json::from_str(&t).with_context(|| format!("{}", p.display()))?
+                    }
+                    None => serde_json::Value::Object(Default::default()),
+                },
+            )
+        };
+        let kind =
+            crate::analyze::run_kind(&parse(&summary)?, &parse(&d.join("send_summary.json"))?);
+        if kind == crate::analyze::RunKind::NeverStarted {
             continue;
         }
         let o = fsk.join(&n);
@@ -86,7 +107,7 @@ pub fn run(runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         cp_pictures(&d.join("exact"), &o)?;
         gzip(&d.join("raw.log"), &o.join("raw.log.gz"))?;
         cp(&runs.join(format!("{n}.tx.csv")), &o.join("tx.csv"))?;
-        let send = fs::read_to_string(runs.join(format!("{n}.send")))
+        let send = crate::cell::read_text(&runs.join(format!("{n}.send")), crate::cell::MAX_TEXT)
             .with_context(|| format!("read {n}.send"))?;
         let line: String = send
             .lines()
@@ -197,6 +218,36 @@ mod tests {
             fs::read_to_string(o.0.join("demo/fsk-live-summary.json")).unwrap(),
             "fsk-live/summary.json"
         );
+    }
+
+    #[test]
+    fn a_total_loss_run_is_kept_and_a_run_that_never_started_is_not() {
+        let (r, d, o) = (
+            Scratch::new("pk3-r"),
+            Scratch::new("pk3-d"),
+            Scratch::new("pk3-o"),
+        );
+        stage(&r.0, &d.0);
+        put(
+            r.0.join("f300-lost/summary.json"),
+            "{\"radio_frames_ok\":0,\"x\":1}",
+        );
+        put(
+            r.0.join("f300-lost/send_summary.json"),
+            "{\"frames_tx\":500}",
+        );
+        for f in ["objects.jsonl", "decoded.jsonl", "send.jsonl", "serial.log"] {
+            put(r.0.join("f300-lost").join(f), f);
+        }
+        put(
+            r.0.join("f300-zero/summary.json"),
+            "{\"radio_frames_ok\":0,\"x\":1}",
+        );
+        put(r.0.join("f300-zero/send_summary.json"), "{\"frames_tx\":0}");
+        run(&r.0, &d.0, &o.0).unwrap();
+        assert!(o.0.join("fsk/f300-lost/summary.json").exists());
+        assert!(o.0.join("fsk/f300-lost/send_summary.json").exists());
+        assert!(!o.0.join("fsk/f300-zero").exists() && !o.0.join("fsk/f300-dead").exists());
     }
 
     #[test]

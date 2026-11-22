@@ -13,16 +13,6 @@ use std::path::{Path, PathBuf};
 /// Most the file may hold.
 const MAX_BYTES: u64 = 4096;
 
-#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
-const O_NONBLOCK: i32 = 0o4000;
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-const O_NONBLOCK: i32 = 0x4; // macOS and the BSDs
-
-#[cfg(unix)]
-extern "C" {
-    fn geteuid() -> u32;
-}
-
 /// Why a licence file or value was rejected. No variant carries the licence ID or name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigError {
@@ -182,7 +172,7 @@ impl LicenceConfig {
             // instead of hanging.
             std::fs::OpenOptions::new()
                 .read(true)
-                .custom_flags(O_NONBLOCK)
+                .custom_flags(libc::O_NONBLOCK)
                 .open(path)
         };
         // Not Unix: the permission and owner checks cannot be made, so refuse.
@@ -206,7 +196,7 @@ impl LicenceConfig {
                 return Err(ConfigError::TooPermissive);
             }
             // SAFETY: geteuid takes no arguments and cannot fail.
-            if meta.uid() != unsafe { geteuid() } {
+            if meta.uid() != unsafe { libc::geteuid() } {
                 return Err(ConfigError::WrongOwner);
             }
         }

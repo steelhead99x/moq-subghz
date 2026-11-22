@@ -171,7 +171,7 @@ impl EmuLink {
     pub fn udp_receiver(cfg: EmuCfg, bind: &str, peer: Option<&str>) -> Result<Self, LinkError> {
         let sock = UdpSocket::bind(loopback_addr(bind)?).map_err(io)?;
         if let Some(p) = peer {
-            sock.connect(loopback_addr(p)?).map_err(io)?;
+            connect_and_drain(&sock, loopback_addr(p)?).map_err(io)?;
         }
         EmuLink::new(cfg, false, true, Out::None, In::Udp(sock))
     }
@@ -207,6 +207,26 @@ impl EmuLink {
     pub fn cfg(&self) -> &EmuCfg {
         &self.chan.cfg
     }
+}
+
+/// `connect` filters the datagrams that arrive after it, but Linux keeps those that were already
+/// queued between `bind` and `connect`, from any sender. Throw them away, so only the peer's
+/// datagrams are ever delivered.
+fn connect_and_drain(sock: &UdpSocket, peer: SocketAddr) -> std::io::Result<()> {
+    sock.connect(peer)?;
+    sock.set_nonblocking(true)?;
+    let mut sink = [0u8; 2048];
+    let drained = loop {
+        match sock.recv(&mut sink) {
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break Ok(()),
+            // A connected socket can report an earlier ICMP error once; it is not ours to act on.
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => continue,
+            Err(e) => break Err(e),
+        }
+    };
+    sock.set_nonblocking(false)?;
+    drained
 }
 
 fn delay_loop(rx: mpsc::Receiver<(Instant, Vec<u8>)>, sock: UdpSocket) {
@@ -505,6 +525,23 @@ mod tests {
         assert_eq!(rx.recv(&mut buf, t), Err(LinkError::Empty));
         assert_eq!(rx.recv(&mut buf, t), Err(LinkError::TooLong));
         assert_eq!(rx.recv(&mut buf, t).unwrap().unwrap().len, 5);
+    }
+
+    #[test]
+    fn datagrams_queued_before_connect_are_dropped() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let to = rx.local_addr().unwrap();
+        let stranger = UdpSocket::bind("127.0.0.1:0").unwrap();
+        stranger.send_to(&[9u8; 5], to).unwrap();
+        stranger.send_to(&[8u8; 3000], to).unwrap();
+        let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+        connect_and_drain(&rx, peer.local_addr().unwrap()).unwrap();
+        rx.set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut b = [0u8; 16];
+        assert!(rx.recv(&mut b).is_err(), "the queue is empty after connect");
+        peer.send_to(&[1, 2], to).unwrap();
+        assert_eq!(rx.recv(&mut b).unwrap(), 2);
     }
 
     #[test]
