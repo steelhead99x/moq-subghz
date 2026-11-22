@@ -5,6 +5,12 @@
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### Docs
+
+* README rewritten around a per-link and per-hardware status table (Measured, Modeled, Planned, Not started).
+  New pages: `docs/LINKS.md`, `docs/HARDWARE.md`, `docs/BENCHMARKS.md`, `docs/REGULATORY.md` and
+  `docs/AMATEUR.md` (a planned, receive-only amateur radio and satellite bridge). Documentation only.
+
 ### Renamed
 
 * **The project is now moq-subghz** (it was moq-lora), and the repository moved to
