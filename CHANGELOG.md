@@ -15,6 +15,13 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * CI: `--locked` throughout, doc tests, least-privilege `permissions:`, actions pinned by commit.
 * `docs/DEPENDENCIES.md` records why `rind` is a git dependency pinned by rev.
 
+### Tools
+
+* New crate `moq-subghz-bench`, the Rust replacement for the `scripts/` shell and Python harness.
+  This first step adds `analyze` (was `scripts/analyze-051.py`), `factory-bench`, `stick-cap` and
+  `factory-send` (were `results/factory-firmware/tools/`) and `elf2uf2` (was
+  `firmware/catwan-fw/elf2uf2.py`). The old scripts stay until the later steps land.
+
 ### Docs
 
 * README rewritten around a per-link and per-hardware status table (Measured, Modeled, Planned, Not started).
