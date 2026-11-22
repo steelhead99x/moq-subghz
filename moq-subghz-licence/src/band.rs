@@ -37,6 +37,31 @@ impl Band {
     }
 }
 
+/// The frequency span a tool tunes: where the carrier sits and how wide the signal is.
+/// The gate checks the whole span against the band table, so a carrier just inside a band edge
+/// with a wide signal is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tuning {
+    pub start_hz: u64,
+    pub end_hz: u64,
+}
+
+impl Tuning {
+    /// A carrier only (width unknown or negligible).
+    pub fn carrier(hz: u64) -> Self {
+        Self::occupied(hz, 0)
+    }
+
+    /// A signal centred on `centre_hz` that is `width_hz` wide in total.
+    pub fn occupied(centre_hz: u64, width_hz: u64) -> Self {
+        let half = width_hz.div_ceil(2);
+        Self {
+            start_hz: centre_hz.saturating_sub(half),
+            end_hz: centre_hz.saturating_add(half),
+        }
+    }
+}
+
 const PART15: &str =
     "47 CFR 15.247 https://www.ecfr.gov/current/title-47/chapter-I/subchapter-A/part-15";
 const PART97: &str = "47 CFR 97.301 https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-C/section-97.301";
@@ -126,6 +151,11 @@ pub fn in_project_guard(hz: u64) -> bool {
     hz.abs_diff(925_000_000) < 300_000
 }
 
+/// True when any part of the span falls inside [`in_project_guard`].
+pub fn span_in_project_guard(t: Tuning) -> bool {
+    t.start_hz < 925_300_000 && t.end_hz > 924_700_000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +183,27 @@ mod tests {
             assert!(b.source.contains("https://"), "{}", b.name);
             assert!(b.low_hz < b.high_hz);
         }
+    }
+
+    #[test]
+    fn tuning_span() {
+        assert_eq!(
+            Tuning::occupied(915_000_000, 500_000),
+            Tuning {
+                start_hz: 914_750_000,
+                end_hz: 915_250_000
+            }
+        );
+        let t = Tuning::occupied(u64::MAX, 10);
+        assert_eq!(t.end_hz, u64::MAX);
+        assert_eq!(Tuning::occupied(1, 10).start_hz, 0);
+        assert!(span_in_project_guard(Tuning::carrier(925_000_000)));
+        assert!(span_in_project_guard(Tuning::occupied(
+            924_000_000,
+            1_500_000
+        )));
+        assert!(!span_in_project_guard(Tuning::carrier(925_300_000)));
+        assert!(!span_in_project_guard(Tuning::carrier(924_700_000)));
     }
 
     #[test]

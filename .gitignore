@@ -23,8 +23,9 @@ catwan-backup-*.bin
 .tmp/
 
 # private licence config (licensed mode). Never commit; use licence.example.toml as the template.
-licence.toml
-**/licence.toml
+# Both spellings, and backups or variants such as licence.local.toml or license.toml.bak.
+*licen[cs]e*.toml*
+!licence.example.toml
 
 # python bytecode and tool caches (two .pyc files were committed by mistake)
 __pycache__/

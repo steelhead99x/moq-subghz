@@ -783,6 +783,10 @@ dependencies = [
 [[package]]
 name = "moq-subghz-licence"
 version = "0.1.0"
+dependencies = [
+ "clap",
+ "moq-subghz-licence",
+]
 
 [[package]]
 name = "moq-subghz-link"
@@ -800,8 +804,10 @@ dependencies = [
  "clap",
  "cmac",
  "libc",
+ "moq-subghz-licence",
  "moq-subghz-link",
  "moq-subghz-radio-sx1276",
+ "moq-subghz-wire",
  "sx1276",
 ]
 
@@ -844,6 +850,7 @@ dependencies = [
  "anyhow",
  "clap",
  "libc",
+ "moq-subghz-licence",
  "moq-subghz-link",
  "moq-subghz-radio-emu",
  "moq-subghz-radio-sx1276",
@@ -867,6 +874,7 @@ dependencies = [
  "anyhow",
  "clap",
  "libc",
+ "moq-subghz-licence",
  "moq-subghz-link",
  "moq-subghz-radio-emu",
  "moq-subghz-radio-sx1276",

@@ -4,7 +4,7 @@ Thanks for looking. This is a hobby project, so reviews may be slow.
 
 ## Build and test
 
-You need Rust 1.90 or newer and ffmpeg.
+You need Rust 1.90 or newer and ffmpeg. `rust-toolchain.toml` selects 1.90.0 (what CI uses) if you use rustup.
 
 ```sh
 cargo fmt --all --check

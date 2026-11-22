@@ -1,0 +1,4 @@
+# Matches the moq-publish job in .github/workflows/ci.yml. moq.dev's crates need Rust 1.91 or newer.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]

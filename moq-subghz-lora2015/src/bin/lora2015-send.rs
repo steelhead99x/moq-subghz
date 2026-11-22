@@ -7,6 +7,7 @@
 //! There is no join, no gateway and no network behind it.
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use moq_subghz_licence::{Auth, Encryption, GateArgs, Profile as GateProfile, Station, Tuning};
 use moq_subghz_lora2015::plan::{Dr, Mode, Plan};
 use moq_subghz_lora2015::profile::{self, Profile};
 use std::io::Write;
@@ -73,6 +74,10 @@ struct Args {
     /// Required to transmit: the antenna is on the HAT
     #[arg(long)]
     i_have_an_antenna: bool,
+    /// Licensed or unlicensed mode and the transmit switch (`--transmit` is also required
+    /// to key the radio; see docs/LICENSING.md)
+    #[command(flatten)]
+    gate: GateArgs,
 }
 
 fn settings(a: &Args) -> Result<Profile> {
@@ -97,6 +102,8 @@ fn settings(a: &Args) -> Result<Profile> {
 fn main() -> Result<()> {
     let a = Args::parse();
     let p = settings(&a)?;
+    // Load the licence file (if any) first: a bad one is an error in every run mode.
+    let station = a.gate.station().context("licence")?;
     let file = std::fs::read(&a.file).with_context(|| format!("read {}", a.file))?;
     let plan = |fcnt| Plan {
         mode: a.mode,
@@ -133,6 +140,9 @@ fn main() -> Result<()> {
         println!("LoRaWAN-framed, no network: test keys, no join, no gateway");
     }
     if a.dry_run {
+        if let Some(l) = station.log_line() {
+            println!("{l}");
+        }
         println!(
             "summary mode={:?} frames={} air_bytes={bytes} toa_s={:.3} pass_s={:.3}",
             a.mode,
@@ -145,7 +155,7 @@ fn main() -> Result<()> {
     if let Some(f) = &a.loopback {
         return loopback(&a, &p, &plan, f);
     }
-    transmit(&a, &p, &plan, first.len())
+    transmit(&a, &p, &plan, first.len(), &station)
 }
 
 /// The frames as the stick would report them, on the calculated airtime clock.
@@ -183,14 +193,26 @@ fn transmit<'a>(
     p: &Profile,
     plan: &dyn Fn(u16) -> Plan<'a>,
     frames_per_pass: usize,
+    station: &Station,
 ) -> Result<()> {
     use moq_subghz_link::Link;
-    use moq_subghz_radio_sx1276::Sx1276LoraTx;
     if !a.i_have_an_antenna {
         bail!("pass --i-have-an-antenna to transmit");
     }
     let cfg = p.lora().map_err(anyhow::Error::msg)?;
-    let mut r = Sx1276LoraTx::open(a.spi_hz, p.freq_hz, &cfg, a.power)?;
+    let permit = station
+        .check_transmit_without_station_id(
+            Tuning::occupied(u64::from(p.freq_hz), u64::from(p.bw_hz)),
+            GateProfile::ISM,
+            if a.mode == Mode::Lorawan {
+                Encryption::AesPayload
+            } else {
+                Encryption::None
+            },
+            Auth::None,
+        )
+        .map_err(|e| anyhow::anyhow!("refusing to transmit: {e}"))?;
+    let mut r = open_radio(&permit, a, p, &cfg)?;
     let [mc1, mc2, mc3] = r.modem_config()?;
     if !profile::modem_readback_ok(mc1, mc2, mc3, &cfg) {
         bail!("LoRa modem readback differs from what was written");
@@ -246,6 +268,9 @@ fn transmit<'a>(
         w.flush()?;
     }
     let wall = start.elapsed().as_secs_f64();
+    if let Some(l) = station.log_line() {
+        println!("{l}");
+    }
     println!(
         "sent frames={sent} bytes={bytes} wall_s={wall:.3} air_s_calc={:.3} duty_pct={:.1}",
         air_us as f64 / 1e6,
@@ -255,7 +280,25 @@ fn transmit<'a>(
     Ok(())
 }
 
+/// Open the HAT's SX1276 in LoRa mode. The permit is the proof that the gate said yes.
+#[cfg(target_os = "linux")]
+fn open_radio(
+    permit: &moq_subghz_licence::Permit,
+    a: &Args,
+    p: &Profile,
+    cfg: &sx1276::LoRaConfig,
+) -> Result<moq_subghz_radio_sx1276::Sx1276LoraTx> {
+    assert!(permit.may_transmit(), "a transmit permit is required");
+    moq_subghz_radio_sx1276::Sx1276LoraTx::open(a.spi_hz, p.freq_hz, cfg, a.power)
+}
+
 #[cfg(not(target_os = "linux"))]
-fn transmit<'a>(_: &Args, _: &Profile, _: &dyn Fn(u16) -> Plan<'a>, _: usize) -> Result<()> {
+fn transmit<'a>(
+    _: &Args,
+    _: &Profile,
+    _: &dyn Fn(u16) -> Plan<'a>,
+    _: usize,
+    _: &Station,
+) -> Result<()> {
     bail!("transmitting needs the Pi (Linux, SPI); use --dry-run here")
 }
