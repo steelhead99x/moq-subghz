@@ -117,6 +117,8 @@ stick and your first live picture.
 
 ## Hardware
 
+Other links and boards (HaLow, 2.4 GHz, 5.8 GHz, ESP32 and more) are in [LINKS.md](LINKS.md) and [HARDWARE.md](HARDWARE.md); only what is listed below has been measured.
+
 * Raspberry Pi 2 + Dragino LoRa/GPS HAT (915 MHz): the sender
 * Electronic Cats CatWAN USB Stick RP2040 (915 MHz): the receiver, plugs into a laptop
 * Two 915 MHz antennas

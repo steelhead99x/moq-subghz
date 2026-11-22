@@ -236,3 +236,4 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
 * **The checks are in the host tools, not the stick.** The firmware's own serial commands
   accept up to +17 dBm on any frequency. Don't type them into a raw terminal session.
 * You are the operator, and the emissions are your responsibility.
+* Other bands (2.4 GHz, 5.8 GHz, amateur bands) have their own rules and no code here: see [docs/REGULATORY.md](docs/REGULATORY.md).
