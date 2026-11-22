@@ -46,8 +46,6 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Added
 
-* `moq-subghz-link`: the `Link` trait (`caps`, `send` returning a `TxReport`, `recv(buf, timeout)`, `idle`)
-  and an in-memory `loopback::pair` with deterministic drops. No binary uses it yet; nothing on the air changes.
 * `results/stick-0.5.1/`: the full over-the-air benchmark on `catwan-fw` 0.5.1. 72 still-picture runs
   (chunked JPEG, SSDV, LoRaWAN-framed at SF7/125, SF7/250, SF7/500, SF8/500) and 8 live FSK video runs,
   next to the factory baseline, plus a 6 minute demo (`scripts/demo-051.sh`). `scripts/run2.sh` now works
@@ -63,6 +61,9 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   CatWAN stick and writes CSV. Built and tested without radios; the airtime table is calculated,
   not measured. The FSK path and the existing tools are unchanged.
   `moq-subghz-pi` gains `open_hat_raw`, the part of `open_hat` that opens spidev and GPIO.
+
+* `moq-subghz-link`: the `Link` trait (`caps`, `send` returning a `TxReport`, `recv(buf, timeout)`, `idle`)
+  and an in-memory `loopback::pair` with deterministic drops. No binary uses it yet; nothing on the air changes.
 
 ### Changed on the air
 
