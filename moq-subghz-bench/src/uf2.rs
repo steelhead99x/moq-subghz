@@ -1,5 +1,5 @@
 //! `elf2uf2`: a minimal ELF to UF2 converter for the RP2040 (family 0xe48bff56): the PT_LOAD
-//! segments by physical address in 256-byte blocks. A port of `firmware/catwan-fw/elf2uf2.py`.
+//! segments by physical address in 256-byte blocks.
 
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeMap;

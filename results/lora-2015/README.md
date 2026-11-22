@@ -29,7 +29,7 @@ The test pictures are in `frames/`: 320x240 at ffmpeg quality 10 and 160x120 at 
 as JPEG, and the same pictures as SSDV packets. SSDV needs sizes in multiples of 16, so its small
 picture is 160x112. SSDV re-encodes the picture with its own tables, so it comes back a little
 different from the JPEG (about 29 dB PSNR for the large one). Rebuild them with
-`scripts/lora2015-frames.sh`.
+`moq-subghz-bench lora2015-frames`.
 
 ## Radio settings
 
@@ -49,7 +49,7 @@ change silently.
 ## Airtime, calculated, not measured
 
 Time on air from the datasheet formula, which `sx1276` implements and its tests check. Values for
-the table below came from `scripts/lora2015-table.sh`, which uses `lora2015-send --dry-run`.
+the table below came from `moq-subghz-bench lora2015-table`, which uses `lora2015-send --dry-run`.
 "Best fps" is one picture per airtime with no loss, no gaps and no repeat pass. "Images per 30 s" is how many
 pictures fit in The Things Network's fair-use limit of 30 s of uplink airtime per day, which applies on
 its public network and not on this bench.

@@ -99,7 +99,7 @@ To build the firmware yourself instead:
 cd firmware/catwan-fw
 rustup target add thumbv6m-none-eabi
 cargo build --release
-python3 elf2uf2.py target/thumbv6m-none-eabi/release/catwan-fw catwan-fw.uf2
+cargo run --release --manifest-path ../../Cargo.toml -p moq-subghz-bench -- elf2uf2 target/thumbv6m-none-eabi/release/catwan-fw catwan-fw.uf2
 ```
 
 ## 5. First picture
@@ -169,18 +169,19 @@ clock. Those two clocks need comparing:
 ```
 
 Pass that number to the receiver as `--clock-offset-ms`. The clocks drift by tens of ms between
-runs, so the scripts in `scripts/` check before and after each run and log the offset every 5 s
+runs, so `moq-subghz-bench` checks before and after each run and log the offset every 5 s
 during it:
 
 ```sh
 export PORT=/dev/cu.usbmodemXXXX PI=pi
-scripts/run2.sh  myrun 300000:100000:6 330 --fec-k 8     # Pi to laptop
-scripts/rev.sh   myrun 300000:100000:12 330 --fec-k 8    # laptop to Pi
-scripts/bench.sh                                         # the full 8-run set from the README
+B=target/release/moq-subghz-bench
+$B run --i-have-an-antenna myrun 300000:100000:6 330 --fec-k 8     # Pi to laptop
+$B rev --i-have-an-antenna myrun 300000:100000:12 330 --fec-k 8    # laptop to Pi
+$B bench --i-have-an-antenna                                       # the full 8-run set from the README
 cargo run --release -p moq-subghz-report -- runs/*/        # results table
 ```
 
-More detail is in [scripts/README.md](scripts/README.md). The meaning of each column is in
+More detail is in [moq-subghz-bench/README.md](moq-subghz-bench/README.md). The meaning of each column is in
 [results/video/README.md](results/video/README.md).
 
 ## 8. More things to try

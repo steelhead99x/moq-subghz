@@ -10,13 +10,18 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * New crate `moq-subghz-bench`, the Rust replacement for the `scripts/` shell and Python harness.
   This first step adds `analyze` (was `scripts/analyze-051.py`), `factory-bench`, `stick-cap` and
   `factory-send` (were `results/factory-firmware/tools/`) and `elf2uf2` (was
-  `firmware/catwan-fw/elf2uf2.py`). The old scripts stay until the later steps land.
+  `firmware/catwan-fw/elf2uf2.py`).
 * The orchestration follows: `run`, `rev`, `bench`, `bench-051`, `lora2015-run`, `demo-051`,
   `clocklog`, `package-051`, `lora2015-table` and `lora2015-frames` (were the matching
   `scripts/*.sh`). `--dry-run` prints the exact commands. A run that fails still ends
   `FAILED <run>: <why>` with exit 1, and a matrix with a failed run ends `BENCH_FAILED`.
   Unlike the shell, they need `--i-have-an-antenna` and `--port` from you: no serial device is
   assumed, and the Pi's per frame log of a lora2015 run is checked too.
+* The ported scripts are deleted: `scripts/{run2,rev,bench,bench-051,demo-051,clocklog,lora2015-run,
+  lora2015-frames,lora2015-table,package-051}.sh`, `scripts/env.sh`, `scripts/analyze-051.py`,
+  `results/factory-firmware/tools/` and `firmware/catwan-fw/elf2uf2.py`. Docs point to
+  `moq-subghz-bench` (see its README for the flag that replaces each variable). `scripts/loss_sweep.py`
+  and `firmware/vendor/dragino-lora-gps-hat/fetch-and-build.sh` remain.
 
 ### Docs
 

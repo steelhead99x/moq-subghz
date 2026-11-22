@@ -1,7 +1,6 @@
 //! `factory-bench`: the factory-vs-factory picture test of `results/factory-firmware/`. The Pi
 //! runs the stock Dragino app, once per text chunk of a JPEG, and the stock Electronic Cats
-//! receiver on the stick prints what it hears. A port of `factory_bench.py` and
-//! `factory-send.sh`; the stick capture is the `stick-cap` subcommand.
+//! receiver on the stick prints what it hears.  The stick capture is the `stick-cap` subcommand.
 //!
 //! This transmits, so it needs `--i-have-an-antenna` and the serial port of the stick as `--dev`.
 

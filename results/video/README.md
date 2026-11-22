@@ -64,7 +64,7 @@ export PKEY="$LKEY"              # path of that same file on the Pi
 scp "$LKEY" "$PI:moq-subghz-key.hex"
 ```
 
-Pi -> Mac (`scripts/run2.sh NAME PROFILE 330 ...`), e.g. f300_on:
+Pi -> Mac (`moq-subghz-bench run NAME PROFILE 330 ...`), e.g. f300_on:
 
 ```sh
 # laptop: clock offset, then receiver
@@ -76,7 +76,7 @@ moq-subghz-recv --port "$PORT" --profile 300000:100000:6 --secs 340 --out runs/f
     --fec-k 8 --key-file "$PKEY"
 ```
 
-Mac -> Pi (`scripts/rev.sh`), e.g. r350_off (12 B preamble at 300k, 14 B at 350k):
+Mac -> Pi (`moq-subghz-bench rev`), e.g. r350_off (12 B preamble at 300k, 14 B at 350k):
 
 ```sh
 moq-subghz-recv --clock-check "$PI"                       # X = Pi minus laptop; the Pi receiver gets -X
@@ -87,7 +87,7 @@ moq-subghz-send --catwan "$PORT" --profile 350000:100000:14:x --secs 330 \
 ```
 
 Forward profiles: `300000:100000:6`, `350000:100000:6:x`. A clock check ran every 5 s throughout
-(`scripts/clocklog.sh` -> `clock_log.jsonl`).
+(`moq-subghz-bench clocklog` -> `clock_log.jsonl`).
 
 Table:
 

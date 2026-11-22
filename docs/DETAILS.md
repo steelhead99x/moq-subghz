@@ -143,7 +143,7 @@ Details in the [HOWTO](../HOWTO.md#9-radio-rules).
 | `moq-subghz-lora2015` | the 2015-style LoRa image test: `lora2015-send` on the Pi, `lora2015-log` on the host ([results/lora-2015](../results/lora-2015/README.md)) |
 | `firmware/catwan-fw` | Rust firmware for the USB stick, plus a prebuilt `.uf2` |
 | `vendor/sx1276` | `no_std` SX1276 radio driver |
-| `scripts/` | the bench harness that produced the results |
+| `moq-subghz-bench` | the bench harness that produced the results, and the analysis of them ([moq-subghz-bench](../moq-subghz-bench/README.md)); `scripts/loss_sweep.py` is the no-radio loss sweep |
 | `results/video/` | raw logs from every run |
 
 ## Write-ups
