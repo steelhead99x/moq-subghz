@@ -543,12 +543,16 @@ impl Drop for Cleanup<'_> {
 /// of `/proc/PID/stat`, compared as the exact string) is not the recorded one is another process
 /// that reused the pid: it is not signalled and the receiver counts as stopped, with a note. One
 /// whose `/proc` command line is not the receiver counts as stopped too. A live receiver gets TERM
-/// and up to 10 s, then KILL, and is confirmed gone with `kill -0` (a zombie is gone); exit 3 if it
+/// and up to 10 s, then KILL. Each signal, and each step of the wait, re-checks the pid, start time
+/// and command line immediately before it, so a pid reused during the wait is never sent the
+/// fallback KILL. The receiver is confirmed gone with `kill -0` (a zombie is gone); exit 3 if it
 /// is still there. Exit 0 means stopped. It removes nothing: the caller removes the directory only
 /// after a 0.
 pub fn stop_script(dir: &str) -> String {
     r#"d=@DIR@
 alive() { kill -0 "$1" 2>/dev/null && ! grep -q ') Z' "/proc/$1/stat" 2>/dev/null; }
+same() { n=$(start_of "$p") && [ "$n" = "$t" ] && cl=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null) && case $cl in *moq-subghz-recv*) return 0;; esac; return 1; }
+signal() { if same; then kill -"$1" "$p" 2>/dev/null; else echo "note: pid $p is no longer the receiver; $1 not sent" >&2; fi; }
 start_of() { s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1; s=${s##*) }; set -- $s; shift 19; echo "$1"; }
 i=0; while [ ! -s "$d/rx.pid" ] && [ $i -lt 15 ]; do sleep 0.2; i=$((i+1)); done
 if [ ! -e "$d/rx.pid" ]; then echo "uncertain: $d/rx.pid does not exist" >&2; exit 4; fi
@@ -561,9 +565,9 @@ if ! now=$(start_of "$p"); then echo "note: pid $p is gone" >&2; exit 0; fi
 if [ "$now" != "$t" ]; then echo "note: pid $p now belongs to another process (start time $now, recorded $t); not signalled, the receiver is already gone" >&2; exit 0; fi
 if ! c=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null); then echo "uncertain: cannot read /proc/$p/cmdline" >&2; exit 4; fi
 case $c in *moq-subghz-recv*)
-kill -TERM "$p" 2>/dev/null; i=0; while alive "$p" && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
-if alive "$p"; then kill -KILL "$p" 2>/dev/null; sleep 1; fi
-if alive "$p"; then echo "receiver $p is still running" >&2; exit 3; fi;;
+signal TERM; i=0; while same && alive "$p" && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
+if same && alive "$p"; then signal KILL; sleep 1; fi
+if same && alive "$p"; then echo "receiver $p is still running" >&2; exit 3; fi;;
 esac
 fi
 exit 0"#
@@ -1458,7 +1462,7 @@ mod tests {
         assert!(e.contains("could not start"), "{e}");
         let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
         // the local ssh is killed, the Pi confirms the receiver stopped, and only then the rm
-        let (kill, stop, rm) = (at("kill job 0"), at("kill -TERM"), at("rm -rf /tmp"));
+        let (kill, stop, rm) = (at("kill job 0"), at("signal TERM"), at("rm -rf /tmp"));
         assert!(kill < stop && stop < rm, "{:?}", f.log);
         assert_eq!(
             f.log[rm],
@@ -1476,7 +1480,7 @@ mod tests {
         let d = Scratch::new("revkeep");
         for (code, why) in [(3, "still running"), (4, "pid file")] {
             let mut f = Fake::default();
-            f.rule("kill -TERM", code, "", vec![]);
+            f.rule("signal TERM", code, "", vec![]);
             let w = stop_receiver(&mut f, &cfg(&d.0), "/tmp/moq-bench.T").unwrap();
             assert!(
                 w.contains("WARNING") && w.contains("/tmp/moq-bench.T"),
@@ -1489,7 +1493,7 @@ mod tests {
         // a full run whose stop cannot be confirmed never removes the directory
         let mut f = Fake::default();
         f.rule("--clock-check", 0, CLOCK, vec![]);
-        f.rule("kill -TERM", 3, "", vec![]);
+        f.rule("signal TERM", 3, "", vec![]);
         f.cannot_start.push("moq-subghz-send --catwan");
         assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
         assert!(!f.log.iter().any(|l| l.contains("rm -rf")), "{:?}", f.log);
@@ -1500,7 +1504,7 @@ mod tests {
         let d = Scratch::new("revdrop");
         let rules = |f: &mut Fake, stop: i32| {
             f.rule("--clock-check", 0, CLOCK, vec![]);
-            f.rule("kill -TERM", stop, "", vec![]);
+            f.rule("signal TERM", stop, "", vec![]);
             // the ssh that carries the receiver drops: exit 255; the copy would succeed
             f.rule("moq-subghz-recv --radio", 255, "", vec![]);
             f.rule(
@@ -1522,7 +1526,7 @@ mod tests {
         assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
         let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
         assert!(
-            at("kill -TERM") < at("scp -q") && at("scp -q") < at("rm -rf"),
+            at("signal TERM") < at("scp -q") && at("scp -q") < at("rm -rf"),
             "{:?}",
             f.log
         );
@@ -1533,7 +1537,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("not confirmed"), "{e}");
-        assert!(f.log.iter().any(|l| l.contains("kill -TERM")));
+        assert!(f.log.iter().any(|l| l.contains("signal TERM")));
         assert!(!f
             .log
             .iter()
@@ -1659,6 +1663,35 @@ mod tests {
             .unwrap();
         assert_eq!(st.code(), Some(0));
         assert!(!alive(rx), "the receiver was left running");
+    }
+
+    #[test]
+    fn the_kill_after_the_wait_is_bound_to_the_receiver_identity_too() {
+        // Stand-in receiver that, on TERM, becomes another program under the same pid and start
+        // time (as a reused pid would look to the check): the fallback KILL must not hit it.
+        let d = Scratch::new("stop-rebind");
+        let bin = d.0.join("moq-subghz-recv");
+        fs::write(
+            &bin,
+            "#!/bin/sh\ntrap 'exec sleep 30' TERM\nwhile :; do sleep 0.2; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let rx = orphan(&bin.display().to_string());
+        std::thread::sleep(Duration::from_millis(300));
+        fs::write(d.0.join("rx.pid"), format!("{rx} {}", start_time(rx))).unwrap();
+        let st = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(stop_script(&d.0.display().to_string()))
+            .status()
+            .unwrap();
+        assert_eq!(st.code(), Some(0));
+        assert!(
+            alive(rx),
+            "the KILL hit a process that is no longer the receiver"
+        );
+        // SAFETY: ending the sleep we started.
+        unsafe { libc::kill(rx, libc::SIGKILL) };
     }
 
     #[test]
