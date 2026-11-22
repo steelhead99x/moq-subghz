@@ -126,8 +126,14 @@ pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
 /// the loopback file: `R <t_us> <rssi> <snr> <hex>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RLine {
+    /// Timestamp in microseconds, when the field parsed: the stick's clock for a CatWAN line,
+    /// time since the run started for a loopback file.
+    pub t_us: Option<u64>,
     /// RSSI in dBm, when the field parsed.
     pub rssi: Option<i32>,
+    /// SNR in quarter dB (the SX1276 reports 0.25 dB steps), when the field parsed. Writers
+    /// without an SNR put 0.
+    pub snr: Option<i32>,
     pub frame: Vec<u8>,
 }
 
@@ -135,12 +141,14 @@ pub struct RLine {
 /// malformed (odd length, non-hex, or longer than a radio frame).
 pub fn parse_r_line(l: &str) -> Option<RLine> {
     let mut it = l.strip_prefix("R ")?.split(' ');
-    let (_t, rssi, _snr, hx) = (it.next(), it.next(), it.next(), it.next().unwrap_or(""));
+    let (t, rssi, snr, hx) = (it.next(), it.next(), it.next(), it.next().unwrap_or(""));
     if hx.len() > 2 * MAX_FRAME {
         return None;
     }
     Some(RLine {
+        t_us: t.and_then(|s| s.parse().ok()),
         rssi: rssi.and_then(|s| s.parse().ok()),
+        snr: snr.and_then(|s| s.parse().ok()),
         frame: decode_hex(hx)?,
     })
 }
@@ -1738,9 +1746,28 @@ mod tests {
         assert_eq!(
             parse_r_line("R 12 -50 0 0102"),
             Some(RLine {
+                t_us: Some(12),
                 rssi: Some(-50),
+                snr: Some(0),
                 frame: vec![1, 2]
             })
+        );
+        let r = parse_r_line("R 1234567 -91 -22 ff").unwrap();
+        assert_eq!(
+            (r.t_us, r.rssi, r.snr),
+            (Some(1234567), Some(-91), Some(-22))
+        );
+        // a field that does not parse is None, and the frame still comes through
+        let r = parse_r_line("R x -91 y ff").unwrap();
+        assert_eq!(
+            (r.t_us, r.rssi, r.snr, r.frame),
+            (None, Some(-91), None, vec![0xff])
+        );
+        // short line (no snr or hex): fields missing, empty frame
+        let r = parse_r_line("R 5 -60").unwrap();
+        assert_eq!(
+            (r.t_us, r.rssi, r.snr, r.frame.len()),
+            (Some(5), Some(-60), None, 0)
         );
         assert_eq!(parse_r_line("R 12 x 0 01").unwrap().rssi, None);
         assert_eq!(parse_r_line("R 12 -50 0").unwrap().frame, Vec::<u8>::new());
