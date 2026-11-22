@@ -518,8 +518,42 @@ impl Drop for Cleanup<'_> {
             self.h.kill(id);
         }
         if let Some(dir) = self.scratch.take() {
-            let _ = self.h.run(&self.c.ssh(format!("rm -rf {}", shq(&dir))));
+            if let Some(warning) = stop_receiver_and_remove(self.h, self.c, &dir) {
+                eprintln!("{warning}");
+            }
         }
+    }
+}
+
+/// The remote command that stops the receiver this run started and then removes `dir`: it reads
+/// the pid the run itself wrote to `dir/rx.pid`, accepts it only if it is numeric and its
+/// `/proc` command line is the receiver, sends TERM and waits up to 10 s, then KILL, checks with
+/// `kill -0`, and removes the directory only if the receiver is gone (else exit 3, directory kept).
+pub fn stop_script(dir: &str) -> String {
+    let d = shq(dir);
+    format!(
+        "d={d}; p=$(cat \"$d/rx.pid\" 2>/dev/null); case $p in ''|*[!0-9]*) p=;; esac; \
+if [ -n \"$p\" ] && tr '\\0' ' ' < \"/proc/$p/cmdline\" 2>/dev/null | grep -q moq-subghz-recv; then \
+kill -TERM \"$p\" 2>/dev/null; i=0; while kill -0 \"$p\" 2>/dev/null && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done; \
+if kill -0 \"$p\" 2>/dev/null; then kill -KILL \"$p\" 2>/dev/null; sleep 1; fi; \
+if kill -0 \"$p\" 2>/dev/null; then echo \"receiver $p is still running\" >&2; exit 3; fi; fi; \
+rm -rf \"$d\""
+    )
+}
+
+/// Run [`stop_script`] on the Pi. When it cannot confirm the receiver stopped (or cannot run), the
+/// directory is kept and the returned text is the loud warning naming it.
+fn stop_receiver_and_remove(h: &mut dyn Host, c: &Cfg, dir: &str) -> Option<String> {
+    match h.run(&c.ssh(stop_script(dir))) {
+        Ok(d) if d.code == 0 => None,
+        r => Some(format!(
+            "WARNING: could not confirm the receiver on {} stopped ({}); its scratch directory {dir} was KEPT. Check the process and remove the directory by hand.",
+            c.pi,
+            match r {
+                Ok(d) => format!("exit {}", d.code),
+                Err(e) => format!("{e:#}"),
+            }
+        )),
     }
 }
 
@@ -558,7 +592,12 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     for w in c.lic_flags(Side::Pi, &rxw).into_iter().chain(rxw) {
         rxa += &format!(" {}", shq(&w));
     }
-    let script = format!("cd ~/{} && {rxa}", shq(&c.pi_dir));
+    // The receiver records its own pid (the shell execs into it), so a cleanup can confirm it stopped.
+    let script = format!(
+        "cd ~/{} && echo $$ > {} && exec {rxa}",
+        shq(&c.pi_dir),
+        shq(&format!("{scratch}/rx.pid"))
+    );
     let rx =
         g.h.start(&c.ssh(script).out(c.run_file(n, ".out")).err_to_out())?;
     g.rx = Some(rx);
@@ -1329,13 +1368,50 @@ mod tests {
             .to_string();
         assert!(e.contains("could not start"), "{e}");
         let kill = f.log.iter().position(|l| l == "kill job 0").unwrap();
-        let rm = f
+        let stop = f.log.iter().position(|l| l.contains("kill -TERM")).unwrap();
+        assert!(kill < stop, "{:?}", f.log);
+        // on the Pi: TERM, wait and confirm with kill -0, KILL, confirm again, and only then rm
+        let sc = stop_script("/tmp/moq-bench.T");
+        let at = |k: &str| sc.find(k).unwrap_or_else(|| panic!("{k}"));
+        assert!(at("kill -TERM") < at("kill -0") && at("kill -0") < at("kill -KILL"));
+        assert!(at("kill -KILL") < at("exit 3") && at("exit 3") < at("rm -rf"));
+        assert!(
+            sc.contains("*[!0-9]*")
+                && sc.contains("/proc/$p/cmdline")
+                && sc.contains("moq-subghz-recv")
+        );
+        assert!(
+            f.log[stop].contains("d=/tmp/moq-bench.T;") && f.log[stop].contains("$d/rx.pid"),
+            "{}",
+            f.log[stop]
+        );
+        assert_eq!(f.log.iter().filter(|l| l.contains("rm -rf")).count(), 1);
+        assert!(f
             .log
             .iter()
-            .position(|l| l == "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'")
-            .unwrap();
-        assert!(kill < rm, "{:?}", f.log);
-        assert_eq!(f.log.iter().filter(|l| l.contains("rm -rf")).count(), 1);
+            .any(|l| l.contains("echo $$ > /tmp/moq-bench.T/rx.pid && exec ./moq-subghz-recv")));
+    }
+
+    #[test]
+    fn an_unconfirmed_stop_keeps_the_directory_and_warns_naming_it() {
+        let d = Scratch::new("revkeep");
+        let mut f = Fake::default();
+        f.rule("kill -TERM", 3, "", vec![]);
+        let w = stop_receiver_and_remove(&mut f, &cfg(&d.0), "/tmp/moq-bench.T").unwrap();
+        assert!(
+            w.contains("WARNING") && w.contains("/tmp/moq-bench.T") && w.contains("KEPT"),
+            "{w}"
+        );
+        // the one command the guard runs removes only after its own check passes
+        assert_eq!(f.log.len(), 1);
+        let mut ok = Fake::default();
+        assert!(stop_receiver_and_remove(&mut ok, &cfg(&d.0), "/tmp/moq-bench.T").is_none());
+        // and a full run that fails after the receiver started reaches the same path
+        let mut f = Fake::default();
+        f.rule("--clock-check", 0, CLOCK, vec![]);
+        f.rule("kill -TERM", 3, "", vec![]);
+        f.cannot_start.push("moq-subghz-send --catwan");
+        assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
     }
 
     #[test]

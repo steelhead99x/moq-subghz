@@ -348,7 +348,7 @@ pub fn pretty(v: &Value) -> Result<String> {
     Ok(String::from_utf8(buf)?)
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Clone, Debug)]
 pub struct Opts {
     /// Name of the run, and its folder under --out
     #[arg(long)]
@@ -479,6 +479,24 @@ pub fn scratch_plan(o: &Opts) -> Plan {
 /// Removes the run's scratch directory, that exact directory only.
 pub fn cleanup_plan(o: &Opts, dir: &str) -> Plan {
     crate::orch::ssh_plan(&o.pi, format!("rm -rf {}", shq(dir)))
+}
+
+/// The local run directory `out/label`, made exclusively (mode 0700): a second run with the same
+/// label and out dir fails instead of sharing its chunk files, stick capture and summary.
+pub fn reserve_run_dir(o: &Opts) -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let d = o.out.join(&o.label);
+    fs::create_dir_all(&o.out).with_context(|| format!("create {}", o.out.display()))?;
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&d)
+        .with_context(|| {
+            format!(
+                "the run directory {} exists or cannot be made: use another --label or --out, or remove it",
+                d.display()
+            )
+        })?;
+    Ok(d)
 }
 
 /// The run's remote scratch directory, removed when this drops (on success, error or early return).
@@ -619,8 +637,8 @@ pub fn run(o: &Opts) -> Result<()> {
     if !o.i_have_an_antenna {
         bail!("refusing to transmit without --i-have-an-antenna");
     }
-    let d = o.out.join(&o.label);
-    fs::create_dir_all(&d)?;
+    let d = reserve_run_dir(o)?;
+    println!("run directory: {}", d.display());
     let pkt_len = chunks.iter().map(String::len).max().unwrap_or(0);
     let at = airtime(pkt_len, 7, 125e3, 1, 1, 0, 8.0);
     let cp = cap_plan(o, &exe);
@@ -742,6 +760,7 @@ pub fn send_chunks(
     out: &mut impl std::io::Write,
 ) -> Result<()> {
     use std::io::Read;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let text = crate::cell::read_text(chunks, crate::cell::MAX_TEXT)?;
     let epoch = || {
@@ -758,18 +777,25 @@ pub fn send_chunks(
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            .process_group(0)
             .spawn()
             .with_context(|| format!("start ./dragino_lora_app in {}", app_dir.display()))?;
-        // Read stderr as it comes, keeping only its tail, so a chatty app never blocks on a full pipe.
+        // Read stderr as it comes into a shared tail, so a chatty app never blocks on a full pipe
+        // and a drain that outlasts the deadline still reports what it read.
         let mut err = child.stderr.take().context("no stderr pipe")?;
-        let tail = std::thread::spawn(move || {
-            let (mut keep, mut buf) = (Vec::<u8>::new(), [0u8; 4096]);
+        let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let shared = tail.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
             while let Ok(n @ 1..) = err.read(&mut buf) {
-                keep.extend_from_slice(&buf[..n]);
-                let cut = keep.len().saturating_sub(STDERR_TAIL);
-                keep.drain(..cut);
+                if let Ok(mut keep) = shared.lock() {
+                    keep.extend_from_slice(&buf[..n]);
+                    let cut = keep.len().saturating_sub(STDERR_TAIL);
+                    keep.drain(..cut);
+                }
             }
-            String::from_utf8_lossy(&keep).into_owned()
+            let _ = done_tx.send(());
         });
         // The same cut-off as `timeout 1.3`.
         let t0 = Instant::now();
@@ -784,13 +810,18 @@ pub fn send_chunks(
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        // Only an early exit has a tail worth waiting for: a killed app's pipe may be held open by
-        // anything it started.
-        let tail = if early.is_some() {
-            tail.join().unwrap_or_default()
-        } else {
-            String::new()
-        };
+        // Anything the app started stays in its process group: end it, so nothing outlives the
+        // chunk, and bound the stderr drain by the same deadline (a grandchild may hold the pipe).
+        let drained = done_rx
+            .recv_timeout(app_timeout.saturating_sub(t0.elapsed()))
+            .is_ok();
+        // SAFETY: signalling the process group we made for this child.
+        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+        if !drained {
+            let _ = done_rx.recv_timeout(Duration::from_millis(50));
+        }
+        let tail = String::from_utf8_lossy(&tail.lock().map(|t| t.clone()).unwrap_or_default())
+            .into_owned();
         let head: Vec<&str> = line.splitn(3, ':').take(2).collect();
         let id = head.join(":");
         let mut note = "";
@@ -910,6 +941,10 @@ mod tests {
     }
 
     fn send(tag: &str, body: &str, timeout_ms: u64) -> (Result<()>, String) {
+        // One at a time: a fork in a sibling test while a script is open for writing makes
+        // exec fail with "text file busy".
+        static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
         let (d, list) = fake_app(tag, body);
         let st = LicenceOpts::default().gate_args(true).station().unwrap();
         let permit = gate(
@@ -964,6 +999,55 @@ mod tests {
             out, "",
             "no timing row for the failed chunk, and the run stops"
         );
+    }
+
+    #[test]
+    fn a_grandchild_holding_stderr_does_not_delay_the_failure_report() {
+        let t = Instant::now();
+        let (r, out) = send("fs-grand", "sleep 20 & echo gone >&2; exit 1", 300);
+        let e = r.unwrap_err().to_string();
+        assert!(e.starts_with("FAILED A:000") && e.contains("gone"), "{e}");
+        assert_eq!(out, "");
+        assert!(
+            t.elapsed() < Duration::from_millis(900),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn two_runs_with_one_label_and_out_dir_never_share_a_chunk_path() {
+        let d = crate::testutil::Scratch::new("fs-reserve");
+        let o = Opts {
+            label: "x".into(),
+            jpeg: "p.jpg".into(),
+            id: 'A',
+            passes: 1,
+            chunk: 120,
+            limit: 0,
+            out: d.0.join("out"),
+            pi: "pi".into(),
+            dev: "/dev/ttyACM0".into(),
+            pi_tool: "t".into(),
+            pi_app_dir: "a".into(),
+            i_have_an_antenna: true,
+            transmit: true,
+            freq_mhz: 915.0,
+            power_dbm: 5,
+            licence: LicenceOpts::default(),
+            dry_run: false,
+        };
+        let first = reserve_run_dir(&o).unwrap();
+        fs::write(first.join("pass1.chunks.txt"), "one").unwrap();
+        let e = reserve_run_dir(&o).unwrap_err().to_string();
+        assert!(e.contains("exists"), "{e}");
+        assert_eq!(
+            fs::read_to_string(first.join("pass1.chunks.txt")).unwrap(),
+            "one"
+        );
+        let mut other = o.clone();
+        other.label = "y".into();
+        assert_ne!(reserve_run_dir(&other).unwrap(), first);
     }
 
     #[test]
