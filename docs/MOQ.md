@@ -1,4 +1,4 @@
-# Republish to a MoQ relay (moq.dev, moq.pro)
+# Republish to a MoQ relay
 
 The radio link carries video the MoQ way: one group per keyframe interval, one object per
 frame. Once the laptop has it, `moq-subghz-publish` sends the same groups and frames on as a real

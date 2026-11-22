@@ -3,10 +3,6 @@
 The long version of the [README](../README.md): how it works, the measured results, what is on the
 air, the repo map, limits and radio rules. Everything here used to live in the README.
 
-This project follows the [Media over QUIC (MoQ)](https://moq.dev) model from moq.dev. The radio side
-does not use moq.dev's code; the optional republish step does use moq.dev's Rust libraries (see
-[MOQ.md](MOQ.md)). This project is not affiliated with or endorsed by moq.dev.
-
 **Live H.264 over a LoRa radio chip, from a 2015 Raspberry Pi 2. 320x240, 15 fps, ~135 ms glass-to-glass.**
 
 ![A frame received over the radio link, encrypted](../media/frame-f350-rind-45s-3x.png)
@@ -172,3 +168,5 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for how to build, test and send a chan
 ## License
 
 [MIT](../LICENSE-MIT) or [Apache 2.0](../LICENSE-APACHE), your choice.
+
+<sub>This project follows the [Media over QUIC (MoQ)](https://moq.dev) model from moq.dev. The radio side does not use moq.dev's code; the optional republish step does use moq.dev's Rust libraries (see [MOQ.md](MOQ.md)). This project is not affiliated with or endorsed by moq.dev.</sub>

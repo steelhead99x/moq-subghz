@@ -1,6 +1,6 @@
 # moq-subghz
 
-DIY MoQ over sub-GHz radio, heading toward a multi-link, multi-hardware project.
+DIY live video over sub-GHz radio, heading toward a multi-link, multi-hardware project.
 
 **Live video from a Raspberry Pi over a LoRa radio chip, written in Rust. One radio works today; the rest of this page says exactly which links are real and which are only plans.**
 
@@ -26,17 +26,11 @@ Pi 2  ──▶  915 MHz FSK radio  ──▶  CatWAN USB stick  ──▶  lapt
 * **Rust from ffmpeg to the antenna.** The framing, the radio driver and the USB stick firmware
   are all Rust. Frames are encrypted with ChaCha20-Poly1305.
 
-## The MoQ model, from moq.dev
+## How the video is framed
 
-The video framing follows the Media over QUIC model from **[moq.dev](https://moq.dev)**, the open
-source MoQ project and its Rust libraries. If you want to build real MoQ streaming over the
-internet, start there. moq-subghz borrows the model (groups and objects) and runs its own small Rust
-version on a radio instead of QUIC. The radio side does not use moq.dev's code. The optional
-republish step does use moq.dev's Rust libraries. This project is not affiliated with or endorsed
-by moq.dev.
-
-Want viewers on the internet? `moq-subghz-recv --publish` republishes the stream to a moq.dev relay
-or moq.pro; see [docs/MOQ.md](docs/MOQ.md).
+The video framing uses the Media over QUIC model (groups and objects) in a small Rust version that runs
+on a radio instead of QUIC. Want viewers on the internet? `moq-subghz-recv --publish` republishes the
+stream to a MoQ relay; see [docs/MOQ.md](docs/MOQ.md).
 
 ## Status at a glance
 
@@ -128,7 +122,7 @@ digital or analog voice. The stated policy:
 * **Receive side first, SSTV first.** Receiving, recording and replay only. No amateur-band transmit
   code path exists, and none will be enabled until the owner holds a licence and a callsign configured
   in a private config. Receiving generally needs no licence: verify your local rules.
-* Amateur bands generally prohibit encryption or obscured meaning (for example US FCC 47 CFR 97.113),
+* Amateur bands generally prohibit encryption or obscured meaning (for example 47 CFR 97.113 in the US),
   so planned amateur profiles set `encryption = "forbidden"`, objects are signed or sent in the clear
   with callsign ID, and the tools must refuse to transmit otherwise.
 
@@ -161,18 +155,17 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 * [results/loopback](results/loopback/README.md): how the picture holds up as the link gets worse (a replay, no radio)
 * [results/lora-2015](results/lora-2015/README.md): what a 2015 team could have sent over real LoRa and LoRaWAN-style frames
 * [results/stick-0.5.1](results/stick-0.5.1/README.md): the measured over-the-air benchmark against the factory software
-* [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/): the idea behind the project
 * [CHANGELOG.md](CHANGELOG.md), [ROADMAP.md](ROADMAP.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), [REVIEW.md](REVIEW.md)
-
-## Credits
-
-* **[moq.dev](https://moq.dev)**: the MoQ model this project follows, and the
-  [IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/) behind the standard.
-* **[Rust](https://www.rust-lang.org)**: the whole project.
-* **[rind](https://github.com/kixel-ai/rind)**: the pure-Rust encryption library used for the
-  ChaCha20-Poly1305 frame encryption.
-* Semtech SX1276 radio chip and the Electronic Cats CatWAN USB Stick.
 
 ## License
 
 [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), your choice.
+
+<sub>Credits and references: the MoQ model (groups and objects) follows [moq.dev](https://moq.dev) and the
+[IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/); the radio side uses none of moq.dev's
+code, the optional republish step uses its Rust libraries, and this project is not affiliated with or endorsed
+by moq.dev. Frame encryption uses the pure-Rust ChaCha20-Poly1305 library [rind](https://github.com/kixel-ai/rind).
+Built in [Rust](https://www.rust-lang.org) on the Semtech SX1276 and the Electronic Cats CatWAN USB Stick.
+Background post: [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/). Amateur
+radio rules cited in [docs/AMATEUR.md](docs/AMATEUR.md) (47 CFR 97.113 and regional rules) and
+[docs/REGULATORY.md](docs/REGULATORY.md).</sub>
