@@ -5,7 +5,8 @@ Check your regulator's current text. This page is orientation for the project's 
 
 ## What the tools enforce today
 
-* They **never transmit by default**, and need `--i-have-an-antenna`.
+* They **never transmit by default**, and need `--i-have-an-antenna` and `--transmit` (and the
+  licence gate, see [LICENSING.md](LICENSING.md)).
 * 915.0 MHz and +5 dBm (about 3 mW) by default. Refused: anything outside 902-928 MHz, anything within
   0.3 MHz of 925.0 MHz, and sender power outside 2 to 5 dBm.
 * The checks are in the host tools, not in the shipped stick firmware. See [HOWTO section 9](../HOWTO.md#9-radio-rules).

@@ -175,3 +175,32 @@ fn idle_and_error_counter_default_to_nothing() {
     assert_eq!(a.idle(), Ok(()));
     assert_eq!(a.take_tx_errors(), 0);
 }
+
+#[test]
+fn passes_the_link_conformance_checks() {
+    let (mut a, mut b) = pair(LoopbackCfg::default());
+    moq_subghz_link::conformance::round_trip(&mut a, &mut b, &[1, 2, 3]);
+    let (mut a, _b) = pair(LoopbackCfg::default());
+    moq_subghz_link::conformance::tx(&mut a, &[0xab; 100]);
+}
+
+#[test]
+fn an_undrained_receiver_makes_send_busy_not_memory_grow() {
+    let (mut a, mut b) = pair(LoopbackCfg::default());
+    let mut sent = 0usize;
+    loop {
+        match a.send(&[0; 255]) {
+            Ok(_) => sent += 1,
+            Err(e) => {
+                assert_eq!(e, LinkError::Busy);
+                break;
+            }
+        }
+        assert!(sent < 1 << 20, "the queue never filled");
+    }
+    assert_eq!(sent, (16 << 20) / 255);
+    // draining frees room
+    let mut buf = [0u8; 255];
+    b.recv(&mut buf, NOW).unwrap().unwrap();
+    a.send(&[0; 255]).unwrap();
+}

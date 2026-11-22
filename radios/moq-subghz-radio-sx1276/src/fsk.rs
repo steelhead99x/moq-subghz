@@ -2,7 +2,9 @@
 //! Moved from `moq-subghz-send/src/radio.rs` and `moq-subghz-recv/src/radio.rs`.
 
 use anyhow::{bail, Result};
-use moq_subghz_link::{Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport};
+use moq_subghz_link::{
+    check_packet, Link, LinkCaps, LinkError, LinkKind, Provenance, RxMeta, TxReport,
+};
 use moq_subghz_pi::{open_hat, sx_err, Hat};
 use std::time::{Duration, Instant};
 use sx1276::fsk::FskConfig;
@@ -71,12 +73,7 @@ impl Link for Sx1276FskTx {
     }
 
     fn send(&mut self, f: &[u8]) -> Result<TxReport, LinkError> {
-        if f.is_empty() {
-            return Err(LinkError::Empty);
-        }
-        if f.len() > self.caps.max_payload {
-            return Err(LinkError::TooLong);
-        }
+        check_packet(self.caps.max_payload, f)?;
         let t = Instant::now();
         self.transmit(f).map_err(io)?;
         Ok(TxReport {
@@ -84,6 +81,7 @@ impl Link for Sx1276FskTx {
             airtime_us: self.cfg.time_on_air_us(f.len()) as u64,
             attempts: 1,
             delivered: None,
+            acked: None,
             deliver_after_us: None,
         })
     }
@@ -93,9 +91,27 @@ impl Link for Sx1276FskTx {
     }
 
     fn idle(&mut self) -> Result<(), LinkError> {
-        let _ = self.r.standby();
-        Ok(())
+        standby(&mut self.r)
     }
+}
+
+/// Best effort: the radio goes to standby if `idle` did not get there. `set_mode` only writes the
+/// operating mode, so nothing here transmits; the error has nowhere to go from a drop.
+impl Drop for Sx1276FskTx {
+    fn drop(&mut self) {
+        let _ = self.r.standby();
+    }
+}
+
+impl Drop for Sx1276FskRx {
+    fn drop(&mut self) {
+        let _ = self.r.standby();
+    }
+}
+
+fn standby(r: &mut Hat) -> Result<(), LinkError> {
+    r.standby()
+        .map_err(|e| LinkError::Io(sx_err(e).to_string()))
 }
 
 /// FSK receive on the HAT (reverse direction: CatWAN to Pi).
@@ -141,7 +157,8 @@ impl Link for Sx1276FskRx {
     /// `timeout` passes. A CRC or FIFO error is `Err(Io)`: the caller counts it and goes on.
     /// `t_us` is microseconds since `open`, as a wrapping 32-bit count like the poll's clock.
     fn recv(&mut self, buf: &mut [u8], timeout: Duration) -> Result<Option<RxMeta>, LinkError> {
-        let deadline = Instant::now() + timeout;
+        // Duration::MAX is "no deadline", not an overflow panic
+        let deadline = Instant::now().checked_add(timeout);
         loop {
             let now = self.t0.elapsed().as_micros() as u32;
             match self.r.fsk_poll_long(&mut self.st, now, self.stall_us) {
@@ -159,7 +176,7 @@ impl Link for Sx1276FskRx {
                     }));
                 }
                 Ok(None) => {
-                    if Instant::now() >= deadline {
+                    if deadline.is_some_and(|d| Instant::now() >= d) {
                         return Ok(None);
                     }
                 }
@@ -169,7 +186,6 @@ impl Link for Sx1276FskRx {
     }
 
     fn idle(&mut self) -> Result<(), LinkError> {
-        let _ = self.r.standby();
-        Ok(())
+        standby(&mut self.r)
     }
 }

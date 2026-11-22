@@ -1,12 +1,24 @@
 [package]
 name = "moq-subghz-licence"
 version = "0.1.0"
-description = "Licensed vs unlicensed operating mode: licence config, region rules, band table and the transmit gate. No radio code, no dependencies."
+description = "Licensed vs unlicensed operating mode: licence config, region rules, band table and the transmit gate. No radio code, no required dependencies."
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
-# Deliberately no dependencies and no dependency on the send/recv crates. The config is a
-# small strict subset of TOML parsed by hand (see config.rs).
+# No required dependencies and no dependency on the send/recv crates. The config is a small
+# strict subset of TOML parsed by hand (see config.rs). `clap` is optional, for `GateArgs`.
 [dependencies]
+clap = { version = "4", features = ["derive"], optional = true }
+
+[features]
+# `GateArgs` as a clap argument group, for the binaries. Off by default so the crate stays
+# dependency-free for everyone else.
+cli = ["dep:clap"]
+# Helpers for the tools' integration tests: a throw-away licence file and a scan of produced
+# files. Not for production use.
+testing = []
+
+[dev-dependencies]
+moq-subghz-licence = { path = ".", features = ["testing"] }

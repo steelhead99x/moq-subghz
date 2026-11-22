@@ -3,8 +3,9 @@
 //! then check every artifact: a run counts only when the sender, the receiver or logger and the
 //! log copy all succeeded and left their summaries. Any failure is `FAILED <run>: <why>`, exit 1.
 //!
-//! They transmit, so each needs `--i-have-an-antenna` (and whatever else the sender itself
-//! requires, passed through after the profile). Nothing opens a serial port here: the project's
+//! They transmit, so each needs `--i-have-an-antenna` and `--transmit` (and a licence or permit
+//! as per docs/LICENSING.md, which the sender checks). Neither flag is ever added for the user:
+//! they are forwarded only when given here, or among the sender arguments after the profile. Nothing opens a serial port here: the project's
 //! receiver and logger do, on the `--port` the user gives.
 
 use crate::exec::{last_line, read, Host, Plan};
@@ -36,9 +37,12 @@ pub struct Env {
     /// Root of this repository, for the test pictures
     #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
     pub repo_root: PathBuf,
-    /// Required to transmit: the antennas are on both radios
+    /// Required to transmit: the antennas are on both radios. Forwarded to the sender only when given
     #[arg(long)]
     pub i_have_an_antenna: bool,
+    /// Required to transmit (the licence gate): allow the sender to transmit. Forwarded only when given
+    #[arg(long)]
+    pub transmit: bool,
     /// Print the commands and stop (the only thing it runs is the sender's own --dry-run)
     #[arg(long)]
     pub dry_run: bool,
@@ -54,6 +58,7 @@ pub struct Cfg {
     pub port: Option<PathBuf>,
     pub frames: PathBuf,
     pub antenna: bool,
+    pub transmit: bool,
 }
 
 impl Env {
@@ -77,6 +82,7 @@ impl Env {
                 .unwrap_or_else(|_| self.repo_root.clone())
                 .join("results/lora-2015/frames"),
             antenna: self.i_have_an_antenna,
+            transmit: self.transmit,
         })
     }
 }
@@ -104,12 +110,33 @@ impl Cfg {
         Plan::new("ssh", [self.pi.clone(), script])
     }
 
-    fn gate(&self, h: &dyn Host) -> Result<()> {
+    /// A real run needs the user to have passed `--i-have-an-antenna` and `--transmit`, here or in
+    /// the sender arguments. `--dry-run` needs neither (it transmits nothing).
+    fn gate(&self, h: &dyn Host, args: &[String]) -> Result<()> {
+        let given = |f: &str| args.iter().any(|a| a == f);
         ensure!(
-            self.antenna || h.dry(),
+            self.antenna || given("--i-have-an-antenna") || h.dry(),
             "refusing to transmit without --i-have-an-antenna"
         );
+        ensure!(
+            self.transmit || given("--transmit") || h.dry(),
+            "refusing to transmit without --transmit (and a licence or permit, see docs/LICENSING.md)"
+        );
         Ok(())
+    }
+
+    /// The transmit flags the user gave here and did not repeat in `args`, in that order. Never
+    /// anything the user did not type.
+    pub fn tx_flags(&self, args: &[String]) -> Vec<String> {
+        let given = |f: &str| args.iter().any(|a| a == f);
+        let mut v = Vec::new();
+        if self.antenna && !given("--i-have-an-antenna") {
+            v.push("--i-have-an-antenna".to_string());
+        }
+        if self.transmit && !given("--transmit") {
+            v.push("--transmit".to_string());
+        }
+        v
     }
 
     fn prepare(&self, h: &dyn Host, name: &str) -> Result<()> {
@@ -199,12 +226,16 @@ fn words(s: &str) -> Vec<String> {
 
 /// The remote command that runs the Pi's sender, keeping its output in a file so ssh exits with
 /// the sender's own status.
-pub fn pi_send_script(pi_dir: &str, r: &Run) -> String {
+pub fn pi_send_script(pi_dir: &str, r: &Run, flags: &[String]) -> String {
     let n = r.name;
     let so = shq(&format!("/tmp/{n}_send.out"));
-    let args: String = r.args.iter().map(|a| format!("{} ", shq(a))).collect();
+    let args: String = flags
+        .iter()
+        .chain(r.args)
+        .map(|a| format!("{} ", shq(a)))
+        .collect();
     format!(
-        "cd ~/{} && ./moq-subghz-send --profile {} --secs {} --log {} --i-have-an-antenna {args}> {so} 2>&1; st=$?; tail -n 1 {so}; rm -f {so}; exit $st",
+        "cd ~/{} && ./moq-subghz-send --profile {} --secs {} --log {} {args}> {so} 2>&1; st=$?; tail -n 1 {so}; rm -f {so}; exit $st",
         shq(pi_dir),
         shq(r.profile),
         r.secs,
@@ -215,7 +246,7 @@ pub fn pi_send_script(pi_dir: &str, r: &Run) -> String {
 /// Pi to laptop: the receiver here, the sender on the Pi (`run2.sh`).
 pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
-    c.gate(h)?;
+    c.gate(h, r.args)?;
     c.prepare(h, n)?;
     let (off, _) = clock(h, c)?;
     if !h.dry() {
@@ -250,7 +281,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     h.sleep(Duration::from_secs(3));
     let send_st = h
         .run(
-            &c.ssh(pi_send_script(&c.pi_dir, r))
+            &c.ssh(pi_send_script(&c.pi_dir, r, &c.tx_flags(r.args)))
                 .out(c.run_file(n, ".send")),
         )?
         .code;
@@ -317,7 +348,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
 /// Laptop to CatWAN to Pi: the receiver on the Pi, the sender here (`rev.sh`).
 pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     let n = r.name;
-    c.gate(h)?;
+    c.gate(h, r.args)?;
     c.prepare(h, n)?;
     let (x, xf) = clock(h, c)?;
     if !h.dry() {
@@ -352,8 +383,8 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     a.extend([
         "--log".into(),
         c.run_file(n, ".send.jsonl").display().to_string(),
-        "--i-have-an-antenna".into(),
     ]);
+    a.extend(c.tx_flags(r.args));
     a.extend(r.args.iter().cloned());
     let send = Plan::new(c.bin("moq-subghz-send"), a)
         .out(c.run_file(n, ".send"))
@@ -461,7 +492,7 @@ fn after_digits(text: &str, key: &str, dot: bool) -> Option<String> {
 /// Logger here, sender on the Pi, then the exact loss from a replay (`lora2015-run.sh`).
 pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     let n = r.name;
-    c.gate(h)?;
+    c.gate(h, r.args)?;
     c.prepare(h, n)?;
     valid_name(r.file).context("picture file name")?;
     let frame = c.frames.join(r.file);
@@ -516,9 +547,14 @@ pub fn lora(h: &mut dyn Host, c: &Cfg, r: &Lora) -> Result<()> {
     )?;
     h.sleep(Duration::from_secs(3));
     let so = shq(&format!("/tmp/{n}.send.out"));
-    let args: String = r.args.iter().map(|a| format!("{} ", shq(a))).collect();
+    let args: String = c
+        .tx_flags(r.args)
+        .iter()
+        .chain(r.args)
+        .map(|a| format!("{} ", shq(a)))
+        .collect();
     let script = format!(
-        "cd ~/lora2015 && ./lora2015-send --mode {} --file frames/{} --profile {} --power 5 --passes {} --tx-log {} --i-have-an-antenna {args}> {so} 2>&1; st=$?; tail -n 3 {so}; rm -f {so}; exit $st",
+        "cd ~/lora2015 && ./lora2015-send --mode {} --file frames/{} --profile {} --power 5 --passes {} --tx-log {} {args}> {so} 2>&1; st=$?; tail -n 3 {so}; rm -f {so}; exit $st",
         shq(r.mode),
         shq(r.file),
         shq(r.profile),
@@ -708,6 +744,7 @@ mod tests {
             port: Some("/dev/ttyTEST".into()),
             frames: "frames".into(),
             antenna: true,
+            transmit: true,
         }
     }
 
@@ -758,7 +795,7 @@ mod tests {
         );
         assert_eq!(
             f.log[2],
-            format!("ssh pi 'cd ~/moq-subghz && ./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/t_send.jsonl --i-have-an-antenna --fec-k 8 > /tmp/t_send.out 2>&1; st=$?; tail -n 1 /tmp/t_send.out; rm -f /tmp/t_send.out; exit $st' > {r}/t.send")
+            format!("ssh pi 'cd ~/moq-subghz && ./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/t_send.jsonl --i-have-an-antenna --transmit --fec-k 8 > /tmp/t_send.out 2>&1; st=$?; tail -n 1 /tmp/t_send.out; rm -f /tmp/t_send.out; exit $st' > {r}/t.send")
         );
         assert_eq!(f.slept, [Duration::from_secs(3)]);
         assert_eq!(
@@ -894,6 +931,52 @@ mod tests {
     }
 
     #[test]
+    fn nothing_transmits_without_the_transmit_flag() {
+        let d = Scratch::new("gate-tx");
+        let mut f = Fake::default();
+        let mut c = cfg(&d.0);
+        c.transmit = false;
+        for e in [
+            forward(&mut f, &c, &run("t", &[])).unwrap_err(),
+            reverse(&mut f, &c, &run("t", &[])).unwrap_err(),
+        ] {
+            assert!(e.to_string().contains("without --transmit"), "{e}");
+        }
+        let l = Lora {
+            name: "t",
+            mode: "chunk",
+            file: "a.jpg",
+            profile: "sf7-125",
+            passes: 1,
+            args: &[],
+        };
+        assert!(lora(&mut f, &c, &l).is_err());
+        assert!(f.log.is_empty());
+        // Given among the sender arguments instead, it passes the gate (once, not doubled).
+        let a = vec!["--transmit".to_string()];
+        assert!(c.gate(&f, &a).is_ok());
+        assert_eq!(c.tx_flags(&a), ["--i-have-an-antenna"]);
+    }
+
+    #[test]
+    fn transmit_flags_are_forwarded_only_when_the_user_gave_them() {
+        let d = Scratch::new("flags");
+        let mut c = cfg(&d.0);
+        assert_eq!(c.tx_flags(&[]), ["--i-have-an-antenna", "--transmit"]);
+        let both = vec!["--i-have-an-antenna".to_string(), "--transmit".into()];
+        assert!(c.tx_flags(&both).is_empty());
+        c.antenna = false;
+        c.transmit = false;
+        assert!(c.tx_flags(&[]).is_empty());
+        // A dry run with neither flag shows neither flag in any command.
+        let mut h = crate::exec::Dry::new();
+        forward(&mut h, &c, &run("t", &[])).unwrap();
+        reverse(&mut h, &c, &run("t", &[])).unwrap();
+        assert!(!pi_send_script("d", &run("t", &[]), &c.tx_flags(&[])).contains("--transmit"));
+        assert!(!pi_send_script("d", &run("t", &[]), &c.tx_flags(&[])).contains("antenna"));
+    }
+
+    #[test]
     fn no_port_is_assumed() {
         let d = Scratch::new("noport");
         let mut f = Fake::default();
@@ -939,7 +1022,7 @@ mod tests {
         assert!(f.log[2].starts_with(
             "bin/moq-subghz-send --catwan /dev/ttyTEST --profile 300000:100000:6 --secs 330 --log"
         ));
-        assert!(f.log[2].contains("--i-have-an-antenna --fec-k 8 > "));
+        assert!(f.log[2].contains("--i-have-an-antenna --transmit --fec-k 8 > "));
         let (scp, rm) = (
             f.log.iter().position(|l| l.starts_with("scp")).unwrap(),
             f.log
@@ -1026,7 +1109,7 @@ mod tests {
             .iter()
             .any(|l| l.contains("--sent-frames 105") && l.contains("--reference frames/f.jpg")));
         assert!(f.log.iter().any(|l| l.contains(
-            "--power 5 --passes 3 --tx-log /tmp/t.tx.csv --i-have-an-antenna --dr dr3 >"
+            "--power 5 --passes 3 --tx-log /tmp/t.tx.csv --i-have-an-antenna --transmit --dr dr3 >"
         )));
         assert_eq!(log_secs(14.0, 3), 59);
     }

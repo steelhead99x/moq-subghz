@@ -14,7 +14,10 @@ default = ["seal"]
 seal = ["dep:rind", "dep:libc"]
 
 [dependencies]
-# kixel-ai/rind main, pinned (pure-Rust AEAD; armv7 uses its portable/arm backend)
+# kixel-ai/rind main, pinned (pure-Rust AEAD; armv7 uses its portable/arm backend).
+# rind has no crates.io release, so this is a git dependency pinned to one commit: the rev is the
+# moq-subghz decision, and the same commit is locked in Cargo.lock. Moving it is a reviewed change
+# (see docs/DEPENDENCIES.md), never a `cargo update`.
 rind = { git = "https://github.com/kixel-ai/rind", rev = "d2dc35bd796aaadc42df56aee0f1526cdee94b66", optional = true }
 
 [target.'cfg(unix)'.dependencies]

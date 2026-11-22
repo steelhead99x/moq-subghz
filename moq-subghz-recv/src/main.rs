@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
+use moq_subghz_licence::{Auth, Encryption, GateArgs, Mode, Permit, Profile, Station, Tuning};
 use moq_subghz_link::Link;
 use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
 use moq_subghz_radio_emu::{pack, EmuLink};
@@ -56,6 +57,10 @@ struct Args {
     /// receiver first; the sender must use the same link and `--halow-*` settings.
     #[arg(long)]
     emu_udp: Option<String>,
+    /// With `--emu-udp`: accept datagrams only from this loopback address (the sender's
+    /// `--emu-udp-from`). Default: any local process.
+    #[arg(long)]
+    emu_udp_peer: Option<String>,
     #[command(flatten)]
     emu: EmuArgs,
     /// CatWAN serial port (macOS: /dev/cu.usbmodemXXXX)
@@ -121,6 +126,25 @@ struct Args {
     /// The moq-subghz-publish binary for --publish
     #[arg(long, default_value = "moq-subghz-publish")]
     publish_bin: String,
+    /// Treat 902-928 MHz as the amateur 33 cm band (amateur profile). Receive only: needs
+    /// licensed mode (`--licence-file`) or `--rx-amateur`, and no `--key-file`
+    #[arg(long)]
+    amateur: bool,
+    /// Licensed or unlicensed mode and the receive rules (see docs/LICENSING.md). This tool
+    /// never transmits; `--transmit` has no effect here.
+    #[command(flatten)]
+    gate: GateArgs,
+}
+
+/// Longest a `--paced` replay waits between two lines, microseconds. A recorded gap longer than
+/// this (an overnight pause, or a corrupt timestamp) is replayed as this long.
+const PACED_MAX_GAP_US: u64 = 2_000_000;
+
+/// When replay line time `us` is due on the replay clock, given the previous line's due time
+/// `prev`: its own timestamp, but never more than [`PACED_MAX_GAP_US`] after `prev`, so a huge
+/// timestamp cannot stall a replay for centuries. A timestamp that goes backwards is due at once.
+fn paced_due(prev: u64, us: u64) -> u64 {
+    us.min(prev.saturating_add(PACED_MAX_GAP_US)).max(prev)
 }
 
 fn unix_us() -> u64 {
@@ -358,6 +382,33 @@ fn clock_check(host: &str) -> Result<()> {
     Ok(())
 }
 
+/// The gate's answer for opening a radio to receive (a CatWAN port or the Pi's SX1276). The
+/// radio code is only reached with the permit this returns.
+fn receive_permit(station: &Station, a: &Args, bitrate: u32, fdev: u32) -> Result<Permit> {
+    let (profile, encryption) = (
+        if a.amateur {
+            Profile::AMATEUR
+        } else {
+            Profile::ISM
+        },
+        if a.key_file.is_some() {
+            Encryption::Sealed
+        } else {
+            Encryption::None
+        },
+    );
+    let width = u64::from(bitrate) + 2 * u64::from(fdev);
+    let centre = (a.freq * 1e6).round() as u64;
+    station
+        .check_start(
+            Tuning::occupied(centre, width),
+            profile,
+            encryption,
+            Auth::None,
+        )
+        .map_err(|e| anyhow::anyhow!("refusing to open the radio: {e}"))
+}
+
 fn main() -> Result<()> {
     let a = Args::parse();
     if let Some(h) = &a.clock_check {
@@ -399,6 +450,15 @@ fn main() -> Result<()> {
     let prof = parse_fsk_profile(&a.profile).map_err(|e| anyhow::anyhow!(e))?;
     let (br, fdev, pre, unchecked) = (prof.bitrate, prof.fdev, prof.preamble, prof.unchecked);
 
+    // The licence file, if any, is loaded whatever the source; only a real radio needs a permit.
+    let station = a.gate.station().context("licence")?;
+    eprintln!(
+        "mode: {}",
+        match station.mode() {
+            Mode::Licensed => "licensed",
+            Mode::Unlicensed => "unlicensed",
+        }
+    );
     // ---- line source
     let (ltx, lrx) = mpsc::channel::<(u64, String)>();
     let mut replay_th: Option<std::thread::JoinHandle<std::io::Result<()>>> = None;
@@ -410,7 +470,8 @@ fn main() -> Result<()> {
             .as_deref()
             .context("a -emu link needs --emu-udp ADDR")?;
         let cfg = a.emu.to_cfg(sel).map_err(|e| anyhow::anyhow!(e))?;
-        let mut rx = EmuLink::udp_receiver(cfg, addr).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut rx = EmuLink::udp_receiver(cfg, addr, a.emu_udp_peer.as_deref())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         eprintln!(
             "modeled link: {} listening on {addr} (no radio is driven; results are MODELED)",
             rx.cfg().name()
@@ -452,6 +513,7 @@ fn main() -> Result<()> {
             RADIO_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
         });
     } else if let Some(port) = &a.port {
+        let _permit = receive_permit(&station, &a, br, fdev)?;
         let f = open_serial(port)?;
         let mut wr = f.try_clone()?;
         let rd = f;
@@ -503,6 +565,7 @@ fn main() -> Result<()> {
     } else if a.radio {
         #[cfg(target_os = "linux")]
         {
+            let _permit = receive_permit(&station, &a, br, fdev)?;
             let cfg = sx1276::fsk::FskConfig {
                 bitrate_bps: br,
                 fdev_hz: fdev,
@@ -549,6 +612,7 @@ fn main() -> Result<()> {
         let paced = a.paced;
         replay_th = Some(std::thread::spawn(move || -> std::io::Result<()> {
             let t0 = Instant::now();
+            let mut due_us = 0u64;
             loop {
                 let l = match read_line_limited(&mut f, MAX_SERIAL_LINE)? {
                     Some(Line::Data(buf)) => String::from_utf8_lossy(&buf).trim().to_string(),
@@ -559,8 +623,9 @@ fn main() -> Result<()> {
                     continue;
                 }
                 if paced {
-                    if let Some(us) = l.split(' ').nth(1).and_then(|x| x.parse::<u64>().ok()) {
-                        let due = Duration::from_micros(us);
+                    if let Some(r) = parse_r_line(&l) {
+                        due_us = paced_due(due_us, r.t_us);
+                        let due = Duration::from_micros(due_us);
                         if let Some(w) = due.checked_sub(t0.elapsed()) {
                             std::thread::sleep(w);
                         }
@@ -828,9 +893,7 @@ fn main() -> Result<()> {
                 if l.starts_with("R ") {
                     match parse_r_line(&l) {
                         Some(r) => {
-                            if let Some(v) = r.rssi {
-                                rssi.push(v as f64);
-                            }
+                            rssi.push(f64::from(r.rssi));
                             first_frame.get_or_insert(t);
                             rx_bytes += r.frame.len() as u64;
                             last_frame = t;
@@ -957,8 +1020,9 @@ fn main() -> Result<()> {
     } else {
         ""
     };
+    let licence = station.json_member();
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}{emu_field}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{},\"publish_ok\":{},\"input_error\":{}{emu_field}{licence}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad, re.frames_late, re.frames_stray, re.frames_stale,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
@@ -1005,9 +1069,23 @@ fn cpu_s(who: i32) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{jnum, json_escape, Sink};
+    use super::{jnum, json_escape, paced_due, Sink, PACED_MAX_GAP_US};
     use std::process::{Command, Stdio};
     use std::time::Duration;
+
+    #[test]
+    fn paced_replay_caps_the_wait_for_huge_timestamps() {
+        // an ordinary recording replays at its own times
+        assert_eq!(paced_due(0, 1_000), 1_000);
+        assert_eq!(paced_due(1_000, 1_000 + 500_000), 501_000);
+        // a gap of centuries is replayed as the cap, and later lines continue from there
+        let a = paced_due(1_000, u64::MAX);
+        assert_eq!(a, 1_000 + PACED_MAX_GAP_US);
+        assert_eq!(paced_due(a, u64::MAX), a + PACED_MAX_GAP_US);
+        assert_eq!(paced_due(u64::MAX, u64::MAX), u64::MAX);
+        // time going backwards (the HAT's 32-bit clock wrapped) waits for nothing
+        assert_eq!(paced_due(5_000, 3), 5_000);
+    }
 
     fn child(cmd: &str, args: &[&str]) -> Sink {
         let mut c = Command::new(cmd)

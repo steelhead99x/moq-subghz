@@ -63,6 +63,9 @@ pub struct EmuArgs {
     /// LoRa coding rate 1..=4 (4/5..4/8)
     #[arg(long, default_value_t = 1)]
     pub lora_cr: u8,
+    /// LoRa implicit header: no header on air, both ends know the length (SF6 needs it)
+    #[arg(long)]
+    pub lora_implicit: bool,
     /// FSK bit rate of the modeled FSK channel
     #[arg(long, default_value_t = 300_000)]
     pub fsk_bitrate: u32,
@@ -83,6 +86,7 @@ impl EmuArgs {
                 sf: self.lora_sf,
                 bw_hz: self.lora_bw,
                 cr: self.lora_cr,
+                explicit_header: !self.lora_implicit,
                 ..LoraCfg::default()
             }),
             EmuSel::Halow => PhyKind::Halow(HalowCfg {
@@ -140,9 +144,23 @@ mod tests {
             &["x", "--halow-bw", "2", "--halow-mcs", "10"],
             &["x", "--emu-loss", "iid:2"],
             &["x", "--halow-mtu", "100"],
+            &["x", "--halow-retries", "4294967295"],
+            &["x", "--halow-overhead", "18446744073709551615"],
+            &["x", "--halow-latency-us", "18446744073709551615"],
+            &["x", "--halow-jitter-us", "18446744073709551615"],
         ] {
             assert!(P::parse_from(a).e.to_cfg(EmuSel::Halow).is_err(), "{a:?}");
         }
+        // SF6 only works with the implicit header
+        assert!(P::parse_from(["x", "--lora-sf", "6"])
+            .e
+            .to_cfg(EmuSel::Lora)
+            .is_err());
+        let c = P::parse_from(["x", "--lora-sf", "6", "--lora-implicit"])
+            .e
+            .to_cfg(EmuSel::Lora)
+            .unwrap();
+        assert!(matches!(c.kind, PhyKind::Lora(l) if l.sf == 6 && !l.explicit_header));
         assert!(P::parse_from(["x", "--lora-sf", "5"])
             .e
             .to_cfg(EmuSel::Lora)

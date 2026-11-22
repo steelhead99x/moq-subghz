@@ -21,7 +21,7 @@ remote_args=''; [ $# -gt 0 ] && remote_args=$(printf '%q ' "$@")
 # The sender's output goes to a file on the Pi, not through a pipe, so ssh exits with the
 # sender's own status.
 SO=$(printf '%q' "/tmp/${N}_send.out")
-ssh "$PI" "cd ~/$(printf '%q' "$PI_DIR") && ./moq-subghz-send --profile $(printf '%q' "$P") --secs $(printf '%q' "$S") --log $(printf '%q' "/tmp/${N}_send.jsonl") --i-have-an-antenna ${remote_args}> $SO 2>&1; st=\$?; tail -n 1 $SO; rm -f $SO; exit \$st" > "$RUNS/$N.send"
+ssh "$PI" "cd ~/$(printf '%q' "$PI_DIR") && ./moq-subghz-send --profile $(printf '%q' "$P") --secs $(printf '%q' "$S") --log $(printf '%q' "/tmp/${N}_send.jsonl") --i-have-an-antenna --transmit ${remote_args}> $SO 2>&1; st=\$?; tail -n 1 $SO; rm -f $SO; exit \$st" > "$RUNS/$N.send"
 send_st=$?
 wait "$RXP"; recv_st=$?
 mkdir -p "$RUNS/$N"

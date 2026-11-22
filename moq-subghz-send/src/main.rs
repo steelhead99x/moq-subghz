@@ -7,6 +7,7 @@
 //!   group-drop on staleness -> radio (or `--loopback FILE` to test without RF).
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use moq_subghz_licence::{Auth, Encryption, GateArgs, Permit, Profile, Station, Tuning};
 use moq_subghz_link::Link;
 use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
 use moq_subghz_radio_emu::{pack, EmuLink};
@@ -102,6 +103,10 @@ struct Args {
     /// (the receiver runs `--link ... --emu-udp ADDR`). Without it `--loopback FILE` is used.
     #[arg(long)]
     emu_udp: Option<String>,
+    /// With `--emu-udp`: fixed loopback source address for the datagrams, so the receiver can
+    /// accept only them (`moq-subghz-recv --emu-udp-peer`). Default: a random port.
+    #[arg(long)]
+    emu_udp_from: Option<String>,
     #[command(flatten)]
     emu: EmuArgs,
     /// Transmit through a CatWAN stick (sx1276-rs catwan-fw) on this serial port instead of
@@ -116,6 +121,10 @@ struct Args {
     /// Required to transmit
     #[arg(long)]
     i_have_an_antenna: bool,
+    /// Licensed or unlicensed mode and the transmit switch (`--transmit` is also required
+    /// to key a real radio; see docs/LICENSING.md)
+    #[command(flatten)]
+    gate: GateArgs,
 }
 
 fn unix_us() -> u64 {
@@ -270,6 +279,57 @@ fn local_clock(us: u64) -> String {
     )
 }
 
+/// The gate's answer for keying a real radio on this run's frequency and settings, or an error
+/// that names the refusal. It never carries the licence ID or name.
+fn transmit_permit(
+    station: &Station,
+    a: &Args,
+    freq_hz: u32,
+    prof: &moq_subghz_wire::FskProfile,
+) -> Result<Permit> {
+    let encryption = if a.key_file.is_some() {
+        Encryption::Sealed
+    } else {
+        Encryption::None
+    };
+    // Occupied width of the FSK signal: the bit rate plus the deviation on both sides.
+    let width = u64::from(prof.bitrate) + 2 * u64::from(prof.fdev);
+    station
+        .check_transmit_without_station_id(
+            Tuning::occupied(u64::from(freq_hz), width),
+            Profile::ISM,
+            encryption,
+            Auth::None,
+        )
+        .map_err(|e| anyhow::anyhow!("refusing to transmit: {e}"))
+}
+
+/// Open the CatWAN stick for transmitting. The permit is the proof that the gate said yes.
+fn open_catwan(
+    permit: &Permit,
+    port: &str,
+    freq_hz: u32,
+    prof: &moq_subghz_wire::FskProfile,
+    power: i8,
+    frame_toa_us: u64,
+) -> Result<CatwanTx> {
+    assert!(permit.may_transmit(), "a transmit permit is required");
+    CatwanTx::open(port, freq_hz, prof, power, frame_toa_us)
+}
+
+/// Open the Pi's SX1276 for transmitting. The permit is the proof that the gate said yes.
+#[cfg(target_os = "linux")]
+fn open_hat(
+    permit: &Permit,
+    spi_hz: u32,
+    freq_hz: u32,
+    cfg: &sx1276::fsk::FskConfig,
+    power: i8,
+) -> Result<moq_subghz_radio_sx1276::Sx1276FskTx> {
+    assert!(permit.may_transmit(), "a transmit permit is required");
+    moq_subghz_radio_sx1276::Sx1276FskTx::open(spi_hz, freq_hz, cfg, power)
+}
+
 fn main() -> Result<()> {
     let a = Args::parse();
     if !(902.0..=928.0).contains(&a.freq) || (a.freq - 925.0).abs() < 0.3 {
@@ -302,6 +362,16 @@ fn main() -> Result<()> {
     let frame_toa_us =
         (prof.preamble as u64 + 2 + 1 + 255 + 2) * 8_000_000 / u64::from(prof.bitrate);
 
+    // Load the licence file (if any) first: a bad one is an error whatever link is chosen.
+    let station = a.gate.station().context("licence")?;
+    eprintln!(
+        "mode: {}",
+        match station.mode() {
+            moq_subghz_licence::Mode::Licensed => "licensed",
+            moq_subghz_licence::Mode::Unlicensed =>
+                "unlicensed (never transmits without --transmit)",
+        }
+    );
     let emu_sel = a.link.emu();
     let mut frame_toa_us = frame_toa_us;
     let mut link: Box<dyn Link> = match &a.loopback {
@@ -323,7 +393,7 @@ fn main() -> Result<()> {
                 .max(1);
             let name = cfg.name();
             let l = match (&a.emu_udp, &a.loopback) {
-                (Some(addr), _) => EmuLink::udp_sender(cfg, addr),
+                (Some(addr), _) => EmuLink::udp_sender(cfg, addr, a.emu_udp_from.as_deref()),
                 (None, Some(p)) => EmuLink::file_sender(cfg, p),
                 (None, None) => bail!("a -emu link needs --emu-udp ADDR or --loopback FILE"),
             }
@@ -335,7 +405,9 @@ fn main() -> Result<()> {
             if !a.i_have_an_antenna {
                 bail!("refusing to transmit without --i-have-an-antenna");
             }
-            Box::new(CatwanTx::open(
+            let permit = transmit_permit(&station, &a, freq_hz, &prof)?;
+            Box::new(open_catwan(
+                &permit,
                 a.catwan.as_ref().unwrap(),
                 freq_hz,
                 &prof,
@@ -350,6 +422,7 @@ fn main() -> Result<()> {
                 if !a.i_have_an_antenna {
                     bail!("refusing to transmit without --i-have-an-antenna");
                 }
+                let permit = transmit_permit(&station, &a, freq_hz, &prof)?;
                 let cfg = sx1276::fsk::FskConfig {
                     bitrate_bps: prof.bitrate,
                     fdev_hz: prof.fdev,
@@ -359,9 +432,7 @@ fn main() -> Result<()> {
                 };
                 cfg.validate()
                     .map_err(|x| anyhow::anyhow!("fsk config: {x:?}"))?;
-                Box::new(moq_subghz_radio_sx1276::Sx1276FskTx::open(
-                    a.spi_hz, freq_hz, &cfg, a.power,
-                )?)
+                Box::new(open_hat(&permit, a.spi_hz, freq_hz, &cfg, a.power)?)
             }
             #[cfg(not(target_os = "linux"))]
             bail!("radio needs Linux; use --loopback")
@@ -624,12 +695,18 @@ fn main() -> Result<()> {
                     eprintln!("tx error: CatWAN reported {errs}");
                 }
                 match link.send(&f) {
-                    Ok(r) if modeled => {
-                        st.emu_packets += 1;
-                        st.emu_attempts += u64::from(r.attempts);
-                        st.emu_lost_packets += u64::from(r.delivered == Some(false));
+                    Ok(r) => {
+                        // only a packet the link took counts as sent: frames, bytes and the
+                        // busy time behind radio_busy_pct stay what went out, not what was tried
+                        st.frames += nfr;
+                        st.bytes += f.len() as u64;
+                        busy += t.elapsed();
+                        if modeled {
+                            st.emu_packets += 1;
+                            st.emu_attempts += u64::from(r.attempts);
+                            st.emu_lost_packets += u64::from(r.delivered == Some(false));
+                        }
                     }
-                    Ok(_) => {}
                     Err(e) => {
                         errs += 1;
                         eprintln!("tx error: {e}");
@@ -644,9 +721,6 @@ fn main() -> Result<()> {
                     stop.store(true, Ordering::Relaxed);
                     break;
                 }
-                busy += t.elapsed();
-                st.frames += nfr;
-                st.bytes += f.len() as u64;
             }
             (st, link, busy.as_secs_f64(), fatal)
         })
@@ -806,10 +880,11 @@ fn main() -> Result<()> {
     } else {
         String::new()
     };
+    let licence = station.json_member();
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{:.1},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}{emu_stats}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{:.1},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}{emu_stats}{licence}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames, qdrops.objects, qdrops.groups,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),

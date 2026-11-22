@@ -13,9 +13,13 @@ moq-subghz-wire = { path = "../moq-subghz-wire" }
 moq-subghz-link = { path = "../moq-subghz-link" }
 moq-subghz-radio-sx1276 = { path = "../radios/moq-subghz-radio-sx1276" }
 moq-subghz-radio-emu = { path = "../radios/moq-subghz-radio-emu" }
+moq-subghz-licence = { path = "../moq-subghz-licence", features = ["cli"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 sx1276 = { path = "../vendor/sx1276" }
+
+[dev-dependencies]
+moq-subghz-licence = { path = "../moq-subghz-licence", features = ["cli", "testing"] }

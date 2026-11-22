@@ -442,6 +442,7 @@ mod tests {
             port: Some("/dev/null".into()),
             frames: "f".into(),
             antenna: true,
+            transmit: true,
         };
         let mut f = Fake::default();
         f.rule("--clock-check", 1, "", vec![]); // every run stops at its clock check
@@ -475,6 +476,7 @@ mod tests {
             port: None,
             frames: "f".into(),
             antenna: false,
+            transmit: false,
         };
         let mut f = Fake::default();
         f.rule(
