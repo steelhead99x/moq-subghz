@@ -20,6 +20,10 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   `moq-subghz-pi`, `moq-subghz-report` and `moq-subghz-publish`. The default key file is
   `moq-subghz-key.hex`, and the publisher reads `MOQ_SUBGHZ_RELAY`.
 
+### Added
+
+* **`moq-subghz-licence` crate: licensed vs unlicensed mode.** Licence file loader, US region rules (ID shape, 47 CFR 97.119 interval), band table, identification frames and the `check_transmit` gate, with a CI guard against committing a licence ID or name. Not wired into send/recv yet; amateur transmit stays disabled. See `docs/LICENSING.md`. Rules: receive-only on an amateur band in unlicensed mode needs an explicit `--rx-amateur` (transmit stays blocked); station ID frames go out only on amateur profiles in licensed mode, never on ISM profiles; the scheduler sends an ID at start, a fixed 60 s before the region's limit (every 540 s for the US 600 s rule) and at the end, and refuses intervals of 60 s or less; region `other` is blocked and the user-supplied mask and interval keys are removed, so only the US is enabled.
+
 ### Fixed
 
 * **The sender no longer splits a picture at a pause on ffmpeg's pipe.** A 4 ms gap inside one

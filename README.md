@@ -150,6 +150,7 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 * [docs/REGULATORY.md](docs/REGULATORY.md): rules per band, and what the tools enforce
 * [docs/AMATEUR.md](docs/AMATEUR.md): the planned amateur radio and satellite bridge (not started)
 * [docs/DETAILS.md](docs/DETAILS.md): how it works, measured results, repo map and limits
+* [docs/LICENSING.md](docs/LICENSING.md): licensed and unlicensed mode, the private licence file, what the tools cannot verify
 * [docs/MOQ.md](docs/MOQ.md): republishing to a MoQ relay
 * [HOWTO.md](HOWTO.md): parts, setup and your first live picture
 * [results/loopback](results/loopback/README.md): how the picture holds up as the link gets worse (a replay, no radio)

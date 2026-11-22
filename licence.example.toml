@@ -1,0 +1,16 @@
+# Template for the private licence file used by licensed mode. See docs/LICENSING.md.
+#
+# Copy it OUTSIDE the repo, fill in your own values and chmod 600 it:
+#   mkdir -p ~/.config/moq-subghz && cp licence.example.toml ~/.config/moq-subghz/licence.toml
+# The tools find it through --licence-file PATH, the MOQ_SUBGHZ_LICENCE env var, or
+# $XDG_CONFIG_HOME/moq-subghz/licence.toml. Never commit the filled-in file.
+#
+# The values below are obvious fakes. The loader rejects them, so licensed mode cannot start
+# from this file. The tools check the SHAPE of the ID only and cannot verify it.
+
+region = "us"                              # only "us" is enabled; "other" is rejected
+licence_id = "REPLACE-WITH-YOUR-ID"
+operator_name = "REPLACE WITH YOUR NAME"
+
+# There are no keys for your own ID mask or interval. Other regions stay blocked until a
+# country has been reviewed with citations (docs/LICENSING.md).
