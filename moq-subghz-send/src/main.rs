@@ -8,6 +8,8 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use moq_subghz_link::Link;
+use moq_subghz_radio_emu::args::{EmuArgs, EmuSel};
+use moq_subghz_radio_emu::{pack, EmuLink};
 use moq_subghz_radio_sx1276::{CatwanTx, FileSink};
 use moq_subghz_wire::{annexb, parse_fsk_profile, seal, stamp, Fragmenter, ObjHdr};
 use std::collections::VecDeque;
@@ -17,10 +19,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// What `--link` selects. More kinds arrive with their backends.
+/// What `--link` selects. `fsk` is the real SX1276 path; the `-emu` kinds are MODELED channels
+/// that drive no radio (they need `--emu-udp` or `--loopback`).
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 enum LinkKind {
     Fsk,
+    FskEmu,
+    LoraEmu,
+    HalowEmu,
+}
+
+impl LinkKind {
+    fn emu(self) -> Option<EmuSel> {
+        match self {
+            LinkKind::Fsk => None,
+            LinkKind::FskEmu => Some(EmuSel::Fsk),
+            LinkKind::LoraEmu => Some(EmuSel::Lora),
+            LinkKind::HalowEmu => Some(EmuSel::Halow),
+        }
+    }
 }
 
 #[derive(Parser, Clone)]
@@ -77,9 +94,16 @@ struct Args {
     #[arg(long)]
     log: Option<String>,
     /// Radio link. `fsk` is the SX1276 in FSK mode: the Pi HAT, or the CatWAN stick or a file when
-    /// `--catwan` or `--loopback` is given.
+    /// `--catwan` or `--loopback` is given. `fsk-emu`, `lora-emu` and `halow-emu` are modeled
+    /// channels (no radio is driven, results are MODELED).
     #[arg(long, value_enum, default_value_t = LinkKind::Fsk)]
     link: LinkKind,
+    /// With a `-emu` link: send each delivered packet as a UDP datagram to this loopback address
+    /// (the receiver runs `--link ... --emu-udp ADDR`). Without it `--loopback FILE` is used.
+    #[arg(long)]
+    emu_udp: Option<String>,
+    #[command(flatten)]
+    emu: EmuArgs,
     /// Transmit through a CatWAN stick (sx1276-rs catwan-fw) on this serial port instead of
     /// the local SX1276 (reverse direction: Mac -> CatWAN -> Pi)
     #[arg(long)]
@@ -173,6 +197,10 @@ struct TxStats {
     groups_dropped: u64,
     tx_errors: u64,
     max_queue_frames: usize,
+    /// Modeled links only: packets sent, PHY attempts made, packets the model lost.
+    emu_packets: u64,
+    emu_attempts: u64,
+    emu_lost_packets: u64,
 }
 
 fn spawn(cmd: &[String], stdin: Stdio) -> Result<Child> {
@@ -274,8 +302,35 @@ fn main() -> Result<()> {
     let frame_toa_us =
         (prof.preamble as u64 + 2 + 1 + 255 + 2) * 8_000_000 / u64::from(prof.bitrate);
 
-    let LinkKind::Fsk = a.link;
+    let emu_sel = a.link.emu();
+    let mut frame_toa_us = frame_toa_us;
     let mut link: Box<dyn Link> = match &a.loopback {
+        _ if emu_sel.is_some() => {
+            if a.catwan.is_some() {
+                bail!("--catwan is a real link; a -emu link drives no radio");
+            }
+            let cfg = a
+                .emu
+                .to_cfg(emu_sel.unwrap())
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let per_packet = cfg.max_frames_per_packet();
+            // time one wire frame takes on the modeled air, for queue sizing
+            frame_toa_us = (cfg.airtime_us(if per_packet > 1 {
+                per_packet * 256
+            } else {
+                255
+            }) / per_packet as u64)
+                .max(1);
+            let name = cfg.name();
+            let l = match (&a.emu_udp, &a.loopback) {
+                (Some(addr), _) => EmuLink::udp_sender(cfg, addr),
+                (None, Some(p)) => EmuLink::file_sender(cfg, p),
+                (None, None) => bail!("a -emu link needs --emu-udp ADDR or --loopback FILE"),
+            }
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            eprintln!("modeled link: {name} (no radio is driven; results are MODELED)");
+            Box::new(l.realtime(true))
+        }
         None if a.catwan.is_some() => {
             if !a.i_have_an_antenna {
                 bail!("refusing to transmit without --i-have-an-antenna");
@@ -496,6 +551,9 @@ fn main() -> Result<()> {
     let done = Arc::new(AtomicBool::new(false));
     let max_age = a.max_age_ms * 1000;
     let queue_cap = queue_cap_frames(max_age, frame_toa_us);
+    let (pkt_mtu, pkt_frames) = (link.caps().max_payload, link.caps().max_frames_per_packet);
+    let modeled = link.caps().provenance == moq_subghz_link::Provenance::Modeled;
+    let link_name = link.caps().name;
     let mut qdrops = QueueDrops::default();
     let tx_thread = {
         let (q, done, stop) = (q.clone(), done.clone(), stop.clone());
@@ -533,22 +591,49 @@ fn main() -> Result<()> {
                             }
                             o.started = true;
                         }
-                        let f = o.frames.pop_front().unwrap();
+                        let mut f = o.frames.pop_front().unwrap();
+                        let mut nfr = 1u64;
+                        if pkt_frames > 1 {
+                            // a link whose packet holds several wire frames: whole frames of the
+                            // same object share one packet as `[len][frame]` records
+                            let lens: Vec<usize> = o.frames.iter().map(|x| x.len()).collect();
+                            let used = f.len() + pack::RECORD_OVERHEAD;
+                            let more = pack::take_batch(
+                                &lens,
+                                pkt_mtu.saturating_sub(used),
+                                pkt_frames - 1,
+                            );
+                            let mut batch = vec![f];
+                            for _ in 0..more {
+                                batch.extend(o.frames.pop_front());
+                            }
+                            nfr = batch.len() as u64;
+                            let refs: Vec<&[u8]> = batch.iter().map(|x| x.as_slice()).collect();
+                            f = pack::pack(&refs).expect("frames are 1..=255 bytes");
+                        }
                         if o.frames.is_empty() {
                             g.pop_front();
                         }
-                        break Some(f);
+                        break Some((f, nfr));
                     }
                 };
-                let Some(f) = fr else { break };
+                let Some((f, nfr)) = fr else { break };
                 let t = Instant::now();
                 let mut errs = link.take_tx_errors();
                 if errs > 0 {
                     eprintln!("tx error: CatWAN reported {errs}");
                 }
-                if let Err(e) = link.send(&f) {
-                    errs += 1;
-                    eprintln!("tx error: {e}");
+                match link.send(&f) {
+                    Ok(r) if modeled => {
+                        st.emu_packets += 1;
+                        st.emu_attempts += u64::from(r.attempts);
+                        st.emu_lost_packets += u64::from(r.delivered == Some(false));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        errs += 1;
+                        eprintln!("tx error: {e}");
+                    }
                 }
                 st.tx_errors += errs;
                 if errs > 0 && st.tx_errors > 20 {
@@ -560,7 +645,7 @@ fn main() -> Result<()> {
                     break;
                 }
                 busy += t.elapsed();
-                st.frames += 1;
+                st.frames += nfr;
                 st.bytes += f.len() as u64;
             }
             (st, link, busy.as_secs_f64(), fatal)
@@ -713,10 +798,18 @@ fn main() -> Result<()> {
         tx_fatal = true;
     }
     drop(log);
+    let emu_stats = if modeled {
+        format!(
+            ",\"provenance\":\"modeled\",\"emu_packets\":{},\"emu_attempts\":{},\"emu_lost_packets\":{}",
+            st.emu_packets, st.emu_attempts, st.emu_lost_packets
+        )
+    } else {
+        String::new()
+    };
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{:.1},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{:.1},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}{emu_stats}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames, qdrops.objects, qdrops.groups,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
@@ -728,7 +821,7 @@ fn main() -> Result<()> {
         1e6 * seal_s / sealed.max(1) as f64,
         100.0 * cpu_self / wall, 100.0 * cpu_child / wall, 100.0 * (cpu_self + cpu_child) / wall,
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
-        if a.loopback.is_some() { "loopback" } else if a.catwan.is_some() { "catwan" } else { "sx1276" }
+        if modeled { link_name } else if a.loopback.is_some() { "loopback" } else if a.catwan.is_some() { "catwan" } else { "sx1276" }
     );
     // An AU with no capture record means the encoder and the capture count disagree,
     // so the run's latency and loss numbers can't be trusted.
@@ -830,5 +923,15 @@ mod tests {
             LinkKind::Fsk
         );
         assert!(Args::try_parse_from(["send", "--link", "lora"]).is_err());
+        for (name, kind) in [
+            ("fsk-emu", LinkKind::FskEmu),
+            ("lora-emu", LinkKind::LoraEmu),
+            ("halow-emu", LinkKind::HalowEmu),
+        ] {
+            let a = Args::parse_from(["send", "--link", name]);
+            assert_eq!(a.link, kind);
+            assert!(a.link.emu().is_some());
+        }
+        assert!(LinkKind::Fsk.emu().is_none());
     }
 }

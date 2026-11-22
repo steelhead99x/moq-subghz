@@ -17,4 +17,5 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 moq-subghz-link = { path = "../moq-subghz-link" }
 moq-subghz-radio-sx1276 = { path = "../radios/moq-subghz-radio-sx1276" }
+moq-subghz-radio-emu = { path = "../radios/moq-subghz-radio-emu" }
 sx1276 = { path = "../vendor/sx1276" }

@@ -12,6 +12,7 @@ publish = false
 moq-subghz-wire = { path = "../moq-subghz-wire" }
 moq-subghz-link = { path = "../moq-subghz-link" }
 moq-subghz-radio-sx1276 = { path = "../radios/moq-subghz-radio-sx1276" }
+moq-subghz-radio-emu = { path = "../radios/moq-subghz-radio-emu" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 libc = "0.2"
