@@ -1,0 +1,5 @@
+# The toolchain CI pins (.github/workflows/ci.yml), so a local build and clippy see what CI sees.
+# moq-subghz-publish has its own file: moq.dev's crates need a newer Rust.
+[toolchain]
+channel = "1.90.0"
+components = ["rustfmt", "clippy"]

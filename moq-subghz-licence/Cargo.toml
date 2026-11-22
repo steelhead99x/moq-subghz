@@ -19,3 +19,6 @@ cli = ["dep:clap"]
 # Helpers for the tools' integration tests: a throw-away licence file and a scan of produced
 # files. Not for production use.
 testing = []
+
+[dev-dependencies]
+moq-subghz-licence = { path = ".", features = ["testing"] }

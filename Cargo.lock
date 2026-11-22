@@ -668,6 +668,7 @@ name = "moq-subghz-licence"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "moq-subghz-licence",
 ]
 
 [[package]]
@@ -689,6 +690,7 @@ dependencies = [
  "moq-subghz-licence",
  "moq-subghz-link",
  "moq-subghz-radio-sx1276",
+ "moq-subghz-wire",
  "sx1276",
 ]
 

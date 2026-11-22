@@ -5,6 +5,16 @@
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### CI and hygiene
+
+* The leak guard fails closed (no git, an unreadable tracked file or a private licence file that
+  does not load fails the test), scans bytes with no size or UTF-8 limit, reads `.gz` reports,
+  matches names in JSON and in any case, and checks callsign shapes in any single letter case.
+* `rust-toolchain.toml` pins 1.90.0 (CI) and `moq-subghz-publish` pins 1.100.0. Clippy is clean on
+  current stable too (`as_chunks` in `moq-subghz-wire`), and a non-blocking `clippy-stable` job keeps it so.
+* CI: `--locked` throughout, doc tests, least-privilege `permissions:`, actions pinned by commit.
+* `docs/DEPENDENCIES.md` records why `rind` is a git dependency pinned by rev.
+
 ### Docs
 
 * README rewritten around a per-link and per-hardware status table (Measured, Modeled, Planned, Not started).
@@ -48,6 +58,29 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Fixed
 
+* **The emulated UDP link can name its peer.** `moq-subghz-send --emu-udp-from ADDR` fixes the
+  datagrams' loopback source and `moq-subghz-recv --emu-udp-peer ADDR` accepts only that source;
+  the default (any local process) and the loopback-only rule are unchanged.
+* **Link contract, uniformly.** `Link::idle` on the CatWAN and the SX1276 FSK backends returns the
+  error when the radio cannot be stopped (it was printed or dropped). The real radios stop
+  themselves on `Drop` (best effort, never transmits, never panics). `CatwanTx::send` and
+  `FileSink::send` refuse empty and oversize packets like every other backend, through
+  `moq_subghz_link::check_packet`, and `moq_subghz_link::conformance` runs the same checks against
+  the loopback, the emulation, the CatWAN stick (on a pty) and the file sink. `CatwanTx` reports
+  the computed airtime of each frame instead of 0. `Duration::MAX` no longer panics in the FSK
+  `recv`. No wire or on-air change; the golden v5 test is unchanged for its six original rows.
+* **A failed send is no longer counted as sent** in `moq-subghz-send`: `frames_tx`, `bytes_tx`
+  and `radio_busy_pct` count only what the link took.
+* **Models.** HaLow retries, overhead, MTU and timings are bounded and saturate (a huge
+  `--halow-retries` used to overflow or loop); `TxReport` gains `acked` next to `delivered`
+  (breaking for code that builds a `TxReport`); LoRa bandwidth and SF6 are checked against what
+  the SX1276 supports (new `--lora-implicit` selects the implicit header SF6 needs); the Gilbert-Elliott chain starts in its stationary distribution, so seeded
+  GE results differ from earlier runs (MODELED only). In-memory links are bounded.
+* **`R` lines have one parser.** `moq_subghz_wire::parse_r_line` is strict (every field, no extra
+  token) and `lora2015` uses it, so the receiver and the logger accept the same lines. A `--paced`
+  replay waits at most 2 s between lines.
+* **Golden v5 test** covers every FEC k from 0 to 15, sealed and unsealed, `min_frame` padding and
+  the sequence wrap, and a receive-side test with and without a loss per FEC block.
 * **The sender no longer splits a picture at a pause on ffmpeg's pipe.** A 4 ms gap inside one
   access unit made two objects in two groups and shifted capture timestamps. Access units now end
   only at the next AUD (or EOF), which adds up to one frame interval of latency. Changes what goes

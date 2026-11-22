@@ -254,6 +254,13 @@ impl LicenceConfig {
         self.name.as_deref().map(|s| shown(s, r))
     }
 
+    /// The raw ID and name, for the leak guard that must search for them. Not for logs.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn reveal_id_and_name(&self) -> (Option<&str>, Option<&str>) {
+        (self.id.as_deref(), self.name.as_deref())
+    }
+
     /// The one place that formats the ID and name for run logs and reports:
     /// `licence_id=... operator=...`. Every tool writes the pair through this function (via
     /// [`crate::Station::log_line`]); with [`Redaction::Redact`] (`--redact-licence`) both

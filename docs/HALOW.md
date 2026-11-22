@@ -77,18 +77,21 @@ airtime cost. With the MAC ACK and retries on (the default) the loss is hidden b
 | rate table, MCS0..10, 1/2/4/8/16 MHz, 1 stream, long GI | derived: N_SD x bits x code rate / 40 us | SOURCE: IEEE 802.11ah-2016 S1G MCS tables as reproduced at en.wikipedia.org/wiki/IEEE_802.11ah ("S1G MCS data rates"); every cell is unit tested against it (`s1g::tests`). 2 MHz MCS9 and MCS10 above 1 MHz are N/A |
 | N_SD 24/52/108/234/468, symbol 40 us | | SOURCE: same standard; the 4x subcarrier ratios reproduce the table |
 | default width and MCS | 1 MHz, MCS0 | ASSUMPTION: the most robust choice, not a recommendation |
-| preamble + SIG | 560 us at 1 MHz, 360 us otherwise | ASSUMPTION: the values the workshop `airtime-model` uses (frame structure read from the standard, no datasheet) |
-| MAC + LLC + IP + UDP per packet | 64 B | ASSUMPTION: 28 (workshop MAC overhead) + 8 + 20 + 8. A raw-frame driver would pay less |
+| preamble + SIG | 560 us at 1 MHz, 360 us otherwise | ASSUMPTION: the frame structure of 802.11ah-2016 as recalled, not checked against the standard text or a datasheet. The BCC tail is a flat 6 bits (one encoder); a second encoder at the highest rates would add at most one 40 us symbol per packet, not modeled |
+| MAC + LLC + IP + UDP per packet | 64 B | ASSUMPTION: 28 (an 802.11 data header and FCS as recalled) + 8 + 20 + 8. A raw-frame driver would pay less |
 | PHY payload limit | 1472 B | ASSUMPTION: 1500 B IP MTU. Real modules differ |
 | SIFS / slot / AIFSN | 160 us / 52 us / 3 | ASSUMPTION: recalled sub-GHz S1G values, not checked against the standard text |
 | CWmin / CWmax | 15 / 1023 | ASSUMPTION: EDCA best effort defaults. Backoff is always charged, even on an idle channel (conservative) |
 | ACK | 14 B at MCS0 of the same width; unicast retries 7 | ASSUMPTION: 802.11 control response and short retry limit defaults. S1G NDP ACK would be shorter |
 | receive latency / jitter | 1.5 ms / 0..1 ms | ASSUMPTION: driver and stack, not measured on any module |
-| loss | none, iid:P, or Gilbert-Elliott | ASSUMPTION (model choice): GE steps once per PHY attempt and the ACK uses the same state. Burst parameters used in the bench are illustrative, not fitted to a site |
+| loss | none, iid:P, or Gilbert-Elliott | ASSUMPTION (model choice): GE steps once per PHY attempt, the ACK uses the same state, and the chain starts in its stationary distribution (not always Good), so short runs see the mean loss. Burst parameters used in the bench are illustrative, not fitted to a site |
 | rate control, rate fallback, A-MPDU, power save, TWT, RAW | none | NOT MODELED. Fixed MCS, one packet at a time, single station, no contention |
 | duty cycle | none | NOT MODELED. US 902-928 MHz is assumed; EU sub-GHz duty limits are not enforced here |
 | FSK airtime | preamble + 2 sync + 1 + payload + 2 CRC at the bit rate | SOURCE: `vendor/sx1276/src/fsk.rs` and the sender |
-| LoRa airtime | Semtech SX1276 datasheet formula | SOURCE: datasheet, and the same reference values as the workshop tests (`model::tests`) |
+| LoRa airtime | Semtech SX1276 datasheet formula | SOURCE: datasheet formula. The tests' reference values are the formula's own outputs, a regression guard, not an independent measurement. Bandwidth must be one the SX1276 selects, and SF6 needs the implicit header (`--lora-implicit`). The implicit-header airtime is the same formula with IH = 1, hand-checked in `model::tests`; ASSUMPTION: no published reference value is cited, and the datasheet's extra preamble symbols for SF6 are not modeled |
+| argument bounds | retries <= 255, overhead and ACK size <= 4096 B, MTU <= 65507 B, latency, jitter, SIFS, slot and fixed latency <= 10 s, CWmin <= CWmax <= 65535 | model guard: larger values are refused (`EmuCfg::validate`), and the arithmetic saturates instead of overflowing |
+| delivered and acked | `TxReport.delivered`: the far side got a copy; `acked`: the sender saw an ACK | With ACK on, `delivered` and not `acked` is the case where every ACK was lost: the receiver has the packet and a real sender would report failure. `acked` is `None` without ACKs |
+| UDP receiver | any local process may send to it | loopback only. By default any local process may send to it; `--emu-udp-from` on the sender and `--emu-udp-peer` on the receiver fix the source address and the kernel drops everything else. A test channel, not a security boundary. In-memory pairs hold at most 16 MiB per direction, then `send` is `Busy` |
 | FSK and LoRa loss, latency | none unless `--emu-loss`; delivery time = airtime | ASSUMPTION: no fixed receive latency |
 
 ## What the tests check

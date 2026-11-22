@@ -103,6 +103,10 @@ struct Args {
     /// (the receiver runs `--link ... --emu-udp ADDR`). Without it `--loopback FILE` is used.
     #[arg(long)]
     emu_udp: Option<String>,
+    /// With `--emu-udp`: fixed loopback source address for the datagrams, so the receiver can
+    /// accept only them (`moq-subghz-recv --emu-udp-peer`). Default: a random port.
+    #[arg(long)]
+    emu_udp_from: Option<String>,
     #[command(flatten)]
     emu: EmuArgs,
     /// Transmit through a CatWAN stick (sx1276-rs catwan-fw) on this serial port instead of
@@ -389,7 +393,7 @@ fn main() -> Result<()> {
                 .max(1);
             let name = cfg.name();
             let l = match (&a.emu_udp, &a.loopback) {
-                (Some(addr), _) => EmuLink::udp_sender(cfg, addr),
+                (Some(addr), _) => EmuLink::udp_sender(cfg, addr, a.emu_udp_from.as_deref()),
                 (None, Some(p)) => EmuLink::file_sender(cfg, p),
                 (None, None) => bail!("a -emu link needs --emu-udp ADDR or --loopback FILE"),
             }
@@ -691,12 +695,18 @@ fn main() -> Result<()> {
                     eprintln!("tx error: CatWAN reported {errs}");
                 }
                 match link.send(&f) {
-                    Ok(r) if modeled => {
-                        st.emu_packets += 1;
-                        st.emu_attempts += u64::from(r.attempts);
-                        st.emu_lost_packets += u64::from(r.delivered == Some(false));
+                    Ok(r) => {
+                        // only a packet the link took counts as sent: frames, bytes and the
+                        // busy time behind radio_busy_pct stay what went out, not what was tried
+                        st.frames += nfr;
+                        st.bytes += f.len() as u64;
+                        busy += t.elapsed();
+                        if modeled {
+                            st.emu_packets += 1;
+                            st.emu_attempts += u64::from(r.attempts);
+                            st.emu_lost_packets += u64::from(r.delivered == Some(false));
+                        }
                     }
-                    Ok(_) => {}
                     Err(e) => {
                         errs += 1;
                         eprintln!("tx error: {e}");
@@ -711,9 +721,6 @@ fn main() -> Result<()> {
                     stop.store(true, Ordering::Relaxed);
                     break;
                 }
-                busy += t.elapsed();
-                st.frames += nfr;
-                st.bytes += f.len() as u64;
             }
             (st, link, busy.as_secs_f64(), fatal)
         })
