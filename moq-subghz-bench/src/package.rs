@@ -206,6 +206,12 @@ pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         let o = fsk.join(&n);
         fs::create_dir_all(&o)?;
         cp(g, &summary, &o.join("summary.json"))?;
+        let clock_unverified = crate::orch::CLOCK_UNVERIFIED;
+        if d.join(clock_unverified).try_exists()? {
+            cp(g, &d.join(clock_unverified), &o.join(clock_unverified))?;
+        } else if o.join(clock_unverified).try_exists()? {
+            fs::remove_file(o.join(clock_unverified))?;
+        }
         cp(
             g,
             &d.join("send_summary.json"),
@@ -215,12 +221,7 @@ pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
             gzip(g, &d.join(f), &o.join(format!("{f}.gz")))?;
         }
     }
-    // Same glob as the shell: a single digit after "-r".
-    for n in dirs(runs, |n| {
-        n.len() > 3
-            && n.as_bytes()[n.len() - 3..n.len() - 1] == *b"-r"
-            && n.as_bytes()[n.len() - 1].is_ascii_digit()
-    })? {
+    for n in dirs(runs, |n| crate::analyze::parse_run_name(n).is_some())? {
         let (d, o) = (runs.join(&n), css.join(&n));
         fs::create_dir_all(&o)?;
         cp(g, &d.join("exact/images.csv"), &o.join("images.csv"))?;
@@ -490,10 +491,11 @@ mod tests {
             r.join("chunk-sf7-125-small-r1.send"),
             "x\nsent frames=5 bytes=1\n",
         );
-        put(
-            r.join("chunk-sf7-125-small-r10/exact/images.csv"),
-            "not matched: two digits",
-        );
+        put(r.join("chunk-sf7-125-small-r10/exact/images.csv"), "i10\n");
+        put(r.join("chunk-sf7-125-small-r10/exact/rx.csv"), "r10\n");
+        put(r.join("chunk-sf7-125-small-r10/raw.log"), "raw10");
+        put(r.join("chunk-sf7-125-small-r10.tx.csv"), "tx10");
+        put(r.join("chunk-sf7-125-small-r10.send"), "sent frames=10\n");
         for f in [
             "fsk-live.mp4",
             "fsk-live-still.png",
@@ -513,8 +515,11 @@ mod tests {
             Scratch::new("pk-o"),
         );
         stage(&r.0, &d.0);
+        let marker = crate::orch::CLOCK_UNVERIFIED;
+        put(r.0.join("f300-a").join(marker), "clock check failed");
         run(&none(), &r.0, &d.0, &o.0).unwrap();
         assert!(o.0.join("fsk/f300-a/summary.json").exists());
+        assert!(o.0.join("fsk/f300-a").join(marker).exists());
         assert!(!o.0.join("fsk/f300-dead").exists() && !o.0.join("fsk/f300-none").exists());
         assert_eq!(gunzip(&o.0.join("fsk/f300-a/serial.log.gz")), "serial.log");
         let l = o.0.join("css/chunk-sf7-125-small-r1");
@@ -524,7 +529,10 @@ mod tests {
             "sent frames=5 bytes=1\n"
         );
         assert!(l.join("image0.jpg").exists() && l.join("tx.csv").exists());
-        assert!(!o.0.join("css/chunk-sf7-125-small-r10").exists());
+        assert_eq!(
+            gunzip(&o.0.join("css/chunk-sf7-125-small-r10/raw.log.gz")),
+            "raw10"
+        );
         assert!(o.0.join("demo/demo-chunk-sf7-500/image0.jpg").exists());
         assert_eq!(
             fs::read_to_string(o.0.join("demo/fsk-live-summary.json")).unwrap(),

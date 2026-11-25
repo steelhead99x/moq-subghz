@@ -26,7 +26,7 @@ small patch this project applies.
 
 ```
 355bbdb97e514742af81cec1546bf3fc3ec74f45de15d5b2930bb96741c3c73b  main.c  (upstream, at the pinned commit)
-d58d14872dbac0aa3d6698a8daccf42f934907cc7d6982ac542bd7ad780281af  main.c  (after gps-hat-bench.patch)
+0e179180ae3d48dbeb49198ffe84e329bef4e7ed0d1ed88442ba04e73d8b892c  main.c  (after gps-hat-bench.patch)
 ```
 
 ## The patch

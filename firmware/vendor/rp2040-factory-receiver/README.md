@@ -6,10 +6,8 @@ ran with this image on the stick.
 
 | | |
 |---|---|
-| Vendor | the board maker (see the upstream link) |
-| Upstream | https://github.com/ElectronicCats/CatWAN_USB_Stick |
+| Vendor | Electronic Cats |
 | Release | `v3.1.0.1` (published 2025-03-11) |
-| Release asset | https://github.com/ElectronicCats/CatWAN_USB_Stick/releases/download/v3.1.0.1/lorareceive_rp2040.uf2 |
 | Source commit | `ea7742739199728c11eb93bc991dc99aeadcf612` (tag `v3.1.0.1`) |
 | Sketch | the receiver sketch under the upstream `Fw/` tree, copied here as `factory-receiver.ino`, unchanged |
 | Retrieved | 2026-11-20 |

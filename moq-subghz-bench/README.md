@@ -50,6 +50,10 @@ replaces `PLAY=` when ffplay is not installed.
 `run` and `rev` stay separate because they drive opposite directions and do not share pacing: the
 forward path waits 3 s before the board transmits, the reverse path 4 s before the laptop does.
 
+Each run reserves its output directory. Use a fresh run name or output directory to retry.
+If the final clock check fails, the capture is saved and the command returns an error.
+The `clock_unverified` marker is kept during packaging, and the analyzer leaves that run's latency columns blank.
+
 `--rx-key` is the receiver's key file: your `LKEY` for `run` (the receiver is the laptop) and your
 `PKEY` for `rev` (the receiver is the board). It is quoted on both sides of ssh, so paths and sender
 arguments may contain spaces. `--rx` adds other receiver arguments and is split on spaces.

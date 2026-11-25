@@ -182,8 +182,15 @@ impl Cfg {
                 Path::new(&port).exists(),
                 "the serial port {port} does not exist"
             );
-            fs::create_dir_all(self.runs.join(name))
-                .with_context(|| format!("create {}", self.runs.join(name).display()))?;
+            fs::create_dir_all(&self.runs)
+                .with_context(|| format!("create {}", self.runs.display()))?;
+            let run = self.runs.join(name);
+            fs::create_dir(&run).with_context(|| {
+                format!(
+                    "reserve run directory {}: choose a new run name or output directory for a retry",
+                    run.display()
+                )
+            })?;
         }
         Ok(())
     }
@@ -305,6 +312,34 @@ fn clock(h: &mut dyn Host, c: &Cfg) -> Result<(String, f64)> {
     ))?;
     ensure!(d.code == 0, "clock check failed");
     parse_offset(&d.stdout)
+}
+
+pub(crate) const CLOCK_UNVERIFIED: &str = "clock_unverified";
+
+fn finish_clock(h: &mut dyn Host, c: &Cfg, name: &str) -> Result<()> {
+    let log = c.run_file(name, ".clock_end");
+    let marker = c.runs.join(name).join(CLOCK_UNVERIFIED);
+    if !h.dry() {
+        write(
+            &marker,
+            "End-of-run clock check did not succeed; latency is unverified.\n",
+        )?;
+    }
+    let check = h
+        .run(&Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi]).out(&log))
+        .with_context(|| {
+            format!("FAILED {name}: could not start the final clock check; latency is unverified")
+        })?;
+    ensure!(
+        check.code == 0,
+        "FAILED {name}: final clock check exited {}; latency is unverified (see {})",
+        check.code,
+        log.display()
+    );
+    if !h.dry() {
+        fs::remove_file(&marker).with_context(|| format!("remove {}", marker.display()))?;
+    }
+    Ok(())
 }
 
 fn write(path: &Path, text: &str) -> Result<()> {
@@ -448,9 +483,6 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         .code;
     g.rx = None;
     let recv_st = g.h.wait(rx)?;
-    if !g.h.dry() {
-        fs::create_dir_all(c.runs.join(n))?;
-    }
     let jsonl = format!("{tmp}/send.jsonl");
     let log_st =
         g.h.run(
@@ -463,20 +495,14 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         )?
         .code;
     if g.h.dry() {
-        g.h.run(
-            &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
-                .out(c.run_file(n, ".clock_end")),
-        )?;
+        finish_clock(&mut *g.h, c, n)?;
         return Ok(());
     }
     save_summary(
         &c.run_file(n, ".send"),
         &c.runs.join(n).join("send_summary.json"),
     )?;
-    g.h.run(
-        &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
-            .out(c.run_file(n, ".clock_end")),
-    )?;
+    let final_clock = finish_clock(&mut *g.h, c, n);
     // Everything above is kept for a look; the run only counts when both ends succeeded.
     let fail = |why: String| -> Result<()> { bail!("FAILED {n}: {why}") };
     if send_st != 0 {
@@ -507,6 +533,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     {
         return fail("no receiver summary.json".into());
     }
+    final_clock?;
     println!("DONE {n}");
     Ok(())
 }
@@ -698,10 +725,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         copy_st = g.h.run(&c.ssh(format!("rm -rf {}", shq(&scratch))))?.code;
     }
     if g.h.dry() {
-        g.h.run(
-            &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
-                .out(c.run_file(n, ".clock_end")),
-        )?;
+        finish_clock(&mut *g.h, c, n)?;
         return Ok(());
     }
     let (sj, dj) = (
@@ -715,10 +739,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         &c.run_file(n, ".send"),
         &c.runs.join(n).join("send_summary.json"),
     )?;
-    g.h.run(
-        &Plan::new(c.bin("moq-subghz-recv"), ["--clock-check", &c.pi])
-            .out(c.run_file(n, ".clock_end")),
-    )?;
+    let final_clock = finish_clock(&mut *g.h, c, n);
     let fail = |why: String| -> Result<()> { bail!("FAILED {n}: {why}") };
     if send_st != 0 {
         return fail(format!(
@@ -747,6 +768,7 @@ pub fn reverse(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     {
         return fail("no receiver summary.json".into());
     }
+    final_clock?;
     println!("DONE {n}");
     Ok(())
 }
@@ -911,9 +933,6 @@ pub fn css(h: &mut dyn Host, c: &Cfg, r: &Css) -> Result<()> {
         vec![]
     };
     let rdir = c.runs.join(n);
-    if !g.h.dry() {
-        fs::create_dir_all(&rdir)?;
-    }
     let mut a: Vec<String> = [
         "--port".to_string(),
         c.port()?,
@@ -1243,6 +1262,32 @@ mod tests {
     }
 
     #[test]
+    fn reusing_a_run_name_preserves_the_existing_capture() {
+        let d = Scratch::new("reused-run");
+        let c = cfg(&d.0);
+        let mut f = Fake::default();
+        c.prepare(&f, "t").unwrap();
+        let output = d.0.join("t/summary.json");
+        fs::write(&output, "previous capture").unwrap();
+        let err = forward(&mut f, &c, &run("t", &[])).unwrap_err();
+        assert!(err.to_string().contains("reserve run directory"));
+        assert!(f.log.is_empty());
+        assert_eq!(fs::read_to_string(output).unwrap(), "previous capture");
+    }
+
+    #[test]
+    fn a_failed_final_clock_check_keeps_the_capture_and_flags_latency() {
+        let d = Scratch::new("clock-end");
+        let mut f = Fake::default();
+        f.rule(".clock_end", 1, "", vec![]);
+        good_forward(&mut f, &d.0);
+        let err = forward(&mut f, &cfg(&d.0), &run("t", &[])).unwrap_err();
+        assert!(err.to_string().contains("final clock check exited 1"));
+        assert!(d.0.join("t/summary.json").exists());
+        assert!(d.0.join("t").join(CLOCK_UNVERIFIED).exists());
+    }
+
+    #[test]
     fn forward_fails_loud_on_each_missing_piece() {
         for (what, bad) in [
             ("sender exited 3", "sender"),
@@ -1308,7 +1353,6 @@ mod tests {
 
     #[test]
     fn bad_clock_offset_stops_before_anything_transmits() {
-        let d = Scratch::new("badclock");
         for out in [
             "{\"remote_minus_local_ms\":\"x\"}",
             "not json",
@@ -1317,6 +1361,7 @@ mod tests {
             "{\"remote_minus_local_ms\":.5}",
             "{\"remote_minus_local_ms\":}",
         ] {
+            let d = Scratch::new("badclock");
             let mut f = Fake::default();
             f.rule("--clock-check", 0, out, vec![]);
             let e = forward(&mut f, &cfg(&d.0), &run("t", &[]))
@@ -1325,6 +1370,7 @@ mod tests {
             assert!(e.contains("clock offset is not a number"), "{e}");
             assert_eq!(f.log.len(), 1, "nothing but the clock check ran");
         }
+        let d = Scratch::new("failedclock");
         let mut f = Fake::default();
         f.rule("--clock-check", 1, "", vec![]);
         assert_eq!(
@@ -1502,7 +1548,7 @@ mod tests {
     #[test]
     fn a_dropped_ssh_is_confirmed_stopped_before_anything_is_copied_or_removed() {
         let d = Scratch::new("revdrop");
-        let rules = |f: &mut Fake, stop: i32| {
+        let rules = |f: &mut Fake, stop: i32, d: &Scratch| {
             f.rule("--clock-check", 0, CLOCK, vec![]);
             f.rule("signal TERM", stop, "", vec![]);
             // the ssh that carries the receiver drops: exit 255; the copy would succeed
@@ -1522,7 +1568,7 @@ mod tests {
         };
         // stop confirmed: the stop runs first, then the copy, then the removal; the run still fails
         let mut f = Fake::default();
-        rules(&mut f, 0);
+        rules(&mut f, 0, &d);
         assert!(reverse(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
         let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
         assert!(
@@ -1531,8 +1577,9 @@ mod tests {
             f.log
         );
         // stop not confirmed: no copy and no removal
+        let d = Scratch::new("revdrop-unconfirmed");
         let mut f = Fake::default();
-        rules(&mut f, 3);
+        rules(&mut f, 3, &d);
         let e = reverse(&mut f, &cfg(&d.0), &run("t", &[]))
             .unwrap_err()
             .to_string();
@@ -1704,6 +1751,7 @@ mod tests {
         assert!(forward(&mut f, &cfg(&d.0), &run("t", &[])).is_err());
         assert!(f.log.iter().any(|l| l == "kill job 0"), "{:?}", f.log);
         // css: the board scratch directory cannot be made after the logger began
+        let d = Scratch::new("csscapfail");
         let mut f = css_job(&d.0);
         f.cannot_start.push("mktemp");
         let l = Css {

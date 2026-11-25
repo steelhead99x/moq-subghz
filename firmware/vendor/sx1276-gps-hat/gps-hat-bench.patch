@@ -8,7 +8,7 @@
 +byte hello[256] = "HELLO";
 @@ -271 +271 @@
 -    writeReg(REG_SYNC_WORD, 0x34); // LoRaWAN public sync word
-+    writeReg(REG_SYNC_WORD, 0x12); // stock CatWAN receiver sync word
++    writeReg(REG_SYNC_WORD, 0x12); // stock RP2040-based receiver sync word
 @@ -451 +451 @@
 -        configPower(23);
 +        configPower(3); // +5 dBm

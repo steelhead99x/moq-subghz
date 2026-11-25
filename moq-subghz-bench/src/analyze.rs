@@ -168,21 +168,6 @@ pub fn run_kind(recv: &Value, send: &Value) -> RunKind {
     }
 }
 
-/// Radio frame loss in percent. The receiver estimates it from sequence gaps, which says 0 when it
-/// saw no frame at all, so a total loss takes the sender's transmitted count as the denominator.
-fn radio_loss(recv: &Value, send: &Value, run: &str) -> Result<Cell> {
-    if run_kind(recv, send) == RunKind::TotalLoss {
-        let tx = as_f(get(send, "frames_tx"), "frames_tx")?;
-        return Ok(Cell::Float(round_to(100.0 * (1.0 - 0.0 / tx), 3)));
-    }
-    scaled_round(
-        req(recv, "radio_frame_loss", run)?,
-        100,
-        3,
-        "radio_frame_loss",
-    )
-}
-
 /// The rows of `fsk.csv`: one per `f300-*` run that put radio frames on the air.
 pub fn fsk_rows(runs: &Path) -> Result<Vec<Vec<Cell>>> {
     let mut rows = Vec::new();
@@ -199,7 +184,8 @@ pub fn fsk_rows(runs: &Path) -> Result<Vec<Vec<Cell>>> {
             }
             None => Value::Object(Default::default()),
         };
-        match run_kind(&s, &t) {
+        let kind = run_kind(&s, &t);
+        match kind {
             // The sender put nothing on the air: the run did not happen.
             RunKind::NeverStarted => continue,
             // Sent and nothing came back: a result, kept (its radio_frames_ok is 0).
@@ -208,12 +194,26 @@ pub fn fsk_rows(runs: &Path) -> Result<Vec<Vec<Cell>>> {
         }
         let r = |k| req(&s, k, &n);
         let c = |v: &Value| Cell::from_json(v);
+        let clock_unverified = dir.join(crate::orch::CLOCK_UNVERIFIED).try_exists()?;
         let lat = |obj: &str, k: &str| -> Result<Cell> {
+            if clock_unverified {
+                return Ok(Cell::None);
+            }
             match get(&s, obj) {
                 // No object was ever delivered, so there is no latency to report.
-                Value::Null if run_kind(&s, &t) == RunKind::TotalLoss => Ok(Cell::None),
+                Value::Null if kind == RunKind::TotalLoss => Ok(Cell::None),
                 _ => c(req(req(&s, obj, &n)?, k, &n)?),
             }
+        };
+        let (missing, loss) = if kind == RunKind::TotalLoss {
+            // With no sequence observed, the receiver cannot count gaps. Every confirmed
+            // transmission is missing from this capture.
+            (c(get(&t, "frames_tx"))?, Cell::Float(100.0))
+        } else {
+            (
+                c(r("radio_frames_missing")?)?,
+                scaled_round(r("radio_frame_loss")?, 100, 3, "radio_frame_loss")?,
+            )
         };
         let vloss = r("video_frame_loss")?;
         let air = get(&t, "air_bps");
@@ -230,9 +230,9 @@ pub fn fsk_rows(runs: &Path) -> Result<Vec<Vec<Cell>>> {
                 Cell::None
             },
             c(r("radio_frames_ok")?)?,
-            c(r("radio_frames_missing")?)?,
+            missing,
             c(r("radio_frames_bad")?)?,
-            radio_loss(&s, &t, &n)?,
+            loss,
             c(r("fec_recovered")?)?,
             c(r("objects_lost")?)?,
             c(r("groups_cut")?)?,
@@ -295,7 +295,7 @@ pub struct CssRun {
 }
 
 /// `chunk-sf7-125-small-r2` into (mode, profile, size, rep).
-fn parse_run_name(n: &str) -> Option<(String, String, String, i64)> {
+pub(crate) fn parse_run_name(n: &str) -> Option<(String, String, String, i64)> {
     let (mode, rest) = n.split_once('-')?;
     // `lorawan` is the name archived runs were written under; read it as `framed`.
     let mode = if mode == "lorawan" { "framed" } else { mode };
@@ -520,12 +520,7 @@ const CSS_HEADER: [&str; 28] = [
 /// Every css2015 run in `runs` (`<mode>-sfN-<bw>-<size>-rN` with an `exact/` replay).
 pub fn css_runs(runs: &Path, inp: &Inputs, psnr: Psnr) -> Result<Vec<CssRun>> {
     let mut out = Vec::new();
-    // Same glob as the Python: a single digit after "-r".
-    for n in names(runs, |n, _| {
-        n.len() > 2
-            && n[n.len() - 3..].starts_with("-r")
-            && n.as_bytes()[n.len() - 1].is_ascii_digit()
-    })? {
+    for n in names(runs, |n, path| path.is_dir() && parse_run_name(n).is_some())? {
         out.extend(css_run(runs, &n, inp, psnr)?);
     }
     Ok(out)
@@ -1051,6 +1046,7 @@ mod tests {
         let mut v: Value = serde_json::from_str(&recv).unwrap();
         // An empty capture: the receiver's gap estimate is 0 because it saw nothing.
         v["radio_frames_ok"] = 0.into();
+        v["radio_frames_missing"] = 0.into();
         v["radio_frame_loss"] = 0.0.into();
         v["obj_lat_ms"] = Value::Null;
         v["g2g_lat_ms"] = Value::Null;
@@ -1062,6 +1058,35 @@ mod tests {
             .position(|c| *c == "radio_frame_loss_pct")
             .unwrap();
         assert_eq!(rows[0][col].text(), "100.0");
+        let missing = FSK_COLS
+            .iter()
+            .position(|c| *c == "radio_frames_missing")
+            .unwrap();
+        assert_eq!(rows[0][missing].text(), "500");
+    }
+
+    #[test]
+    fn an_unverified_clock_suppresses_only_latency_columns() {
+        let runs = Scratch::new("fsk-clock-unverified");
+        let n = "f300-fec8-p2-1";
+        copy_tree(
+            &repo().join("results/stick-0.5.1/fsk").join(n),
+            &runs.0.join(n),
+        );
+        let before = fsk_rows(&runs.0).unwrap();
+        fs::write(
+            runs.0.join(n).join(crate::orch::CLOCK_UNVERIFIED),
+            "clock check failed",
+        )
+        .unwrap();
+        let after = fsk_rows(&runs.0).unwrap();
+        for (index, label) in FSK_COLS.iter().enumerate() {
+            if label.starts_with("obj_lat_") || label.starts_with("g2g_") {
+                assert_eq!(after[0][index], Cell::None, "{label}");
+            } else {
+                assert_eq!(after[0][index], before[0][index], "{label}");
+            }
+        }
     }
 
     #[test]
@@ -1094,8 +1119,8 @@ mod tests {
             fs::copy(src.join("send.txt"), s.0.join(format!("{name}.send"))).unwrap();
             s
         };
-        let old = stage("an-old-name", "lorawan-sf7-125-small-r1");
-        let new = stage("an-new-name", "framed-sf7-125-small-r1");
+        let old = stage("an-old-name", "lorawan-sf7-125-small-r12");
+        let new = stage("an-new-name", "framed-sf7-125-small-r12");
         let inp = Inputs::under(&repo());
         let none = |_: &Path, _: &Path, _: Option<&str>| Ok(None);
         let (o, n) = (Scratch::new("an-old-out"), Scratch::new("an-new-out"));

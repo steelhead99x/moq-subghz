@@ -136,6 +136,7 @@ fn main() -> Result<()> {
             }
         };
         let used = r["clock_offset_ms"].as_f64().unwrap_or(0.0);
+        let clock_unverified = dir.join("clock_unverified").try_exists()?;
         // re-base one latency sample taken at receiver time t_us; None if the log doesn't cover it
         let rebase = |lat: f64, t_us: u64| -> Option<f64> {
             let Some(c) = &clock else { return Some(lat) };
@@ -200,19 +201,39 @@ fn main() -> Result<()> {
             .parse::<f64>()
             .unwrap_or(0.0)
             / 1000.0;
+        let loss = if r["radio_frames_ok"].as_u64() == Some(0)
+            && s["frames_tx"].as_u64().is_some_and(|n| n > 0)
+        {
+            100.0
+        } else {
+            100.0 * f(&r, "radio_frame_loss")
+        };
+        let (object_latency, glass_to_glass) = if clock_unverified {
+            ("unverified".to_string(), "unverified".to_string())
+        } else {
+            (
+                format!(
+                    "{:.0} / {:.0}{}",
+                    pct(&mut olat.clone(), 0.5),
+                    pct(&mut olat, 0.95),
+                    if covered { "" } else { " (clock log gap)" }
+                ),
+                format!(
+                    "{:.0} / {:.0}",
+                    pct(&mut g2g.clone(), 0.5),
+                    pct(&mut g2g, 0.95)
+                ),
+            )
+        };
         println!(
-            "| {} | {dirn} | {br:.0}k{} | {} | {:.1} | {:.1} | {:.3}% | {} | {:.2}% | {:.0} / {:.0}{} | {:.0} / {:.0} | {} obj, {} dec (worst {:.0} ms) | {cpu} | {} / {:.0} | {:.1} / {:.1} |",
+            "| {} | {dirn} | {br:.0}k{} | {} | {:.1} | {:.1} | {loss:.3}% | {} | {:.2}% | {object_latency} | {glass_to_glass} | {} obj, {} dec (worst {:.0} ms) | {cpu} | {} / {:.0} | {:.1} / {:.1} |",
             dir.file_name().unwrap_or_default().to_string_lossy(),
             if prof.ends_with(":x") { " (x)" } else { "" },
             s["cipher"].as_str().unwrap_or("none"),
             f(&r, "delivered_video_bps") / 1000.0,
             f(&r, "radio_goodput_bps") / 1000.0,
-            100.0 * f(&r, "radio_frame_loss"),
             r["objects_lost"],
             100.0 * f(&r, "video_frame_loss"),
-            pct(&mut olat.clone(), 0.5), pct(&mut olat, 0.95),
-            if covered { "" } else { " (clock log gap)" },
-            pct(&mut g2g.clone(), 0.5), pct(&mut g2g, 0.95),
             r["stalls_obj"], dst, dworst.max(f(&r, "worst_gap_obj_ms")),
             ov["aead"], f(ov, "total_air"),
             f(&s, "seal_us_per_object"), f(&r, "open_us_per_object"),
