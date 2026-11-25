@@ -63,7 +63,7 @@ command set again.
 
 ## LR1110 tracker node and P2P mesh networks
 
-* The plan is a host-side bridge that reads the node's serial API. [mesh networking docs](https://meshtastic.org/docs/).
+* The plan is a host-side bridge that reads the node's serial API.
   The node applies its own duty-cycle and routing, and a mesh is not a point-to-point link, so video does
   not fit. Value: a range reference and a slow data lane.
 * This repo would never flash or reconfigure a node. P2P mesh networks firmware and protobufs are GPL licensed,

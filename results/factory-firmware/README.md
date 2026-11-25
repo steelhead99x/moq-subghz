@@ -19,7 +19,7 @@ needs a fresh run.
 | | sender (ARM single-board computer) | receiver (RP2040-based device, RP2040 + SX1276) |
 |---|---|---|
 | radio | SX1276 GPS HAT (SX1276) | onboard sub-GHz CSS transceiver module (SX1276) |
-| software | the HAT maker's official sample app `hat_app`, from [upstream repository](https://github.com/dragino/rpi-lora-tranceiver) commit `f6e1a55` (2018-05-11), built with g++ 14.2 and WiringPi v3.20 | the board maker stock receiver, `factory-receiver-rp2040.uf2` from [release v3.1.0.1](https://github.com/ElectronicCats/CatWAN_USB_Stick/releases/tag/v3.1.0.1) (sketch `factory-receiver.ino`, Sandeep Mistry's an SX127x library) |
+| software | the HAT maker's official sample app `hat_app`, from [upstream repository](https://github.com/dragino/rpi-lora-tranceiver) commit `f6e1a55` (2018-05-11), built with g++ 14.2 and WiringPi v3.20 | the board maker stock receiver, `factory-receiver-rp2040.uf2` from release `v3.1.0.1` (sketch `factory-receiver.ino`, Sandeep Mistry's an SX127x library) |
 | in this repo | [`firmware/vendor/sx1276-gps-hat/`](../../firmware/vendor/sx1276-gps-hat/README.md) | [`firmware/vendor/rp2040-factory-receiver/`](../../firmware/vendor/rp2040-factory-receiver/README.md) |
 
 board OS: Debian 13 (Debian-based OS), kernel 6.18.60. None of this project's firmware (`rp2040-sx1276-fw`)

@@ -8,7 +8,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 W=${1:-$HERE/build}
 COMMIT=f6e1a55f14c04b16d1a376160e9ccf6891a648e1
 UPSTREAM_SHA=355bbdb97e514742af81cec1546bf3fc3ec74f45de15d5b2930bb96741c3c73b   # dragino_lora_app/main.c
-PATCHED_SHA=d58d14872dbac0aa3d6698a8daccf42f934907cc7d6982ac542bd7ad780281af    # same file after the patch
+PATCHED_SHA=0e179180ae3d48dbeb49198ffe84e329bef4e7ed0d1ed88442ba04e73d8b892c    # same file after the patch
 mkdir -p "$W" && cd "$W"
 [ -d rpi-lora-tranceiver ] || git clone https://github.com/dragino/rpi-lora-tranceiver.git
 git -C rpi-lora-tranceiver checkout -q "$COMMIT"

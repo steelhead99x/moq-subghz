@@ -1,4 +1,4 @@
-4ceac251580c14d4736ede5cc7c4a22f8c2a908c243554310f9519e5aaaa7241  gps-hat-bench.patch
-6f67913921d30e34ef32f4801931bfb91e8090adeb332e5b393c061aa35dc95a  fetch-and-build.sh
+4a95f5a92baa1d62d5419d799f86d612900999f57751feabf555ad8d73364dbd  gps-hat-bench.patch
+2ce0dbee5ef7439ceb2836b264124147afc6f073c31439dff95700a72d70b3b0  fetch-and-build.sh
 # 355bbdb97e514742af81cec1546bf3fc3ec74f45de15d5b2930bb96741c3c73b  upstream dragino_lora_app/main.c@f6e1a55
-# d58d14872dbac0aa3d6698a8daccf42f934907cc7d6982ac542bd7ad780281af  patched dragino_lora_app/main.c
+# 0e179180ae3d48dbeb49198ffe84e329bef4e7ed0d1ed88442ba04e73d8b892c  patched dragino_lora_app/main.c
