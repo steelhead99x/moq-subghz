@@ -126,9 +126,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
         with:
           toolchain: 1.90.0
-          targets: armv7-unknown-linux-musleabihf,armv7-unknown-linux-gnueabihf
+          targets: armv7-unknown-linux-musleabihf,armv7-unknown-linux-gnueabihf,x86_64-unknown-linux-musl
       - name: musl (board binaries, rust-lld)
         run: cargo build --release -p moq-subghz-send -p moq-subghz-recv -p moq-subghz-css2015 -p moq-subghz-bench --target armv7-unknown-linux-musleabihf --locked
+      - name: x86-64 musl (release binaries, static, no glibc requirement)
+        run: cargo build --release -p moq-subghz-send -p moq-subghz-recv -p moq-subghz-css2015 -p moq-subghz-bench -p moq-subghz-report -p moq-subghz-radio-emu --target x86_64-unknown-linux-musl --locked
+      - name: x86-64 musl binaries are statically linked
+        run: |
+          for b in moq-subghz-send moq-subghz-recv moq-subghz-bench moq-subghz-report moq-subghz-chan css2015-send css2015-log; do
+            f=target/x86_64-unknown-linux-musl/release/$b
+            if readelf -d "$f" | grep -q NEEDED; then echo "$b is dynamically linked"; exit 1; fi
+          done
       - name: install armhf cross gcc
         run: sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf
       - name: gnueabihf

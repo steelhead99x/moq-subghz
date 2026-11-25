@@ -174,7 +174,73 @@ fn cp_pictures(dir: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A private staging tree under `out`, removed on drop unless it was committed. Everything is
+/// written here first, so a failed packaging (a missing log, a refused file) leaves every
+/// published run in `out` exactly as it was.
+struct Staging {
+    root: PathBuf,
+}
+
+impl Staging {
+    fn new(out: &Path) -> Result<Staging> {
+        fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
+        let root = out.join(format!(".package-staging-{}", std::process::id()));
+        // create_dir, not create_dir_all: this call owns the directory it removes later.
+        fs::create_dir(&root).with_context(|| format!("create {}", root.display()))?;
+        Ok(Staging { root })
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Replace the published directory `to` with the complete staged one `from`. The old one is moved
+/// aside first and put back if the swap fails, then removed.
+fn swap_dir(from: &Path, to: &Path) -> Result<()> {
+    let mut aside = to.file_name().context("no file name")?.to_owned();
+    aside.push(format!(".old-{}", std::process::id()));
+    let aside = to.with_file_name(aside);
+    let had = to.try_exists()?;
+    if had {
+        fs::rename(to, &aside).with_context(|| format!("move aside {}", to.display()))?;
+    }
+    if let Err(e) = fs::rename(from, to) {
+        if had {
+            let _ = fs::rename(&aside, to);
+        }
+        return Err(e).with_context(|| format!("publish {}", to.display()));
+    }
+    if had {
+        fs::remove_dir_all(&aside).with_context(|| format!("remove {}", aside.display()))?;
+    }
+    Ok(())
+}
+
 pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
+    let st = Staging::new(out)?;
+    stage_all(g, runs, demo, &st.root)?;
+    // Every run is complete and passed the scan: publish each one whole.
+    for sub in ["fsk", "css", "demo"] {
+        let (from, to) = (st.root.join(sub), out.join(sub));
+        fs::create_dir_all(&to)?;
+        for e in fs::read_dir(&from)? {
+            let e = e?;
+            let dst = to.join(e.file_name());
+            if e.file_type()?.is_dir() {
+                swap_dir(&e.path(), &dst)?;
+            } else {
+                fs::rename(e.path(), &dst).with_context(|| format!("write {}", dst.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write the whole packaging into the empty staging tree `out`.
+fn stage_all(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
     let (fsk, css, dm): (PathBuf, PathBuf, PathBuf) =
         (out.join("fsk"), out.join("css"), out.join("demo"));
     for d in [&fsk, &css, &dm] {
@@ -206,11 +272,10 @@ pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         let o = fsk.join(&n);
         fs::create_dir_all(&o)?;
         cp(g, &summary, &o.join("summary.json"))?;
+        // The staged directory starts empty, so a marker is present only when this capture has one.
         let clock_unverified = crate::orch::CLOCK_UNVERIFIED;
         if d.join(clock_unverified).try_exists()? {
             cp(g, &d.join(clock_unverified), &o.join(clock_unverified))?;
-        } else if o.join(clock_unverified).try_exists()? {
-            fs::remove_file(o.join(clock_unverified))?;
         }
         cp(
             g,
@@ -568,6 +633,50 @@ mod tests {
         assert!(o.0.join("fsk/f300-lost/summary.json").exists());
         assert!(o.0.join("fsk/f300-lost/send_summary.json").exists());
         assert!(!o.0.join("fsk/f300-zero").exists() && !o.0.join("fsk/f300-dead").exists());
+    }
+
+    #[test]
+    fn a_failed_packaging_leaves_the_published_runs_untouched() {
+        let (r, d, o) = (
+            Scratch::new("pk4-r"),
+            Scratch::new("pk4-d"),
+            Scratch::new("pk4-o"),
+        );
+        stage(&r.0, &d.0);
+        let marker = crate::orch::CLOCK_UNVERIFIED;
+        put(r.0.join("f300-a").join(marker), "clock check failed");
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        let published = o.0.join("fsk/f300-a");
+        let before = fs::read(published.join("summary.json")).unwrap();
+        // a second capture under the same name, missing a log, and without the marker
+        put(
+            r.0.join("f300-a/summary.json"),
+            "{\"radio_frames_ok\":7,\"new\":1}",
+        );
+        fs::remove_file(r.0.join("f300-a").join(marker)).unwrap();
+        fs::remove_file(r.0.join("f300-a/serial.log")).unwrap();
+        assert!(run(&none(), &r.0, &d.0, &o.0).is_err());
+        assert_eq!(fs::read(published.join("summary.json")).unwrap(), before);
+        assert!(
+            published.join(marker).exists(),
+            "the marker of the published run is kept"
+        );
+        let names: Vec<_> = fs::read_dir(&o.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.starts_with('.')),
+            "no staging left: {names:?}"
+        );
+        // the complete second capture replaces the run whole: no marker from the first one
+        put(r.0.join("f300-a/serial.log"), "serial2");
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        assert!(!published.join(marker).exists());
+        assert_eq!(gunzip(&published.join("serial.log.gz")), "serial2");
+        assert!(fs::read_to_string(published.join("summary.json"))
+            .unwrap()
+            .contains("new"));
     }
 
     #[test]

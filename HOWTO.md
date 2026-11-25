@@ -75,6 +75,22 @@ scp target/armv7-unknown-linux-musleabihf/release/moq-subghz-{send,recv} pi:moq-
 
 The only thing the board needs besides these two files is ffmpeg.
 
+### Release archives
+
+Instead of building, you can unpack a [release](https://github.com/steelhead99x/moq-subghz/releases).
+Archives made by `scripts/release.sh` (from the release after v0.1.0) are musl, statically linked, so they run on any
+Linux of their architecture, and each carries a `REQUIREMENTS.txt` that states any libc requirement.
+They also carry the reference inputs `moq-subghz-bench` reads (`results/css-2015/frames`,
+`results/factory-firmware`, the source picture under `media/`) beside `bin/`; the bench tool finds them
+relative to its own path, so keep the archive's layout. Elsewhere, pass `--repo-root` (or set
+`MOQ_SUBGHZ_ROOT`) to a checkout.
+
+**v0.1.0 caveats.** Its Linux x86-64 binaries are glibc builds: `moq-subghz-send`, `moq-subghz-recv`,
+`moq-subghz-bench` and `css2015-log` need glibc 2.39 or newer, `moq-subghz-publish` 2.38, the others 2.34
+(check with `ldd --version`). On an older system, build from source. Its archives also lack the bench
+tool's reference inputs and default `--repo-root` to the build machine's path, so `css2015-table`,
+`css2015-frames`, `analyze` and the CSS runs need `--repo-root` pointing at a checkout of the repository.
+
 ## 4. Flash the USB stick
 
 The stick needs this repo's firmware. A prebuilt image is at `firmware/rp2040-sx1276-fw-0.5.1.uf2`. The runs in `results/video/` used an

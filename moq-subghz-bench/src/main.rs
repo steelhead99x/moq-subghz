@@ -10,6 +10,7 @@ mod licence;
 mod matrix;
 mod orch;
 mod package;
+mod root;
 mod serial;
 mod stickcap;
 mod uf2;
@@ -35,9 +36,10 @@ enum Cmd {
         runs: PathBuf,
         /// Where the CSVs and SVGs go
         out: PathBuf,
-        /// Root of this repository, for the reference pictures and the factory results
-        #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
-        repo_root: PathBuf,
+        /// Root of this repository, for the reference pictures and the factory results (default:
+        /// the release bundle this binary is in, else the checkout it was built from)
+        #[arg(long, env = "MOQ_SUBGHZ_ROOT")]
+        repo_root: Option<PathBuf>,
     },
     /// Factory-vs-factory picture test: the HAT maker's stock app on the board, the stock receiver on the stick
     FactoryBench(factory::Opts),
@@ -151,13 +153,17 @@ enum Cmd {
         /// Directory of the built binaries (default: the directory of this one)
         #[arg(long, env = "BIN")]
         bin: Option<PathBuf>,
-        #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
-        repo_root: PathBuf,
+        /// Root of this repository, for the test pictures (default: the release bundle this binary
+        /// is in, else the checkout it was built from)
+        #[arg(long, env = "MOQ_SUBGHZ_ROOT")]
+        repo_root: Option<PathBuf>,
     },
     /// Rebuild the test pictures of results/css-2015/frames
     Css2015Frames {
-        #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
-        repo_root: PathBuf,
+        /// Root of this repository (default: the release bundle this binary is in, else the
+        /// checkout it was built from)
+        #[arg(long, env = "MOQ_SUBGHZ_ROOT")]
+        repo_root: Option<PathBuf>,
     },
     /// ELF to UF2 for the RP2040
     Elf2uf2 { elf: PathBuf, uf2: PathBuf },
@@ -359,7 +365,7 @@ fn real_main() -> Result<()> {
             let t = css2015::table(
                 &mut exec::Real::default(),
                 &bin.join("css2015-send").display().to_string(),
-                &repo_root.join("results/css-2015/frames"),
+                &root::resolve(repo_root, root::FRAMES)?.join(root::FRAMES),
             )?;
             println!("{t}");
             Ok(())
@@ -367,6 +373,7 @@ fn real_main() -> Result<()> {
         Cmd::Css2015Frames { repo_root } => {
             let have = std::env::var_os("PATH")
                 .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("ssdv").is_file()));
+            let repo_root = root::resolve(repo_root, root::FRAME_SOURCE)?;
             css2015::make_frames(&mut exec::Real::default(), &repo_root, have)
         }
         Cmd::Analyze {
@@ -376,7 +383,7 @@ fn real_main() -> Result<()> {
         } => analyze::run(
             &runs,
             &out,
-            &analyze::Inputs::under(&repo_root),
+            &analyze::Inputs::under(&root::resolve(repo_root, root::FRAMES)?),
             &analyze::ffmpeg_psnr,
         ),
         Cmd::FactoryBench(o) => factory::run(&o),
