@@ -211,8 +211,14 @@ struct Move {
 enum Done {
     /// `out/<sub>` did not exist and was made.
     Made(PathBuf),
-    /// `to` was put in place; the entry it replaced, if any, was moved to `aside`.
-    Placed { to: PathBuf, aside: Option<PathBuf> },
+    /// The entry at `to`, if any, was moved to `aside`. `placed` says whether the staged `from`
+    /// was then renamed to `to`: only then is the entry at `to` this commit's own.
+    Placed {
+        from: PathBuf,
+        to: PathBuf,
+        aside: Option<PathBuf>,
+        placed: bool,
+    },
 }
 
 /// Every move of the commit, checked before anything is touched: each `out/<sub>` must be a
@@ -254,9 +260,9 @@ fn plan(staged: &Path, out: &Path) -> Result<(Vec<PathBuf>, Vec<Move>)> {
 
 /// Put every staged entry in place. Replaced entries are moved aside under `aside` (inside the
 /// staging tree, same file system) and dropped with it on success. Any failure undoes what was
-/// done, newest first, so `out` is as it was before the call. `fail_at` makes the n-th move fail
-/// (tests only).
-fn commit(st: &mut Staging, out: &Path, fail_at: Option<usize>) -> Result<()> {
+/// done, newest first, so `out` is as it was before the call. `fault` makes the n-th move fail
+/// after running its function on the destination (tests only).
+fn commit(st: &mut Staging, out: &Path, fault: Fault) -> Result<()> {
     let staged = st.root.join("new");
     let (make, moves) = plan(&staged, out)?;
     let aside = st.root.join("old");
@@ -275,15 +281,20 @@ fn commit(st: &mut Staging, out: &Path, fail_at: Option<usize>) -> Result<()> {
             } else {
                 None
             };
-            // recorded before the rename, so a failed rename still puts the old entry back
+            let r = if let Some((_, f)) = fault.filter(|(at, _)| *at == i) {
+                f(&m.to);
+                Err(anyhow::anyhow!("injected failure at {}", m.to.display()))
+            } else {
+                fs::rename(&m.from, &m.to).with_context(|| format!("publish {}", m.to.display()))
+            };
+            // recorded either way, so a failed rename still puts the old entry back
             done.push(Done::Placed {
+                from: m.from.clone(),
                 to: m.to.clone(),
                 aside: old,
+                placed: r.is_ok(),
             });
-            if fail_at == Some(i) {
-                bail!("injected failure at {}", m.to.display());
-            }
-            fs::rename(&m.from, &m.to).with_context(|| format!("publish {}", m.to.display()))?;
+            r?;
         }
         Ok(())
     })();
@@ -296,18 +307,18 @@ fn commit(st: &mut Staging, out: &Path, fail_at: Option<usize>) -> Result<()> {
                     stuck.push(p);
                 }
             }
-            Done::Placed { to, aside } => {
-                // `to` holds the new entry only if its rename succeeded
-                if fs::symlink_metadata(&to).is_ok() {
-                    let gone = if to.is_dir() {
-                        fs::remove_dir_all(&to)
-                    } else {
-                        fs::remove_file(&to)
-                    };
-                    if gone.is_err() {
-                        stuck.push(to.clone());
-                        continue;
-                    }
+            Done::Placed {
+                from,
+                to,
+                aside,
+                placed,
+            } => {
+                // Only an entry this commit placed is taken back, and it is moved back into
+                // staging, not deleted: nothing at `to` that this commit did not put there is
+                // touched.
+                if placed && fs::rename(&to, &from).is_err() {
+                    stuck.push(to);
+                    continue;
                 }
                 if let Some(a) = aside {
                     if fs::rename(&a, &to).is_err() {
@@ -333,16 +344,47 @@ fn commit(st: &mut Staging, out: &Path, fail_at: Option<usize>) -> Result<()> {
     )))
 }
 
+/// A test's injected failure: at the n-th move, run the function on the destination, then fail.
+type Fault<'a> = Option<(usize, &'a dyn Fn(&Path))>;
+
 pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
     run_with(g, runs, demo, out, None)
 }
 
-fn run_with(g: &Guard, runs: &Path, demo: &Path, out: &Path, fail_at: Option<usize>) -> Result<()> {
+/// The lock file in `out` that one packaging holds from staging through commit and rollback.
+pub const LOCK: &str = ".package.lock";
+
+/// Hold the exclusive lock on `out`: a second packaging into the same output refuses instead of
+/// interleaving its publish (or its rollback) with this one. The OS drops the lock when the process
+/// ends, so a crash leaves no stale lock.
+fn lock(out: &Path) -> Result<fs::File> {
+    fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
+    let p = out.join(LOCK);
+    let f = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&p)
+        .with_context(|| format!("open {}", p.display()))?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(fs::TryLockError::WouldBlock) => bail!(
+            "another packaging into {} is running (it holds {}); wait for it to finish",
+            out.display(),
+            p.display()
+        ),
+        Err(fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("lock {}", p.display())),
+    }
+}
+
+fn run_with(g: &Guard, runs: &Path, demo: &Path, out: &Path, fault: Fault) -> Result<()> {
+    // Declared first, so it is released last: after the staging tree is gone.
+    let _lock = lock(out)?;
     let mut st = Staging::new(out)?;
     let staged = st.root.join("new");
     stage_all(g, runs, demo, &staged)?;
     // Every run is complete and passed the scan: publish them all, or none.
-    commit(&mut st, out, fail_at)
+    commit(&mut st, out, fault)
 }
 
 /// Write the whole packaging into the empty staging tree `out`.
@@ -772,7 +814,7 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert!(
-            !names.iter().any(|n| n.starts_with('.')),
+            !names.iter().any(|n| n.starts_with('.') && n != LOCK),
             "no staging left: {names:?}"
         );
         // the complete second capture replaces the run whole: no marker from the first one
@@ -849,7 +891,7 @@ mod tests {
         let before = snapshot(&o.0);
         // fail at each move in turn: the first, the middle ones, the last
         for i in 0..6 {
-            let e = run_with(&none(), &r.0, &d.0, &o.0, Some(i))
+            let e = run_with(&none(), &r.0, &d.0, &o.0, Some((i, &|_| ())))
                 .unwrap_err()
                 .to_string();
             assert!(e.contains("every change was undone"), "{i}: {e}");
@@ -857,8 +899,12 @@ mod tests {
         }
         // and into an empty output, where the sub directories are made and removed again
         let o2 = Scratch::new("pk6-o2");
-        assert!(run_with(&none(), &r.0, &d.0, &o2.0, Some(2)).is_err());
-        assert!(snapshot(&o2.0).is_empty(), "{:?}", snapshot(&o2.0));
+        assert!(run_with(&none(), &r.0, &d.0, &o2.0, Some((2, &|_| ()))).is_err());
+        let left: Vec<_> = snapshot(&o2.0)
+            .into_iter()
+            .filter(|(n, _)| n != LOCK)
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
         // without a failure the new capture is published
         run(&none(), &r.0, &d.0, &o.0).unwrap();
         assert_eq!(
@@ -868,6 +914,50 @@ mod tests {
         assert!(fs::read_to_string(o.0.join("fsk/f300-a/summary.json"))
             .unwrap()
             .contains("new"));
+    }
+
+    #[test]
+    fn a_second_packaging_into_the_same_output_refuses() {
+        let (r, d, o) = published_then_changed("pk7");
+        let before = snapshot(&o.0);
+        let held = lock(&o.0).unwrap();
+        let e = run(&none(), &r.0, &d.0, &o.0).unwrap_err().to_string();
+        assert!(e.contains("another packaging"), "{e}");
+        assert_eq!(snapshot(&o.0), before);
+        drop(held);
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+    }
+
+    #[test]
+    fn a_rollback_leaves_alone_what_it_did_not_place() {
+        let (r, d, o) = published_then_changed("pk8");
+        // Moves run in name order: fsk/f300-a, css/<two runs>, demo/<entries>. Fail at the last
+        // one, a new top-level demo file, after something else has put an entry there.
+        fs::remove_file(o.0.join("demo/fsk-live.mp4")).unwrap();
+        let foreign = |to: &Path| {
+            if to.ends_with("demo/fsk-live.mp4") {
+                fs::write(to, "another writer").unwrap();
+            }
+        };
+        let n = plan_len(&r, &d);
+        let e = format!(
+            "{:#}",
+            run_with(&none(), &r.0, &d.0, &o.0, Some((n - 1, &foreign))).unwrap_err()
+        );
+        assert!(e.contains("injected failure"), "{e}");
+        // its own rename never happened, so the other writer's file is not removed
+        assert_eq!(
+            fs::read(o.0.join("demo/fsk-live.mp4")).unwrap(),
+            b"another writer"
+        );
+    }
+
+    /// How many moves a packaging of these inputs makes (into an empty output).
+    fn plan_len(r: &Scratch, d: &Scratch) -> usize {
+        let o = Scratch::new("pk-len");
+        let st = Staging::new(&o.0).unwrap();
+        stage_all(&none(), &r.0, &d.0, &st.root.join("new")).unwrap();
+        plan(&st.root.join("new"), &o.0).unwrap().1.len()
     }
 
     #[test]

@@ -22,14 +22,18 @@
 #   CC_x86_64_unknown_linux_musl. The ARMv7 tools are pure Rust, linked with rust-lld.
 # * tar, sha256sum, readelf and objdump (binutils), install
 #
-# Builds go to RELEASE_BUILD_DIR (default target/release-build), whatever CARGO_TARGET_DIR says,
-# and the binaries are collected from there.
+# Builds go to RELEASE_BUILD_DIR (default target/release-build; a relative path is taken from the
+# directory the script was started in), whatever CARGO_TARGET_DIR says, and the binaries are
+# collected from there. Archives are built and checked in a staging directory, and dist/ is
+# replaced only once all of them passed: a failed build leaves the last archives in place.
 set -euo pipefail
 
 VERSION=${1:?usage: scripts/release.sh VERSION}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-DIST="$ROOT/dist"
+FINAL="$ROOT/dist"
 BUILD="${RELEASE_BUILD_DIR:-$ROOT/target/release-build}"
+# Absolute before any cd: the publisher builds from its own directory, packaging from the root.
+[[ $BUILD == /* ]] || BUILD="$PWD/$BUILD"
 cd "$ROOT"
 
 WORKSPACE_PKGS=(-p moq-subghz-send -p moq-subghz-recv -p moq-subghz-css2015 -p moq-subghz-bench
@@ -69,8 +73,13 @@ if ((${#missing[@]})); then
 fi
 echo "musl C compiler: $CC_x86_64_unknown_linux_musl"
 
+# Everything is built and checked here; dist/ is only replaced at the end.
+DIST="$ROOT/.dist-staging-$$"
+smoke=""
+cleanup() { rm -rf "$DIST" ${smoke:+"$smoke"}; }
+trap cleanup EXIT
 rm -rf "$DIST"
-mkdir -p "$DIST"
+mkdir "$DIST"
 for t in "${TARGETS[@]}"; do
   IFS='|' read -r triple label bins publish <<<"$t"
   rustup target add "$triple" >/dev/null
@@ -123,7 +132,6 @@ done
 host_label="linux-$(uname -m)"
 if [[ -f "$DIST/moq-subghz-$VERSION-$host_label.tar.gz" ]]; then
   smoke=$(mktemp -d)
-  trap 'rm -rf "$smoke"' EXIT
   tar -C "$smoke" -xzf "$DIST/moq-subghz-$VERSION-$host_label.tar.gz"
   (cd / && env -u MOQ_SUBGHZ_ROOT "$smoke/moq-subghz-$VERSION-$host_label/bin/moq-subghz-bench" css2015-table >/dev/null)
   echo "smoke test: css2015-table ran from the unpacked $host_label archive"
@@ -135,4 +143,13 @@ for t in "${TARGETS[@]}"; do
   IFS='|' read -r _ label _ _ <<<"$t"
   rm -rf "${DIST:?}/moq-subghz-$VERSION-$label"
 done
-cat "$DIST/SHA256SUMS"
+# Every archive is built and the host one passed its smoke test: replace dist/ with them.
+old="$ROOT/.dist-old-$$"
+if [[ -e $FINAL ]]; then mv "$FINAL" "$old"; fi
+if ! mv "$DIST" "$FINAL"; then
+  [[ -e $old ]] && mv "$old" "$FINAL"
+  echo "release.sh: could not replace dist/; the previous archives are kept" >&2
+  exit 1
+fi
+rm -rf "$old"
+cat "$FINAL/SHA256SUMS"
