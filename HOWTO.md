@@ -95,7 +95,9 @@ musl-tools`, or name one in `CC_x86_64_unknown_linux_musl`), and checks all of t
 It builds into `RELEASE_BUILD_DIR` (default `target/release-build`; a relative path is taken from
 where you start the script) whatever `CARGO_TARGET_DIR` says. It builds and checks in a staging
 directory and replaces `dist/` only when everything passed, so a failed build keeps the last
-archives. CI runs the same script.
+archives. CI runs the same script, and pushing a tag `vX.Y.Z` on `main` runs it in
+`.github/workflows/release.yml`, which publishes the archives, `SHA256SUMS` and the firmware image as
+that tag's release.
 
 **v0.1.0 caveats.** Its Linux x86-64 binaries are glibc builds: `moq-subghz-send`, `moq-subghz-recv`,
 `moq-subghz-bench` and `css2015-log` need glibc 2.39 or newer, `moq-subghz-publish` 2.38, the others 2.34

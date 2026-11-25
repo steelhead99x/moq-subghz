@@ -1,0 +1,70 @@
+name: release
+
+# Pushing a tag vX.Y.Z that points at a commit on main builds the release archives with
+# scripts/release.sh (the same script the CI `release` job runs) and publishes them as the GitHub
+# release of that tag, with SHA256SUMS and the firmware image.
+on:
+  push:
+    tags: ['v*']
+
+# Nothing but the publish job may write.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload its files
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # to check the tag is on main
+      - name: the tag is vX.Y.Z on main, with no release yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag $TAG is not vX.Y.Z"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$TAG is not on main"; exit 1; }
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists"; exit 1
+          fi
+      # both pinned toolchains: the workspace's (rust-toolchain.toml) and moq-subghz-publish's
+      - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
+        with:
+          toolchain: 1.100.0
+          targets: x86_64-unknown-linux-musl
+      - uses: dtolnay/rust-toolchain@547f64eaa184fd62768e02b77019e5408713ca53 # pinned action commit; the toolchain is the `toolchain` input
+        with:
+          toolchain: 1.90.0
+          targets: x86_64-unknown-linux-musl,armv7-unknown-linux-musleabihf
+      - name: musl C compiler (moq-subghz-publish builds C for its TLS)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: build the archives (scripts/release.sh)
+        run: scripts/release.sh "$TAG"
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat >notes.md <<EOF
+          Linux archives built by \`scripts/release.sh\`, statically linked against musl: they run on
+          any Linux of their architecture, with no glibc requirement. Each archive carries
+          \`REQUIREMENTS.txt\` and the reference inputs \`moq-subghz-bench\` reads, beside \`bin/\`.
+          Unpack an archive and keep its layout; see
+          [HOWTO.md](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/HOWTO.md#release-archives).
+
+          Check a download with \`sha256sum -c --ignore-missing SHA256SUMS\`.
+
+          \`\`\`
+          $(cat dist/SHA256SUMS)
+          \`\`\`
+          EOF
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "moq-subghz $TAG" --notes-file notes.md --generate-notes
