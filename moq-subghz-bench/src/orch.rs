@@ -38,9 +38,10 @@ pub struct Env {
     /// Serial device of the RP2040-based device. No default: it is opened by the receiver, logger or sender
     #[arg(long, env = "PORT")]
     pub port: Option<PathBuf>,
-    /// Root of this repository, for the test pictures
-    #[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/.."))]
-    pub repo_root: PathBuf,
+    /// Root of this repository, for the test pictures (default: the release bundle this binary
+    /// is in, else the checkout it was built from)
+    #[arg(long, env = "MOQ_SUBGHZ_ROOT")]
+    pub repo_root: Option<PathBuf>,
     /// Required to transmit: the antennas are on both radios. Forwarded to the sender only when given
     #[arg(long)]
     pub i_have_an_antenna: bool,
@@ -85,11 +86,13 @@ impl Env {
             bin,
             runs: self.runs.clone(),
             port: self.port.clone(),
-            frames: self
-                .repo_root
-                .canonicalize()
-                .unwrap_or_else(|_| self.repo_root.clone())
-                .join("results/css-2015/frames"),
+            // Only the CSS runs read the pictures, so a missing tree is not an error here: the
+            // run that needs it fails on the path, while FSK runs work from a bare binary.
+            frames: {
+                let r = crate::root::resolve(self.repo_root.clone(), crate::root::FRAMES)
+                    .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/..").into());
+                r.canonicalize().unwrap_or(r).join(crate::root::FRAMES)
+            },
             antenna: self.i_have_an_antenna,
             transmit: self.transmit,
             lic: self.licence.resolve(),
@@ -484,16 +487,28 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
     g.rx = None;
     let recv_st = g.h.wait(rx)?;
     let jsonl = format!("{tmp}/send.jsonl");
+    let local_log = c.runs.join(n).join("send.jsonl");
     let log_st =
-        g.h.run(
-            &c.ssh(format!(
-                "cat {j}; st=$?; rm -rf {t}; exit $st",
-                j = shq(&jsonl),
-                t = shq(&tmp)
-            ))
-            .out(c.runs.join(n).join("send.jsonl")),
-        )?
-        .code;
+        g.h.run(&c.ssh(format!("cat {}", shq(&jsonl))).out(local_log.clone()))?
+            .code;
+    // The board's copy is the only complete one until the local copy is known good (the same
+    // rule as the CSS runner): remove the scratch directory only then.
+    let keep = if g.h.dry() {
+        None
+    } else {
+        let wc = g.h.run(&c.ssh(format!("wc -c < {}", shq(&jsonl))))?;
+        let local = fs::metadata(&local_log).ok().map(|m| m.len());
+        keep_reason(log_st, wc.code, &wc.stdout, local)
+    };
+    match &keep {
+        None => {
+            g.h.run(&c.ssh(format!("rm -rf {}", shq(&tmp))))?;
+        }
+        Some(why) => eprintln!(
+            "WARNING: the sender log was NOT removed from the board: {why}. It is at {}:{jsonl} (scratch directory {tmp}); copy it by hand.",
+            c.pi
+        ),
+    }
     if g.h.dry() {
         finish_clock(&mut *g.h, c, n)?;
         return Ok(());
@@ -517,8 +532,7 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
             c.run_file(n, ".out").display()
         ));
     }
-    let log = c.runs.join(n).join("send.jsonl");
-    if log_st != 0 || fs::metadata(&log).map_or(true, |m| m.len() == 0) {
+    if log_st != 0 || fs::metadata(&local_log).map_or(true, |m| m.len() == 0) {
         return fail("no sender log".into());
     }
     if !read(&c.runs.join(n).join("send_summary.json"))?.contains("\"role\":\"send\"") {
@@ -532,6 +546,11 @@ pub fn forward(h: &mut dyn Host, c: &Cfg, r: &Run) -> Result<()> {
         .contains("\"role\":\"recv\"")
     {
         return fail("no receiver summary.json".into());
+    }
+    if let Some(why) = keep {
+        return fail(format!(
+            "the sender log copy is not verified ({why}); the board's copy was kept"
+        ));
     }
     final_clock?;
     println!("DONE {n}");
@@ -1227,6 +1246,62 @@ mod tests {
             "{\"seq\":1}\n",
             vec![],
         );
+        // the board's `wc -c` of send.jsonl: the 10 bytes the cat rule writes
+        f.rule("wc -c < /tmp/moq-bench.T/send.jsonl", 0, "10\n", vec![]);
+    }
+
+    #[test]
+    fn forward_removes_the_board_log_only_after_the_copy_is_verified() {
+        let d = Scratch::new("fwd-verify");
+        let mut f = Fake::default();
+        good_forward(&mut f, &d.0);
+        forward(&mut f, &cfg(&d.0), &run("t", &[])).unwrap();
+        let at = |pat: &str| f.log.iter().position(|l| l.contains(pat)).unwrap();
+        let rm = "ssh -o BatchMode=yes -- pi 'rm -rf /tmp/moq-bench.T'";
+        assert!(!f
+            .log
+            .iter()
+            .any(|l| l.starts_with("ssh") && l.contains("send.jsonl; ")));
+        assert!(
+            at("cat /tmp/moq-bench.T/send.jsonl") < at("wc -c < /tmp/moq-bench.T/send.jsonl")
+                && at("wc -c < /tmp/moq-bench.T/send.jsonl") < at(rm),
+            "{:?}",
+            f.log
+        );
+    }
+
+    #[test]
+    fn a_short_or_failed_log_copy_keeps_the_board_copy_and_fails_the_run() {
+        // (cat status, board wc output): a truncated copy, an unreadable board size, a failed copy
+        for (tag, cat_st, wc) in [
+            ("short", 0, "999\n"),
+            ("nowc", 0, ""),
+            ("catfail", 255, "10\n"),
+        ] {
+            let d = Scratch::new(&format!("fwd-keep-{tag}"));
+            let mut f = Fake::default();
+            good_forward(&mut f, &d.0);
+            f.rules.retain(|r| {
+                r.pat != "cat /tmp/moq-bench.T/send.jsonl"
+                    && r.pat != "wc -c < /tmp/moq-bench.T/send.jsonl"
+            });
+            f.rule(
+                "cat /tmp/moq-bench.T/send.jsonl",
+                cat_st,
+                "{\"seq\":1}\n",
+                vec![],
+            );
+            f.rule("wc -c < /tmp/moq-bench.T/send.jsonl", 0, wc, vec![]);
+            let e = forward(&mut f, &cfg(&d.0), &run("t", &[]))
+                .unwrap_err()
+                .to_string();
+            assert!(e.starts_with("FAILED t: "), "{tag}: {e}");
+            assert!(
+                !f.log.iter().any(|l| l.contains("rm -rf /tmp/moq-bench.T")),
+                "{tag}: the board copy must be kept: {:?}",
+                f.log
+            );
+        }
     }
 
     #[test]
@@ -1327,6 +1402,7 @@ mod tests {
                 "{\"seq\":1}\n",
                 vec![],
             );
+            f.rule("wc -c < /tmp/moq-bench.T/send.jsonl", 0, "10\n", vec![]);
             let e = forward(&mut f, &cfg(&d.0), &run("t", &[]))
                 .unwrap_err()
                 .to_string();

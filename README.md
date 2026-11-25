@@ -86,7 +86,8 @@ profile, with a region file that sets legal limits. **That is planned, not built
 
 ## Try it (no radio needed)
 
-You need Rust 1.90+ and ffmpeg.
+You need Rust 1.90+ and ffmpeg. Or use a [release archive](https://github.com/steelhead99x/moq-subghz/releases):
+see [HOWTO.md](HOWTO.md#release-archives) for what it needs.
 
 ```sh
 cargo build --release
@@ -156,6 +157,7 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 * [docs/DETAILS.md](docs/DETAILS.md): how it works, measured results, repo map and limits
 * [docs/LICENSING.md](docs/LICENSING.md): licensed and unlicensed mode, the private licence file, what the tools cannot verify
 * [docs/MOQ.md](docs/MOQ.md): republishing to a MoQ relay
+* [docs/RELATED-WORK.md](docs/RELATED-WORK.md): related research (MultiMoQ, arXiv:2608.06102) and the shaping and modeling ideas it suggests here
 * [HOWTO.md](HOWTO.md): parts, setup and your first live picture
 * [results/loopback](results/loopback/README.md): how the picture holds up as the link gets worse (a replay, no radio)
 * [results/css-2015](results/css-2015/README.md): what a 2015 team could have sent over real CSS mode and uplink-style frames
@@ -169,7 +171,8 @@ commit key files, board MACs or serials, or flash dumps. Details: [CONTRIBUTING.
 <sub>Credits and references: the MoQ model (groups and objects) follows [moq.dev](https://moq.dev) and the
 [IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/); the radio side uses none of moq.dev's
 code, the optional republish step uses its Rust libraries, and this project is not affiliated with or endorsed
-by moq.dev. Frame encryption uses the pure-Rust ChaCha20-Poly1305 library [rind](https://github.com/kixel-ai/rind).
+by moq.dev. Related research: [MultiMoQ](https://arxiv.org/pdf/2608.06102) (Li, Chai, Li, Kutscher, 2026), see
+[docs/RELATED-WORK.md](docs/RELATED-WORK.md). Frame encryption uses the pure-Rust ChaCha20-Poly1305 library [rind](https://github.com/kixel-ai/rind).
 Built in [Rust](https://www.rust-lang.org) on the Semtech SX1276 and the board maker RP2040-based device.
 Background post: [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/). Amateur
 radio rules cited in [docs/AMATEUR.md](docs/AMATEUR.md) (47 CFR 97.113 and regional rules) and

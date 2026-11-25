@@ -174,7 +174,221 @@ fn cp_pictures(dir: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A private staging tree under `out`, removed on drop unless `keep` is set. Everything is written
+/// here first, so a failed packaging (a missing log, a refused file) leaves every published run in
+/// `out` exactly as it was. The published entries a commit replaces are moved aside into it too.
+struct Staging {
+    root: PathBuf,
+    /// Set when a rollback failed: the moved-aside originals are still in here.
+    keep: bool,
+}
+
+impl Staging {
+    fn new(out: &Path) -> Result<Staging> {
+        fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
+        let root = out.join(format!(".package-staging-{}", std::process::id()));
+        // create_dir, not create_dir_all: this call owns the directory it removes later.
+        fs::create_dir(&root).with_context(|| format!("create {}", root.display()))?;
+        Ok(Staging { root, keep: false })
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
+/// One published entry the commit puts in place: the staged `from` goes to `to`.
+struct Move {
+    from: PathBuf,
+    to: PathBuf,
+}
+
+/// What the commit did, so a failure can undo it in reverse.
+enum Done {
+    /// `out/<sub>` did not exist and was made.
+    Made(PathBuf),
+    /// The entry at `to`, if any, was moved to `aside`. `placed` says whether the staged `from`
+    /// was then renamed to `to`: only then is the entry at `to` this commit's own.
+    Placed {
+        from: PathBuf,
+        to: PathBuf,
+        aside: Option<PathBuf>,
+        placed: bool,
+    },
+}
+
+/// Every move of the commit, checked before anything is touched: each `out/<sub>` must be a
+/// directory (or absent) and each destination must be absent or of the same kind as what replaces
+/// it, so a commit does not start when it would stop partway.
+fn plan(staged: &Path, out: &Path) -> Result<(Vec<PathBuf>, Vec<Move>)> {
+    let (mut make, mut moves) = (Vec::new(), Vec::new());
+    for sub in ["fsk", "css", "demo"] {
+        let (from, to) = (staged.join(sub), out.join(sub));
+        match fs::symlink_metadata(&to) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => bail!("{} is in the way: it is not a directory", to.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => make.push(to.clone()),
+            Err(e) => return Err(e).with_context(|| format!("check {}", to.display())),
+        }
+        let mut entries: Vec<_> = fs::read_dir(&from)?.collect::<std::io::Result<_>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let dir = e.file_type()?.is_dir();
+            let dst = to.join(e.file_name());
+            match fs::symlink_metadata(&dst) {
+                Ok(m) if m.is_dir() == dir && !m.file_type().is_symlink() => {}
+                Ok(_) => bail!(
+                    "{} is in the way: it is not a {}",
+                    dst.display(),
+                    if dir { "directory" } else { "regular file" }
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).with_context(|| format!("check {}", dst.display())),
+            }
+            moves.push(Move {
+                from: e.path(),
+                to: dst,
+            });
+        }
+    }
+    Ok((make, moves))
+}
+
+/// Put every staged entry in place. Replaced entries are moved aside under `aside` (inside the
+/// staging tree, same file system) and dropped with it on success. Any failure undoes what was
+/// done, newest first, so `out` is as it was before the call. `fault` makes the n-th move fail
+/// after running its function on the destination (tests only).
+fn commit(st: &mut Staging, out: &Path, fault: Fault) -> Result<()> {
+    let staged = st.root.join("new");
+    let (make, moves) = plan(&staged, out)?;
+    let aside = st.root.join("old");
+    fs::create_dir(&aside)?;
+    let mut done = Vec::new();
+    let r = (|| -> Result<()> {
+        for d in make {
+            fs::create_dir(&d).with_context(|| format!("create {}", d.display()))?;
+            done.push(Done::Made(d));
+        }
+        for (i, m) in moves.iter().enumerate() {
+            let old = if m.to.try_exists()? {
+                let a = aside.join(i.to_string());
+                fs::rename(&m.to, &a).with_context(|| format!("move aside {}", m.to.display()))?;
+                Some(a)
+            } else {
+                None
+            };
+            let r = if let Some((_, f)) = fault.filter(|(at, _)| *at == i) {
+                f(&m.to);
+                Err(anyhow::anyhow!("injected failure at {}", m.to.display()))
+            } else {
+                fs::rename(&m.from, &m.to).with_context(|| format!("publish {}", m.to.display()))
+            };
+            // recorded either way, so a failed rename still puts the old entry back
+            done.push(Done::Placed {
+                from: m.from.clone(),
+                to: m.to.clone(),
+                aside: old,
+                placed: r.is_ok(),
+            });
+            r?;
+        }
+        Ok(())
+    })();
+    let Err(e) = r else { return Ok(()) };
+    let mut stuck = Vec::new();
+    for d in done.into_iter().rev() {
+        match d {
+            Done::Made(p) => {
+                if fs::remove_dir(&p).is_err() {
+                    stuck.push(p);
+                }
+            }
+            Done::Placed {
+                from,
+                to,
+                aside,
+                placed,
+            } => {
+                // Only an entry this commit placed is taken back, and it is moved back into
+                // staging, not deleted: nothing at `to` that this commit did not put there is
+                // touched.
+                if placed && fs::rename(&to, &from).is_err() {
+                    stuck.push(to);
+                    continue;
+                }
+                if let Some(a) = aside {
+                    if fs::rename(&a, &to).is_err() {
+                        stuck.push(to);
+                    }
+                }
+            }
+        }
+    }
+    if stuck.is_empty() {
+        return Err(e.context("packaging failed while publishing; every change was undone"));
+    }
+    st.keep = true;
+    Err(e.context(format!(
+        "packaging failed while publishing and could not undo every change ({}); the replaced \
+         originals are kept under {}",
+        stuck
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        aside.display()
+    )))
+}
+
+/// A test's injected failure: at the n-th move, run the function on the destination, then fail.
+type Fault<'a> = Option<(usize, &'a dyn Fn(&Path))>;
+
 pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
+    run_with(g, runs, demo, out, None)
+}
+
+/// The lock file in `out` that one packaging holds from staging through commit and rollback.
+pub const LOCK: &str = ".package.lock";
+
+/// Hold the exclusive lock on `out`: a second packaging into the same output refuses instead of
+/// interleaving its publish (or its rollback) with this one. The OS drops the lock when the process
+/// ends, so a crash leaves no stale lock.
+fn lock(out: &Path) -> Result<fs::File> {
+    fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
+    let p = out.join(LOCK);
+    let f = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&p)
+        .with_context(|| format!("open {}", p.display()))?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(fs::TryLockError::WouldBlock) => bail!(
+            "another packaging into {} is running (it holds {}); wait for it to finish",
+            out.display(),
+            p.display()
+        ),
+        Err(fs::TryLockError::Error(e)) => Err(e).with_context(|| format!("lock {}", p.display())),
+    }
+}
+
+fn run_with(g: &Guard, runs: &Path, demo: &Path, out: &Path, fault: Fault) -> Result<()> {
+    // Declared first, so it is released last: after the staging tree is gone.
+    let _lock = lock(out)?;
+    let mut st = Staging::new(out)?;
+    let staged = st.root.join("new");
+    stage_all(g, runs, demo, &staged)?;
+    // Every run is complete and passed the scan: publish them all, or none.
+    commit(&mut st, out, fault)
+}
+
+/// Write the whole packaging into the empty staging tree `out`.
+fn stage_all(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
     let (fsk, css, dm): (PathBuf, PathBuf, PathBuf) =
         (out.join("fsk"), out.join("css"), out.join("demo"));
     for d in [&fsk, &css, &dm] {
@@ -206,11 +420,10 @@ pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
         let o = fsk.join(&n);
         fs::create_dir_all(&o)?;
         cp(g, &summary, &o.join("summary.json"))?;
+        // The staged directory starts empty, so a marker is present only when this capture has one.
         let clock_unverified = crate::orch::CLOCK_UNVERIFIED;
         if d.join(clock_unverified).try_exists()? {
             cp(g, &d.join(clock_unverified), &o.join(clock_unverified))?;
-        } else if o.join(clock_unverified).try_exists()? {
-            fs::remove_file(o.join(clock_unverified))?;
         }
         cp(
             g,
@@ -568,6 +781,183 @@ mod tests {
         assert!(o.0.join("fsk/f300-lost/summary.json").exists());
         assert!(o.0.join("fsk/f300-lost/send_summary.json").exists());
         assert!(!o.0.join("fsk/f300-zero").exists() && !o.0.join("fsk/f300-dead").exists());
+    }
+
+    #[test]
+    fn a_failed_packaging_leaves_the_published_runs_untouched() {
+        let (r, d, o) = (
+            Scratch::new("pk4-r"),
+            Scratch::new("pk4-d"),
+            Scratch::new("pk4-o"),
+        );
+        stage(&r.0, &d.0);
+        let marker = crate::orch::CLOCK_UNVERIFIED;
+        put(r.0.join("f300-a").join(marker), "clock check failed");
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        let published = o.0.join("fsk/f300-a");
+        let before = fs::read(published.join("summary.json")).unwrap();
+        // a second capture under the same name, missing a log, and without the marker
+        put(
+            r.0.join("f300-a/summary.json"),
+            "{\"radio_frames_ok\":7,\"new\":1}",
+        );
+        fs::remove_file(r.0.join("f300-a").join(marker)).unwrap();
+        fs::remove_file(r.0.join("f300-a/serial.log")).unwrap();
+        assert!(run(&none(), &r.0, &d.0, &o.0).is_err());
+        assert_eq!(fs::read(published.join("summary.json")).unwrap(), before);
+        assert!(
+            published.join(marker).exists(),
+            "the marker of the published run is kept"
+        );
+        let names: Vec<_> = fs::read_dir(&o.0)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.starts_with('.') && n != LOCK),
+            "no staging left: {names:?}"
+        );
+        // the complete second capture replaces the run whole: no marker from the first one
+        put(r.0.join("f300-a/serial.log"), "serial2");
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        assert!(!published.join(marker).exists());
+        assert_eq!(gunzip(&published.join("serial.log.gz")), "serial2");
+        assert!(fs::read_to_string(published.join("summary.json"))
+            .unwrap()
+            .contains("new"));
+    }
+
+    /// Every file under `dir`, relative, with its content: a snapshot to compare against.
+    fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(root: &Path, d: &Path, v: &mut Vec<(String, Vec<u8>)>) {
+            for e in fs::read_dir(d).unwrap() {
+                let p = e.unwrap().path();
+                let rel = p.strip_prefix(root).unwrap().display().to_string();
+                if p.is_dir() {
+                    v.push((rel + "/", vec![]));
+                    walk(root, &p, v);
+                } else {
+                    v.push((rel, fs::read(&p).unwrap()));
+                }
+            }
+        }
+        let mut v = Vec::new();
+        walk(dir, dir, &mut v);
+        v.sort();
+        v
+    }
+
+    /// Publish once, then change the capture so a second packaging would replace every run.
+    fn published_then_changed(tag: &str) -> (Scratch, Scratch, Scratch) {
+        let (r, d, o) = (
+            Scratch::new(&format!("{tag}-r")),
+            Scratch::new(&format!("{tag}-d")),
+            Scratch::new(&format!("{tag}-o")),
+        );
+        stage(&r.0, &d.0);
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        put(
+            r.0.join("f300-a/summary.json"),
+            "{\"radio_frames_ok\":7,\"new\":1}",
+        );
+        put(r.0.join("chunk-sf7-125-small-r1/raw.log"), "raw2");
+        put(d.0.join("fsk-live.mp4"), "new video");
+        (r, d, o)
+    }
+
+    #[test]
+    fn a_destination_in_the_way_refuses_before_any_run_is_replaced() {
+        let (r, d, o) = published_then_changed("pk5");
+        // the reviewer's case: out/css is a file
+        fs::remove_dir_all(o.0.join("css")).unwrap();
+        fs::write(o.0.join("css"), "in the way").unwrap();
+        let before = snapshot(&o.0);
+        let e = run(&none(), &r.0, &d.0, &o.0).unwrap_err().to_string();
+        assert!(e.contains("in the way"), "{e}");
+        assert_eq!(snapshot(&o.0), before, "nothing published was touched");
+        // a run directory where a file is published, too
+        fs::remove_file(o.0.join("css")).unwrap();
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        fs::remove_file(o.0.join("demo/fsk-live.mp4")).unwrap();
+        fs::create_dir(o.0.join("demo/fsk-live.mp4")).unwrap();
+        let before = snapshot(&o.0);
+        assert!(run(&none(), &r.0, &d.0, &o.0).is_err());
+        assert_eq!(snapshot(&o.0), before);
+    }
+
+    #[test]
+    fn a_failure_partway_through_publishing_is_undone() {
+        let (r, d, o) = published_then_changed("pk6");
+        let before = snapshot(&o.0);
+        // fail at each move in turn: the first, the middle ones, the last
+        for i in 0..6 {
+            let e = run_with(&none(), &r.0, &d.0, &o.0, Some((i, &|_| ())))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("every change was undone"), "{i}: {e}");
+            assert_eq!(snapshot(&o.0), before, "move {i}");
+        }
+        // and into an empty output, where the sub directories are made and removed again
+        let o2 = Scratch::new("pk6-o2");
+        assert!(run_with(&none(), &r.0, &d.0, &o2.0, Some((2, &|_| ()))).is_err());
+        let left: Vec<_> = snapshot(&o2.0)
+            .into_iter()
+            .filter(|(n, _)| n != LOCK)
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        // without a failure the new capture is published
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        assert_eq!(
+            fs::read(o.0.join("demo/fsk-live.mp4")).unwrap(),
+            b"new video"
+        );
+        assert!(fs::read_to_string(o.0.join("fsk/f300-a/summary.json"))
+            .unwrap()
+            .contains("new"));
+    }
+
+    #[test]
+    fn a_second_packaging_into_the_same_output_refuses() {
+        let (r, d, o) = published_then_changed("pk7");
+        let before = snapshot(&o.0);
+        let held = lock(&o.0).unwrap();
+        let e = run(&none(), &r.0, &d.0, &o.0).unwrap_err().to_string();
+        assert!(e.contains("another packaging"), "{e}");
+        assert_eq!(snapshot(&o.0), before);
+        drop(held);
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+    }
+
+    #[test]
+    fn a_rollback_leaves_alone_what_it_did_not_place() {
+        let (r, d, o) = published_then_changed("pk8");
+        // Moves run in name order: fsk/f300-a, css/<two runs>, demo/<entries>. Fail at the last
+        // one, a new top-level demo file, after something else has put an entry there.
+        fs::remove_file(o.0.join("demo/fsk-live.mp4")).unwrap();
+        let foreign = |to: &Path| {
+            if to.ends_with("demo/fsk-live.mp4") {
+                fs::write(to, "another writer").unwrap();
+            }
+        };
+        let n = plan_len(&r, &d);
+        let e = format!(
+            "{:#}",
+            run_with(&none(), &r.0, &d.0, &o.0, Some((n - 1, &foreign))).unwrap_err()
+        );
+        assert!(e.contains("injected failure"), "{e}");
+        // its own rename never happened, so the other writer's file is not removed
+        assert_eq!(
+            fs::read(o.0.join("demo/fsk-live.mp4")).unwrap(),
+            b"another writer"
+        );
+    }
+
+    /// How many moves a packaging of these inputs makes (into an empty output).
+    fn plan_len(r: &Scratch, d: &Scratch) -> usize {
+        let o = Scratch::new("pk-len");
+        let st = Staging::new(&o.0).unwrap();
+        stage_all(&none(), &r.0, &d.0, &st.root.join("new")).unwrap();
+        plan(&st.root.join("new"), &o.0).unwrap().1.len()
     }
 
     #[test]

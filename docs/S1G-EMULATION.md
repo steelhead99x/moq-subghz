@@ -84,7 +84,7 @@ airtime cost. With the MAC ACK and retries on (the default) the loss is hidden b
 | CWmin / CWmax | 15 / 1023 | ASSUMPTION: EDCA best effort defaults. Backoff is always charged, even on an idle channel (conservative) |
 | ACK | 14 B at MCS0 of the same width; unicast retries 7 | ASSUMPTION: 802.11 control response and short retry limit defaults. S1G NDP ACK would be shorter |
 | receive latency / jitter | 1.5 ms / 0..1 ms | ASSUMPTION: driver and stack, not measured on any module |
-| loss | none, iid:P, or Gilbert-Elliott | ASSUMPTION (model choice): GE steps once per PHY attempt, the ACK uses the same state, and the chain starts in its stationary distribution (not always Good), so short runs see the mean loss. Burst parameters used in the bench are illustrative, not fitted to a site |
+| loss | none, iid:P, or Gilbert-Elliott | ASSUMPTION (model choice): GE steps once per PHY attempt, the ACK uses the same state, and the chain starts in its stationary distribution (not always Good), so short runs see the mean loss. Burst parameters used in the bench are illustrative, not fitted to a site (fitting them to measured runs: see [RELATED-WORK.md](RELATED-WORK.md#channel-modeling-candidate-improvements)) |
 | rate control, rate fallback, A-MPDU, power save, TWT, RAW | none | NOT MODELED. Fixed MCS, one packet at a time, single station, no contention |
 | duty cycle | none | NOT MODELED. US 902-928 MHz is assumed; EU sub-GHz duty limits are not enforced here |
 | FSK airtime | preamble + 2 sync + 1 + payload + 2 CRC at the bit rate | SOURCE: `vendor/sx1276/src/fsk.rs` and the sender |

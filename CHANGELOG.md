@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Release packaging and bench fixes (review of v0.1.0)
+
+* `scripts/release.sh` builds the Linux archives against musl (statically linked: no glibc
+  requirement; v0.1.0's x86-64 binaries needed glibc 2.39), writes `REQUIREMENTS.txt` into each archive,
+  ships the bench tool's reference inputs beside `bin/`, and smoke tests the unpacked host archive. It
+  checks its prerequisites first (including the musl C compiler `moq-subghz-publish` needs), builds
+  into its own `RELEASE_BUILD_DIR` (made absolute first) whatever `CARGO_TARGET_DIR` says, replaces
+  `dist/` only after every archive is built and checked, and ships the same tools per
+  target as v0.1.0. A CI job runs the script itself. HOWTO documents v0.1.0's glibc and input
+  caveats.
+* `moq-subghz-bench`: `--repo-root` (now also `MOQ_SUBGHZ_ROOT`) defaults to the release bundle the
+  binary sits in, then the checkout it was built from, instead of the build machine's path; a missing
+  input names every place looked in.
+* `package-051` stages the whole packaging and checks it before any published run is replaced, so a
+  failed packaging (a missing log, a refused file) no longer leaves a run mixing two captures. Before it
+  publishes, it checks that no destination is in the way, and a failure partway through publishing is
+  undone, so the output is either all new or all old. A rollback moves back only the entries it placed
+  itself, and a lock on the output (`.package.lock`, released by the OS when the process ends) keeps a
+  second packaging from interleaving with it.
+* Forward runs keep the board's sender log until the local copy is verified by size, as the CSS runner
+  does; an unverified copy fails the run and the board copy is kept.
+* Related research: [docs/RELATED-WORK.md](docs/RELATED-WORK.md) acknowledges MultiMoQ (arXiv:2608.06102)
+  and lists the shaping and modeling ideas it suggests for this project.
+
 ### Neutral terminology and renames
 
 Product and brand names are out of file names, crate names, strings, flags and docs. Chip names
