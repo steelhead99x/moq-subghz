@@ -85,6 +85,16 @@ They also carry the reference inputs `moq-subghz-bench` reads (`results/css-2015
 relative to its own path, so keep the archive's layout. Elsewhere, pass `--repo-root` (or set
 `MOQ_SUBGHZ_ROOT`) to a checkout.
 
+Both archives hold the same tools as v0.1.0: x86-64 has `moq-subghz-send`, `-recv`, `-bench`,
+`-report`, `-chan`, `-publish`, `css2015-send` and `css2015-log`; ARMv7 has all of them except
+`moq-subghz-publish`.
+
+To build the archives yourself: `scripts/release.sh VERSION` writes them and `SHA256SUMS` to `dist/`.
+It needs rustup, binutils and a musl C compiler for `moq-subghz-publish`'s TLS code (`apt install
+musl-tools`, or name one in `CC_x86_64_unknown_linux_musl`), and checks all of these before it builds.
+It builds into `RELEASE_BUILD_DIR` (default `target/release-build`) whatever `CARGO_TARGET_DIR` says.
+CI runs the same script.
+
 **v0.1.0 caveats.** Its Linux x86-64 binaries are glibc builds: `moq-subghz-send`, `moq-subghz-recv`,
 `moq-subghz-bench` and `css2015-log` need glibc 2.39 or newer, `moq-subghz-publish` 2.38, the others 2.34
 (check with `ldd --version`). On an older system, build from source. Its archives also lack the bench

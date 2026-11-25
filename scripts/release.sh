@@ -15,12 +15,21 @@
 # * The host archive is unpacked in a scratch directory and `moq-subghz-bench css2015-table` is run
 #   from another working directory, which proves the packaged inputs resolve.
 #
-# Needs: rustup with the targets below, tar, sha256sum, readelf/objdump (binutils).
+# Needs (checked before anything is built):
+# * rustup (it adds the two Rust targets; each workspace's rust-toolchain.toml picks the toolchain)
+# * a musl C compiler for x86-64: moq-subghz-publish builds C (aws-lc, ring) for its TLS. Either
+#   x86_64-linux-musl-gcc or musl-gcc (Debian/Ubuntu: `apt install musl-tools`), or name one in
+#   CC_x86_64_unknown_linux_musl. The ARMv7 tools are pure Rust, linked with rust-lld.
+# * tar, sha256sum, readelf and objdump (binutils), install
+#
+# Builds go to RELEASE_BUILD_DIR (default target/release-build), whatever CARGO_TARGET_DIR says,
+# and the binaries are collected from there.
 set -euo pipefail
 
 VERSION=${1:?usage: scripts/release.sh VERSION}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DIST="$ROOT/dist"
+BUILD="${RELEASE_BUILD_DIR:-$ROOT/target/release-build}"
 cd "$ROOT"
 
 WORKSPACE_PKGS=(-p moq-subghz-send -p moq-subghz-recv -p moq-subghz-css2015 -p moq-subghz-bench
@@ -28,7 +37,7 @@ WORKSPACE_PKGS=(-p moq-subghz-send -p moq-subghz-recv -p moq-subghz-css2015 -p m
 # target triple | archive label | binaries | build publish too
 TARGETS=(
   "x86_64-unknown-linux-musl|linux-x86_64|moq-subghz-send moq-subghz-recv moq-subghz-bench moq-subghz-report moq-subghz-chan css2015-send css2015-log moq-subghz-publish|yes"
-  "armv7-unknown-linux-musleabihf|linux-armv7-musleabihf|moq-subghz-send moq-subghz-recv moq-subghz-bench css2015-send css2015-log|no"
+  "armv7-unknown-linux-musleabihf|linux-armv7-musleabihf|moq-subghz-send moq-subghz-recv moq-subghz-bench moq-subghz-report moq-subghz-chan css2015-send css2015-log|no"
 )
 # The inputs moq-subghz-bench reads, relative to the repository root.
 INPUTS=(results/css-2015/frames results/factory-firmware/results.csv results/factory-firmware/data
@@ -40,23 +49,48 @@ glibc_need() {
   objdump -T "$1" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n 1
 }
 
+# Every prerequisite, before anything is built or removed.
+missing=()
+for tool in rustup cargo tar sha256sum readelf objdump install; do
+  command -v "$tool" >/dev/null || missing+=("$tool")
+done
+if [[ -z ${CC_x86_64_unknown_linux_musl:-} ]]; then
+  for cc in x86_64-linux-musl-gcc musl-gcc; do
+    if command -v "$cc" >/dev/null; then export CC_x86_64_unknown_linux_musl=$cc; break; fi
+  done
+fi
+if [[ -z ${CC_x86_64_unknown_linux_musl:-} ]] || ! command -v "$CC_x86_64_unknown_linux_musl" >/dev/null; then
+  missing+=("a musl C compiler for moq-subghz-publish (x86_64-linux-musl-gcc or musl-gcc; apt install musl-tools)")
+fi
+if ((${#missing[@]})); then
+  printf 'release.sh: missing prerequisites:\n' >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  exit 1
+fi
+echo "musl C compiler: $CC_x86_64_unknown_linux_musl"
+
 rm -rf "$DIST"
 mkdir -p "$DIST"
 for t in "${TARGETS[@]}"; do
   IFS='|' read -r triple label bins publish <<<"$t"
   rustup target add "$triple" >/dev/null
-  cargo build --release --locked --target "$triple" "${WORKSPACE_PKGS[@]}"
+  cargo build --release --locked --target "$triple" --target-dir "$BUILD/workspace" "${WORKSPACE_PKGS[@]}"
   if [[ $publish == yes ]]; then
     (cd moq-subghz-publish && rustup target add "$triple" >/dev/null &&
-       cargo build --release --locked --target "$triple")
+       cargo build --release --locked --target "$triple" --target-dir "$BUILD/publish")
   fi
   name="moq-subghz-$VERSION-$label"
   stage="$DIST/$name"
   mkdir -p "$stage/bin"
   for b in $bins; do
-    src="target/$triple/release/$b"
-    [[ $b == moq-subghz-publish ]] && src="moq-subghz-publish/target/$triple/release/$b"
+    src="$BUILD/workspace/$triple/release/$b"
+    [[ $b == moq-subghz-publish ]] && src="$BUILD/publish/$triple/release/$b"
     install -m 0755 "$src" "$stage/bin/$b"
+    # musl builds must come out static; a dynamic one would bring back a libc requirement
+    if readelf -d "$stage/bin/$b" | grep -q NEEDED; then
+      echo "release.sh: $b for $triple is dynamically linked" >&2
+      exit 1
+    fi
   done
   cp README.md LICENSE-APACHE LICENSE-MIT "$stage/"
   for i in "${INPUTS[@]}"; do

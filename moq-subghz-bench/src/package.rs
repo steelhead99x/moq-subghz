@@ -174,11 +174,13 @@ fn cp_pictures(dir: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A private staging tree under `out`, removed on drop unless it was committed. Everything is
-/// written here first, so a failed packaging (a missing log, a refused file) leaves every
-/// published run in `out` exactly as it was.
+/// A private staging tree under `out`, removed on drop unless `keep` is set. Everything is written
+/// here first, so a failed packaging (a missing log, a refused file) leaves every published run in
+/// `out` exactly as it was. The published entries a commit replaces are moved aside into it too.
 struct Staging {
     root: PathBuf,
+    /// Set when a rollback failed: the moved-aside originals are still in here.
+    keep: bool,
 }
 
 impl Staging {
@@ -187,56 +189,160 @@ impl Staging {
         let root = out.join(format!(".package-staging-{}", std::process::id()));
         // create_dir, not create_dir_all: this call owns the directory it removes later.
         fs::create_dir(&root).with_context(|| format!("create {}", root.display()))?;
-        Ok(Staging { root })
+        Ok(Staging { root, keep: false })
     }
 }
 
 impl Drop for Staging {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
-}
-
-/// Replace the published directory `to` with the complete staged one `from`. The old one is moved
-/// aside first and put back if the swap fails, then removed.
-fn swap_dir(from: &Path, to: &Path) -> Result<()> {
-    let mut aside = to.file_name().context("no file name")?.to_owned();
-    aside.push(format!(".old-{}", std::process::id()));
-    let aside = to.with_file_name(aside);
-    let had = to.try_exists()?;
-    if had {
-        fs::rename(to, &aside).with_context(|| format!("move aside {}", to.display()))?;
-    }
-    if let Err(e) = fs::rename(from, to) {
-        if had {
-            let _ = fs::rename(&aside, to);
+        if !self.keep {
+            let _ = fs::remove_dir_all(&self.root);
         }
-        return Err(e).with_context(|| format!("publish {}", to.display()));
     }
-    if had {
-        fs::remove_dir_all(&aside).with_context(|| format!("remove {}", aside.display()))?;
-    }
-    Ok(())
 }
 
-pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
-    let st = Staging::new(out)?;
-    stage_all(g, runs, demo, &st.root)?;
-    // Every run is complete and passed the scan: publish each one whole.
+/// One published entry the commit puts in place: the staged `from` goes to `to`.
+struct Move {
+    from: PathBuf,
+    to: PathBuf,
+}
+
+/// What the commit did, so a failure can undo it in reverse.
+enum Done {
+    /// `out/<sub>` did not exist and was made.
+    Made(PathBuf),
+    /// `to` was put in place; the entry it replaced, if any, was moved to `aside`.
+    Placed { to: PathBuf, aside: Option<PathBuf> },
+}
+
+/// Every move of the commit, checked before anything is touched: each `out/<sub>` must be a
+/// directory (or absent) and each destination must be absent or of the same kind as what replaces
+/// it, so a commit does not start when it would stop partway.
+fn plan(staged: &Path, out: &Path) -> Result<(Vec<PathBuf>, Vec<Move>)> {
+    let (mut make, mut moves) = (Vec::new(), Vec::new());
     for sub in ["fsk", "css", "demo"] {
-        let (from, to) = (st.root.join(sub), out.join(sub));
-        fs::create_dir_all(&to)?;
-        for e in fs::read_dir(&from)? {
-            let e = e?;
+        let (from, to) = (staged.join(sub), out.join(sub));
+        match fs::symlink_metadata(&to) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => bail!("{} is in the way: it is not a directory", to.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => make.push(to.clone()),
+            Err(e) => return Err(e).with_context(|| format!("check {}", to.display())),
+        }
+        let mut entries: Vec<_> = fs::read_dir(&from)?.collect::<std::io::Result<_>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let dir = e.file_type()?.is_dir();
             let dst = to.join(e.file_name());
-            if e.file_type()?.is_dir() {
-                swap_dir(&e.path(), &dst)?;
+            match fs::symlink_metadata(&dst) {
+                Ok(m) if m.is_dir() == dir && !m.file_type().is_symlink() => {}
+                Ok(_) => bail!(
+                    "{} is in the way: it is not a {}",
+                    dst.display(),
+                    if dir { "directory" } else { "regular file" }
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).with_context(|| format!("check {}", dst.display())),
+            }
+            moves.push(Move {
+                from: e.path(),
+                to: dst,
+            });
+        }
+    }
+    Ok((make, moves))
+}
+
+/// Put every staged entry in place. Replaced entries are moved aside under `aside` (inside the
+/// staging tree, same file system) and dropped with it on success. Any failure undoes what was
+/// done, newest first, so `out` is as it was before the call. `fail_at` makes the n-th move fail
+/// (tests only).
+fn commit(st: &mut Staging, out: &Path, fail_at: Option<usize>) -> Result<()> {
+    let staged = st.root.join("new");
+    let (make, moves) = plan(&staged, out)?;
+    let aside = st.root.join("old");
+    fs::create_dir(&aside)?;
+    let mut done = Vec::new();
+    let r = (|| -> Result<()> {
+        for d in make {
+            fs::create_dir(&d).with_context(|| format!("create {}", d.display()))?;
+            done.push(Done::Made(d));
+        }
+        for (i, m) in moves.iter().enumerate() {
+            let old = if m.to.try_exists()? {
+                let a = aside.join(i.to_string());
+                fs::rename(&m.to, &a).with_context(|| format!("move aside {}", m.to.display()))?;
+                Some(a)
             } else {
-                fs::rename(e.path(), &dst).with_context(|| format!("write {}", dst.display()))?;
+                None
+            };
+            // recorded before the rename, so a failed rename still puts the old entry back
+            done.push(Done::Placed {
+                to: m.to.clone(),
+                aside: old,
+            });
+            if fail_at == Some(i) {
+                bail!("injected failure at {}", m.to.display());
+            }
+            fs::rename(&m.from, &m.to).with_context(|| format!("publish {}", m.to.display()))?;
+        }
+        Ok(())
+    })();
+    let Err(e) = r else { return Ok(()) };
+    let mut stuck = Vec::new();
+    for d in done.into_iter().rev() {
+        match d {
+            Done::Made(p) => {
+                if fs::remove_dir(&p).is_err() {
+                    stuck.push(p);
+                }
+            }
+            Done::Placed { to, aside } => {
+                // `to` holds the new entry only if its rename succeeded
+                if fs::symlink_metadata(&to).is_ok() {
+                    let gone = if to.is_dir() {
+                        fs::remove_dir_all(&to)
+                    } else {
+                        fs::remove_file(&to)
+                    };
+                    if gone.is_err() {
+                        stuck.push(to.clone());
+                        continue;
+                    }
+                }
+                if let Some(a) = aside {
+                    if fs::rename(&a, &to).is_err() {
+                        stuck.push(to);
+                    }
+                }
             }
         }
     }
-    Ok(())
+    if stuck.is_empty() {
+        return Err(e.context("packaging failed while publishing; every change was undone"));
+    }
+    st.keep = true;
+    Err(e.context(format!(
+        "packaging failed while publishing and could not undo every change ({}); the replaced \
+         originals are kept under {}",
+        stuck
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        aside.display()
+    )))
+}
+
+pub fn run(g: &Guard, runs: &Path, demo: &Path, out: &Path) -> Result<()> {
+    run_with(g, runs, demo, out, None)
+}
+
+fn run_with(g: &Guard, runs: &Path, demo: &Path, out: &Path, fail_at: Option<usize>) -> Result<()> {
+    let mut st = Staging::new(out)?;
+    let staged = st.root.join("new");
+    stage_all(g, runs, demo, &staged)?;
+    // Every run is complete and passed the scan: publish them all, or none.
+    commit(&mut st, out, fail_at)
 }
 
 /// Write the whole packaging into the empty staging tree `out`.
@@ -675,6 +781,91 @@ mod tests {
         assert!(!published.join(marker).exists());
         assert_eq!(gunzip(&published.join("serial.log.gz")), "serial2");
         assert!(fs::read_to_string(published.join("summary.json"))
+            .unwrap()
+            .contains("new"));
+    }
+
+    /// Every file under `dir`, relative, with its content: a snapshot to compare against.
+    fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(root: &Path, d: &Path, v: &mut Vec<(String, Vec<u8>)>) {
+            for e in fs::read_dir(d).unwrap() {
+                let p = e.unwrap().path();
+                let rel = p.strip_prefix(root).unwrap().display().to_string();
+                if p.is_dir() {
+                    v.push((rel + "/", vec![]));
+                    walk(root, &p, v);
+                } else {
+                    v.push((rel, fs::read(&p).unwrap()));
+                }
+            }
+        }
+        let mut v = Vec::new();
+        walk(dir, dir, &mut v);
+        v.sort();
+        v
+    }
+
+    /// Publish once, then change the capture so a second packaging would replace every run.
+    fn published_then_changed(tag: &str) -> (Scratch, Scratch, Scratch) {
+        let (r, d, o) = (
+            Scratch::new(&format!("{tag}-r")),
+            Scratch::new(&format!("{tag}-d")),
+            Scratch::new(&format!("{tag}-o")),
+        );
+        stage(&r.0, &d.0);
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        put(
+            r.0.join("f300-a/summary.json"),
+            "{\"radio_frames_ok\":7,\"new\":1}",
+        );
+        put(r.0.join("chunk-sf7-125-small-r1/raw.log"), "raw2");
+        put(d.0.join("fsk-live.mp4"), "new video");
+        (r, d, o)
+    }
+
+    #[test]
+    fn a_destination_in_the_way_refuses_before_any_run_is_replaced() {
+        let (r, d, o) = published_then_changed("pk5");
+        // the reviewer's case: out/css is a file
+        fs::remove_dir_all(o.0.join("css")).unwrap();
+        fs::write(o.0.join("css"), "in the way").unwrap();
+        let before = snapshot(&o.0);
+        let e = run(&none(), &r.0, &d.0, &o.0).unwrap_err().to_string();
+        assert!(e.contains("in the way"), "{e}");
+        assert_eq!(snapshot(&o.0), before, "nothing published was touched");
+        // a run directory where a file is published, too
+        fs::remove_file(o.0.join("css")).unwrap();
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        fs::remove_file(o.0.join("demo/fsk-live.mp4")).unwrap();
+        fs::create_dir(o.0.join("demo/fsk-live.mp4")).unwrap();
+        let before = snapshot(&o.0);
+        assert!(run(&none(), &r.0, &d.0, &o.0).is_err());
+        assert_eq!(snapshot(&o.0), before);
+    }
+
+    #[test]
+    fn a_failure_partway_through_publishing_is_undone() {
+        let (r, d, o) = published_then_changed("pk6");
+        let before = snapshot(&o.0);
+        // fail at each move in turn: the first, the middle ones, the last
+        for i in 0..6 {
+            let e = run_with(&none(), &r.0, &d.0, &o.0, Some(i))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("every change was undone"), "{i}: {e}");
+            assert_eq!(snapshot(&o.0), before, "move {i}");
+        }
+        // and into an empty output, where the sub directories are made and removed again
+        let o2 = Scratch::new("pk6-o2");
+        assert!(run_with(&none(), &r.0, &d.0, &o2.0, Some(2)).is_err());
+        assert!(snapshot(&o2.0).is_empty(), "{:?}", snapshot(&o2.0));
+        // without a failure the new capture is published
+        run(&none(), &r.0, &d.0, &o.0).unwrap();
+        assert_eq!(
+            fs::read(o.0.join("demo/fsk-live.mp4")).unwrap(),
+            b"new video"
+        );
+        assert!(fs::read_to_string(o.0.join("fsk/f300-a/summary.json"))
             .unwrap()
             .contains("new"));
     }

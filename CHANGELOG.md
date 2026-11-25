@@ -6,14 +6,18 @@
 
 * `scripts/release.sh` builds the Linux archives against musl (statically linked: no glibc
   requirement; v0.1.0's x86-64 binaries needed glibc 2.39), writes `REQUIREMENTS.txt` into each archive,
-  ships the bench tool's reference inputs beside `bin/`, and smoke tests the unpacked host archive. CI
-  builds x86-64 musl and checks that the binaries are static. HOWTO documents v0.1.0's glibc and input
+  ships the bench tool's reference inputs beside `bin/`, and smoke tests the unpacked host archive. It
+  checks its prerequisites first (including the musl C compiler `moq-subghz-publish` needs), builds
+  into its own `RELEASE_BUILD_DIR` whatever `CARGO_TARGET_DIR` says, and ships the same tools per
+  target as v0.1.0. A CI job runs the script itself. HOWTO documents v0.1.0's glibc and input
   caveats.
 * `moq-subghz-bench`: `--repo-root` (now also `MOQ_SUBGHZ_ROOT`) defaults to the release bundle the
   binary sits in, then the checkout it was built from, instead of the build machine's path; a missing
   input names every place looked in.
 * `package-051` stages the whole packaging and checks it before any published run is replaced, so a
-  failed packaging (a missing log, a refused file) no longer leaves a run mixing two captures.
+  failed packaging (a missing log, a refused file) no longer leaves a run mixing two captures. Before it
+  publishes, it checks that no destination is in the way, and a failure partway through publishing is
+  undone, so the output is either all new or all old.
 * Forward runs keep the board's sender log until the local copy is verified by size, as the CSS runner
   does; an unverified copy fails the run and the board copy is kept.
 * Related research: [docs/RELATED-WORK.md](docs/RELATED-WORK.md) acknowledges MultiMoQ (arXiv:2608.06102)
