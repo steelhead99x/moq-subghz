@@ -47,6 +47,9 @@ struct Args {
     /// Video source: `testsrc2`, `smptehdbars`, ... (lavfi) or a file path (looped)
     #[arg(long, default_value = "testsrc2")]
     src: String,
+    /// Read concatenated live JPEG captures on stdin. The producer controls capture cadence.
+    #[arg(long, conflicts_with = "src")]
+    mjpeg_stdin: bool,
     #[arg(long, default_value = "320x240")]
     size: String,
     #[arg(long, default_value_t = 15)]
@@ -446,35 +449,42 @@ fn main() -> Result<()> {
 
     // ---- source + encoder processes
     let ff = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let mut src_cmd = ff(&[
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-re",
-    ]);
-    if std::path::Path::new(&a.src).exists() {
-        src_cmd.extend(ff(&["-stream_loop", "-1", "-i", &a.src]));
-    } else {
+    let mut src_cmd = ff(&["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]);
+    if a.mjpeg_stdin {
         src_cmd.extend(ff(&[
             "-f",
-            "lavfi",
+            "mjpeg",
+            "-framerate",
+            &a.fps.to_string(),
+            "-probesize",
+            "32",
+            "-analyzeduration",
+            "1",
             "-i",
-            &format!("{}=size={}:rate={}", a.src, a.size, a.fps),
+            "pipe:0",
+            "-vf",
+            &format!("scale={w}:{h}"),
+            "-fps_mode",
+            "passthrough",
         ]));
+    } else {
+        src_cmd.push("-re".into());
+        if std::path::Path::new(&a.src).exists() {
+            src_cmd.extend(ff(&["-stream_loop", "-1", "-i", &a.src]));
+        } else {
+            src_cmd.extend(ff(&[
+                "-f",
+                "lavfi",
+                "-i",
+                &format!("{}=size={}:rate={}", a.src, a.size, a.fps),
+            ]));
+        }
+        src_cmd.extend(ff(&["-vf", &format!("scale={w}:{h},fps={}", a.fps)]));
     }
-    src_cmd.extend(ff(&[
-        "-vf",
-        &format!("scale={w}:{h},fps={}", a.fps),
-        "-f",
-        "rawvideo",
-        "-pix_fmt",
-        "yuv420p",
-        "-",
-    ]));
+    src_cmd.extend(ff(&["-f", "rawvideo", "-pix_fmt", "yuv420p", "-"]));
     let br = a.bitrate.to_string();
     let gop = a.gop.to_string();
+    let encoder_threads = if a.mjpeg_stdin { "1" } else { "2" };
     let mut enc_cmd = ff(&[
         "ffmpeg",
         "-hide_banner",
@@ -488,9 +498,13 @@ fn main() -> Result<()> {
         &a.size,
         "-r",
         &a.fps.to_string(),
-        "-i",
-        "-",
     ]);
+    if a.mjpeg_stdin {
+        // Raw input already has a size, pixel format and rate. Probing for
+        // several seconds here would age the first GOPs out of the TX queue.
+        enc_cmd.extend(ff(&["-probesize", "32", "-analyzeduration", "1"]));
+    }
+    enc_cmd.extend(ff(&["-i", "-"]));
     match a.encoder.as_str() {
         "hw" => enc_cmd.extend(ff(&["-c:v", "h264_v4l2m2m", "-b:v", &br, "-g", &gop])),
         "x264" => enc_cmd.extend(ff(&[
@@ -513,7 +527,7 @@ fn main() -> Result<()> {
             "-sc_threshold",
             "0",
             "-threads",
-            "2",
+            encoder_threads,
         ])),
         x => bail!("unknown encoder {x}"),
     }
@@ -531,7 +545,12 @@ fn main() -> Result<()> {
         src_cmd.join(" "),
         enc_cmd.join(" ")
     );
-    let mut src = spawn(&src_cmd, Stdio::null())?;
+    let source_input = if a.mjpeg_stdin {
+        Stdio::inherit()
+    } else {
+        Stdio::null()
+    };
+    let mut src = spawn(&src_cmd, source_input)?;
     let mut enc = spawn(&enc_cmd, Stdio::piped())?;
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -545,18 +564,37 @@ fn main() -> Result<()> {
         let (mut sout, mut ein) = (src.stdout.take().unwrap(), enc.stdin.take().unwrap());
         let (stop, caps, secs, done) = (stop.clone(), caps.clone(), a.secs, cap_done.clone());
         let label = format!("FSK {}k #", prof.bitrate / 1000);
+        let live_input = a.mjpeg_stdin;
+        let stalled = source_stalled.clone();
         std::thread::spawn(move || -> Result<u32> {
             let mut buf = vec![0u8; w * h * 3 / 2];
             let mut n = 0u32;
             while !stop.load(Ordering::Relaxed) && t_run.elapsed().as_secs_f64() < secs {
                 if sout.read_exact(&mut buf).is_err() {
+                    if live_input
+                        && !stop.load(Ordering::Relaxed)
+                        && t_run.elapsed().as_secs_f64() < secs
+                    {
+                        eprintln!("live JPEG input ended before the run completed");
+                        stalled.store(true, Ordering::Relaxed);
+                    }
                     break;
                 }
                 let t = unix_us();
-                let s = (w / 80).max(1);
-                stamp::draw_text(&mut buf, w, h, 2, 2, &local_clock(t), s);
-                stamp::draw_text(&mut buf, w, h, 2, 2 + 8 * s, &format!("{label}{n}"), s);
-                stamp::write_barcode(&mut buf, w, h, (t / 1000) as u32);
+                if !live_input {
+                    let scale = (w / 80).max(1);
+                    stamp::draw_text(&mut buf, w, h, 2, 2, &local_clock(t), scale);
+                    stamp::draw_text(
+                        &mut buf,
+                        w,
+                        h,
+                        2,
+                        2 + 8 * scale,
+                        &format!("{label}{n}"),
+                        scale,
+                    );
+                    stamp::write_barcode(&mut buf, w, h, (t / 1000) as u32);
+                }
                 caps.lock().unwrap().push_back((n, t));
                 if ein.write_all(&buf).is_err() {
                     break;
